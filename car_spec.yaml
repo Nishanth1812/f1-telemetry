@@ -10,8 +10,8 @@ description: >-
 spec:
   regulation: FIA 2026 Formula One Regulations
   section: Section C (Technical)
-  issue: 16
-  issue_date: 2026-02-27
+  issue: 20
+  issue_date: 2026-08-05
   refinements:
     - date: 2026-04-21
       note: energy management, superclip duration, Overtake Mode
