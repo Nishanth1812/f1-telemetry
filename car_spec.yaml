@@ -1,0 +1,152 @@
+description: >-
+  The physics coefficient contract (PLAN.md section 5), versioned to a regulation issue.
+  PROVISIONAL: every value below is an order-of-magnitude P0 placeholder and none of it
+  is calibrated. PLAN.md section 5's starting figures are used verbatim where they exist;
+  everything else carries an explicit `provenance: synthesised` line, per the standing
+  rule that every coefficient is accounted for in docs/calibration.md. P1 replaces this
+  file field by field, and because nothing downstream hardcodes a number, a calibration
+  pass is a data edit here rather than a refactor.
+
+spec:
+  regulation: FIA 2026 Formula One Regulations
+  section: Section C (Technical)
+  issue: 16
+  issue_date: 2026-02-27
+  refinements:
+    - date: 2026-04-21
+      note: energy management, superclip duration, Overtake Mode
+  anticipated_drift:
+    - date: 2026-06-10
+      note: 2027/2028 technical changes agreed; expect a spec bump
+  provenance: provisional
+  calibration_status: uncalibrated
+  source_date: 2026-09-30
+  confirmed_against_regulation_text: false
+  confirmed_by: null
+  note: >-
+    Source date is the date these placeholder values were written, not a measurement
+    date. `confirmed_against_regulation_text` flips to true only when P1-T9 records the
+    regulation clause each value was read from.
+
+constants:
+  gravity_m_s2: 9.80665
+  air_density_kg_m3: 1.225
+  air_temperature_k: 293.15
+  provenance: standard
+  source: ISO 80000-3 gravitational acceleration; ISA sea-level, 20 degC
+
+mass:
+  total_kg: 800.0
+  includes: [car, driver, fuel_at_start]
+  provenance: plan
+  source: PLAN.md section 5 ("mass ~800 kg including driver")
+  source_date: 2026-09-30
+  tolerance_pct: 5.0
+  note: >-
+    Plan figure, explicitly "to be confirmed against the regulation text during phase 1".
+    FIA minimum is a floor, not a prediction; the real car carries ballast to the floor.
+
+aero:
+  reference_area_m2: 1.5
+  ride_height_sensitivity: 0.18
+  cl_curve:
+    - { speed_m_s: 0.0, cl: 1.80 }
+    - { speed_m_s: 20.0, cl: 2.30 }
+    - { speed_m_s: 40.0, cl: 2.70 }
+    - { speed_m_s: 60.0, cl: 3.00 }
+    - { speed_m_s: 80.0, cl: 3.20 }
+    - { speed_m_s: 105.0, cl: 3.35 }
+  cd_curve:
+    - { speed_m_s: 0.0, cd: 1.15 }
+    - { speed_m_s: 20.0, cd: 0.95 }
+    - { speed_m_s: 40.0, cd: 0.82 }
+    - { speed_m_s: 60.0, cd: 0.73 }
+    - { speed_m_s: 80.0, cd: 0.66 }
+    - { speed_m_s: 105.0, cd: 0.62 }
+  provenance: synthesised
+  source: order-of-magnitude 2026 active-aero shape, replaced by the published
+    Limebeer & Tremlett F1 parameter set in P1-T3
+  source_date: 2026-09-30
+  note: >-
+    Downforce and drag are deliberately non-proportional to v^2 across this range, per
+    PLAN.md section 5.1. The ride-height sensitivity term is what makes porpoising
+    observable in the telemetry later. These five-point curves are placeholders: P1-T3
+    replaces them and P1-T9 fits them against the 0-100 km/h and top-speed targets.
+
+powertrain:
+  ice:
+    peak_power_kw: 400.0
+    rev_limit_rpm: 13000.0
+    idle_rpm: 4000.0
+    torque_curve_nm:
+      - { rpm: 2000.0, torque_nm: 60.0 }
+      - { rpm: 4000.0, torque_nm: 150.0 }
+      - { rpm: 6000.0, torque_nm: 240.0 }
+      - { rpm: 8000.0, torque_nm: 295.0 }
+      - { rpm: 10000.0, torque_nm: 330.0 }
+      - { rpm: 11000.0, torque_nm: 325.0 }
+      - { rpm: 12000.0, torque_nm: 305.0 }
+      - { rpm: 13000.0, torque_nm: 294.0 }
+    turbo_lag:
+      collapse_below_rpm: 4000.0
+      multiplier_at_collapse: 0.35
+    provenance: synthesised
+    source: >-
+      PLAN.md section 6. Published 400 kW peak power and peak-torque rpm shaped into a
+      table. No public F1 torque curve exists, so this is a synthesis by construction.
+    source_date: 2026-09-30
+    calibrated: false
+  mgu_k:
+    peak_power_kw: 350.0
+    store_energy_mj: 7.0
+    superclip_s: 3.0
+    overtake_mode_extra_kw: 150.0
+    provenance: plan
+    source: PLAN.md sections 5 and 6
+    source_date: 2026-09-30
+  power_split_ice: 0.53
+  fuel_lhv_kj_kg: 44000.0
+  provenance: plan
+  source: PLAN.md sections 5 and 6 ("400 kW ICE and 350 kW MGU-K on a 53/47 split")
+  source_date: 2026-09-30
+
+gearbox:
+  ratios: [3.883, 3.437, 3.041, 2.691, 2.381, 2.107, 1.865, 1.634]
+  final_drive: 3.0
+  shift_up_rpm: 12500.0
+  shift_down_rpm: 8000.0
+  shift_time_s: 0.04
+  provenance: synthesised
+  source_date: 2026-09-30
+  derivation: >-
+    Geometric 8-speed, chosen so that 8th gear at the 13000 rpm limiter lands on the
+    PLAN.md section 11 top-speed band of 350-370 km/h given the 0.36 m rolling radius, and
+    so 1st gear (3.883) is in the right place for a launch. P1 replaces these provisional
+    explicit ratios during calibration. PLAN.md section 6's "approx 1.6 apart" is not
+    geometric across all eight gears - 1.6^7 is a 27x span and cannot reach a 350+ km/h top
+    speed from a sane 1st gear. See docs/phase0-decisions.md.
+  note: >-
+    Still wrong until the P1 drag-limited top-speed solve. PLAN.md section 11 gives
+    350-370 km/h as an order-of-magnitude bound to be confirmed, not a target hit.
+
+tyres:
+  rolling_radius_m: 0.36
+  nominal_width_mm: 305.0
+  wheel_diameter_m: 0.72
+  provenance: plan
+  source: >-
+    PLAN.md section 4 gives 1.02-1.05 x loaded radius for F1; 0.36 m is the
+    loaded-radius midpoint and is the input that couples gear ratios to road speed.
+  source_date: 2026-09-30
+  note: Pacejka coefficients, load sensitivity and relaxation lengths are P2-T3/P2-T5
+    work and are deliberately absent from a P0 skeleton.
+
+chassis:
+  wheelbase_m: 3.4
+  floor_width_m: 1.9
+  front_weight_fraction: 0.46
+  provenance: plan
+  source: PLAN.md section 5
+  source_date: 2026-09-30
+  note: front_weight_fraction is a placeholder; P2-T2 replaces it with the measured
+    static distribution once the roll stiffness distribution is known.

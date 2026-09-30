@@ -1,0 +1,133 @@
+[project]
+name = "f1-telemetry"
+version = "0.1.0"
+description = "F1 Virtual Telemetry Emulator - contracts, codegen and validation harness"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "numpy>=2.2,<2.6",
+  "numba==0.67.0",
+  "llvmlite==0.49.0",
+  "pyyaml>=6.0.2,<7",
+  "pyarrow>=19,<26",
+  "websockets>=14,<16",
+]
+
+[project.scripts]
+f1-codegen = "f1telemetry.codegen.__main__:main"
+f1-check-contract = "f1telemetry.codegen.__main__:main_check"
+f1-serve = "f1telemetry.server:main"
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.29",
+  "pytest>=8.3",
+  "ruff>=0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/f1telemetry"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "channels.yaml", "car_spec.yaml", "web/src/generated"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "W",
+  "I",
+  "N",
+  "UP",
+  "B",
+  "C4",
+  "SIM",
+  "RUF",
+  "ANN",
+  "PTH",
+  "TID",
+]
+ignore = [
+  "ANN401",
+  "RUF001",
+  "RUF002",
+  "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated files are long by construction and use the portable `TypeAlias` form
+# rather than the PEP 695 `type` statement, which ruff mis-analyses when the right
+# hand side is a union of string literals.
+"src/f1telemetry/generated/*" = ["E501", "UP040"]
+"tests/*" = ["ANN001", "ANN201"]
+# The layer-isolation rule bans importing the physics kernel from layers 4-6. The
+# toolchain probe is the one place that has to import it, because proving the kernel
+# compiles is the whole point of P0-T1b.
+"tests/test_numba_toolchain.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"f1telemetry.physics" = { msg = "Layers 4-6 may not import from the physics core (PLAN.md section 3)." }
+"f1telemetry.kernels" = { msg = "Layers 4-6 may not import Numba kernels (PLAN.md section 3)." }
+
+[tool.ruff.lint.isort]
+known-first-party = ["f1telemetry"]
+
+[tool.ruff.format]
+# Generated files are formatted by the generator, not by ruff. Hand-formatting them
+# would make `ruff format` disagree with `f1-codegen`, and the two gates would then
+# fight each other. The generated tree is governed by the codegen diff check instead.
+exclude = ["src/f1telemetry/generated/**"]
+docstring-code-format = false
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+golden_strict = false
+markers = [
+  "invariant: PLAN.md section 11 blocking invariants 1-8",
+  "golden: golden-trace regression comparison (reports, does not auto-fail)",
+  "analytics: PLAN.md section 9 detection tables; no tests collected until P7",
+  "codegen: contract/code-generation drift checks",
+  "toolchain: environment and dependency toolchain probes",
+]
+filterwarnings = ["error"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", ".venv", "reports"]
+pythonVersion = "3.12"
+pythonPlatform = "All"
+typeCheckingMode = "recommended"
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false
+reportUnnecessaryIsInstance = false
+reportAny = false
+
+# pyarrow and numba ship no stubs, so every call into them is `Unknown`/`Any` at the type
+# level. Silencing the four `Unknown*` rules removes ~280 warnings that carry no signal.
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+
+# `Any` is the honest annotation for a node read out of YAML or JSON before the loader has
+# validated it. The loaders narrow it field by field, and that narrowing is the code.
+reportExplicitAny = false
+
+# The code generators build source text out of adjacent string literals on purpose; that
+# is how a generator reads.
+reportImplicitStringConcatenation = false
+
+# Tests and the codegen entry point call functions purely for their assertions' side
+# effects, and the invariant checkers take a uniform (record, spec) signature whether or
+# not a given check needs the spec.
+reportUnusedCallResult = false
+reportUnusedParameter = false
