@@ -2,7 +2,7 @@
 
 ## Task 1: Confirm P1 inputs and kernel configuration
 
-**Status:** Done (fix round 1 applied). Commits `a063b1e`, `b9fc915`. Report: `.superpowers/sdd/phase-1/reports/task-1.md`.
+**Status:** Done (fix rounds 1 and 2 applied). Commits: `a063b1e`, `b9fc915`, `a360e1f`, `c9bf718`, `782bdb9`. Report: `.superpowers/sdd/phase-1/reports/task-1.md`; round-2 review: `.superpowers/sdd/phase-1/reports/task-1-review-round-2.md`.
 
 **Description:** Verify P1 car inputs against the current FIA regulations and published sources, record provenance, and extend the existing car-spec parsing path to provide plain numeric arrays to the kernel.
 
