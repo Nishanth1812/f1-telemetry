@@ -11,6 +11,13 @@ the longitudinal tyre force, both driven by the validated arrays in
 ``@njit(cache=True, fastmath=False)``, flat numeric arguments, no allocation, no clock - so
 there is one set of kernel rules to read, not two.
 
+:mod:`f1telemetry.physics.powertrain` holds P1-T4's: the synthesised ICE torque curve and the
+turbo-lag multiplier below about 4 000 rpm, read from the same ``KernelConfig`` and under the
+same conventions. It reuses :func:`~f1telemetry.physics.forces.speed_curve` for the interpolation
+rather than carrying a second interpolator, and it splits the two ways in the same way: compiled
+primitives that take bare numbers, and one Python entry point that validates what it reads
+before handing it over.
+
 **Sign conventions**, fixed here and matching
 :class:`~f1telemetry.testing.records.GroundTruthStep` so the invariants have something
 unambiguous to check (PLAN.md section 11, invariant 4):

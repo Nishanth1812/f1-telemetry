@@ -212,8 +212,16 @@ peak-torque rpm shaped into a table, with torque rising from 60 Nm at 2000 rpm t
 near 11 000 rpm; torque at the limiter is roughly 89 % of peak, matching the falling
 horsepower of a turbocharged engine past peak torque; the curve is monotonic below peak.
 
-**Turbo lag (`powertrain.ice.turbo_lag`) — synthesised.** Torque is multiplied by 0.35 below
-4000 rpm, recovering linearly above it. C5.12.2 constrains the *driver torque-demand map*
+**Turbo lag (`powertrain.ice.turbo_lag`) — synthesised.** The table is multiplied by **0.35
+strictly below 4000 rpm and by exactly 1.0 at 4000 rpm and above**, so the reduction is a step
+rather than a ramp. That is what the committed numbers describe: `car_spec.yaml` records only
+`collapse_below_rpm` and `multiplier_at_collapse` and no endpoint for a recovery, so there is no
+value in any file for a multiplier to recover *to*; `PLAN.md` section 6's "falls off sharply
+below ~4 000 rpm" and `PHASES.md` P1-T4's "collapsing below ~4 000 rpm" both ask for the
+collapse, and neither asks for the climb. The underlying curve is unaffected by that step: the
+eight knots are interpolated piecewise-linearly and held flat outside them (the rule Task 3 froze
+for `Cl(v)` and `Cd(v)`), so torque still rises smoothly with rpm within each segment and the
+only discontinuity is the multiplier's. C5.12.2 constrains the *driver torque-demand map*
 (gradient no flatter than -0.045 Nm/rpm above 4000 rpm) and C5.12.3 fixes a minimum-curve
 shape, but neither publishes a turbo characteristic. 4000 rpm was chosen because it is the rpm
 at which C5.12.2 starts applying and because it is a conventional F1 spool threshold.
