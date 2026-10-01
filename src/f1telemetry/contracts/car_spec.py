@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
@@ -173,7 +173,6 @@ class CarSpec:
     deployment_curve: DeploymentCurve | None = None
     overtake_curve: DeploymentCurve | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
-    kernel: KernelConfig | None = None
 
     @property
     def provenance(self) -> str:
@@ -209,15 +208,14 @@ class CarSpec:
         return self.wheel_rpm_at(gear, ice_rpm) * 2.0 * math.pi * self.rolling_radius_m / 60.0
 
     def kernel_config(self) -> KernelConfig:
-        """The validated flat arrays for the kernel.
+        """Flat, validated numeric arrays for the kernel.
 
-        Built and range-checked exactly once, by :func:`load_car_spec`, so there is a single
-        validation path over these numbers rather than one per accessor. This method only
-        hands the stored result back.
+        Builds on access from this spec's own fields, via :meth:`build_kernel_config`, so the
+        result can never disagree with the spec it was asked about. An earlier version cached
+        the config on the instance at load time, which desynchronised under
+        ``dataclasses.replace``: the typed field changed and the cached config did not.
         """
-        if self.kernel is None:
-            raise ContractError("car spec was not built with a kernel configuration")
-        return self.kernel
+        return self.build_kernel_config()
 
     def derived_points(self) -> dict[str, tuple[float, ...]]:
         """``dotted.path`` -> curve speeds that the cited clause does **not** state.
@@ -239,11 +237,15 @@ class CarSpec:
     def build_kernel_config(self) -> KernelConfig:
         """The one place every P1 kernel input is read and range-checked.
 
-        Values that :class:`CarSpec` already holds as typed, validated fields are read from
-        those fields, never re-parsed out of ``raw``; only the P1 inputs added beyond the P0
-        field set are parsed here. The checks are the ones a compiled kernel cannot make: a
-        division by a zero rolling radius, a slip denominator that vanishes, a speed grid
-        that would be indexed out of bounds.
+        Values that :class:`CarSpec` holds as typed fields are read from those fields, never
+        re-parsed out of ``raw``; only the P1 inputs beyond the P0 field set are parsed here.
+        Called by :meth:`kernel_config` on every access rather than cached, so the config is
+        always derived from the fields currently on the spec - a spec built by hand, or
+        modified with ``dataclasses.replace``, is validated exactly as a loaded one is.
+
+        The checks are the ones a compiled kernel cannot make: a division by a zero rolling
+        radius, a slip denominator that vanishes, a speed grid that would be indexed out of
+        bounds, and a power curve that exceeds a regulatory cap.
         """
         raw = self.raw
         constants = _section(raw, "constants")
@@ -309,6 +311,14 @@ class CarSpec:
         mgu_k_power = _positive(
             self.mgu_k_peak_power_kw, "car_spec: powertrain.mgu_k.peak_power_kw"
         )
+        # C5.2.7 caps absolute ERS-K power; C5.2.8's speed curves are the *propulsion* limit and
+        # sit above it at low speed. The file stores the effective limit (the smaller of the
+        # two), and this check keeps that true for any curve that reaches the builder - the
+        # curves in car_spec.yaml are already capped, but a clamp in a file is a claim about
+        # today's file, not a guarantee, and CarSpec is public so a curve can be replaced
+        # without ever going through the loader.
+        ers_limits = _capped(deployment, mgu_k_power, "deployment_curve_kw")
+        ers_overtake_limits = _capped(overtake, mgu_k_power, "overtake_curve_kw")
         store_energy = _positive(
             mgu_k.get("store_energy_mj"), "car_spec: powertrain.mgu_k.store_energy_mj"
         )
@@ -333,7 +343,7 @@ class CarSpec:
                 f"({shift_up})"
             )
 
-        rolling_radius = self.rolling_radius_m
+        rolling_radius = _positive(self.rolling_radius_m, "car_spec: tyres.rolling_radius_m")
         wheel_diameter = _positive(
             tyres.get("wheel_diameter_m"), "car_spec: tyres.wheel_diameter_m"
         )
@@ -389,9 +399,9 @@ class CarSpec:
                 mgu_k.get("torque_limit_nm"), "car_spec: powertrain.mgu_k.torque_limit_nm"
             ),
             ers_speed_km_h=np.array(deployment.speed_km_h, dtype=np.float64),
-            ers_limit_kw=np.array(deployment.limit_kw, dtype=np.float64),
+            ers_limit_kw=ers_limits,
             ers_overtake_speed_km_h=np.array(overtake.speed_km_h, dtype=np.float64),
-            ers_overtake_limit_kw=np.array(overtake.limit_kw, dtype=np.float64),
+            ers_overtake_limit_kw=ers_overtake_limits,
             store_energy_mj=store_energy,
             recharge_limit_mj_per_lap=_positive(
                 mgu_k.get("recharge_limit_mj_per_lap"),
@@ -451,6 +461,37 @@ def _positive_values(values: Sequence[float], where: str) -> None:
     for index, value in enumerate(values):
         if value <= 0.0:
             raise ContractError(f"{where}: expected values > 0, got {value!r} at index {index}")
+
+
+def _capped(curve: DeploymentCurve, cap_kw: float, name: str) -> np.ndarray:
+    """An ERS deployment curve's limits as a float64 array, refusing any point above the cap.
+
+    C5.2.8's formulas are the *propulsion* limit and permit far more than the car may deliver:
+    ``1800 - 5v`` allows 1800 kW at rest, ``7100 - 20v`` allows 7100 kW. C5.2.7 caps absolute
+    ERS-K electrical DC power at 350 kW whatever the speed, so the effective limit is the
+    smaller of the two clauses and the curve in ``car_spec.yaml`` must already be clamped.
+
+    This enforces that at the shared boundary rather than trusting the committed data. Data
+    being correct today is not a guarantee, and ``CarSpec`` is a public frozen dataclass a caller
+    can construct or ``dataclasses.replace`` directly, so a check confined to ``load_car_spec``
+    would be bypassable. Rejecting rather than clamping is deliberate: silently clamping would
+    hide a bad edit from whoever made it and leave the file's knots disagreeing with the array
+    the kernel actually reads.
+
+    The bound is inclusive, because the committed curve sits exactly on the cap at low speed.
+    """
+    limits = np.array(curve.limit_kw, dtype=np.float64)
+    over_cap = limits > cap_kw
+    if bool(np.any(over_cap)):
+        index = int(np.argmax(over_cap))
+        speed = curve.speed_km_h[index] if index < len(curve.speed_km_h) else float("nan")
+        raise ContractError(
+            f"car_spec: powertrain.mgu_k.{name}: limit_kw[{index}] is {limits[index]} kW at "
+            f"{speed} km/h, above the C5.2.7 absolute cap of {cap_kw} kW. C5.2.8's speed curve is "
+            "the propulsion limit only; the effective limit is the smaller of C5.2.8 and "
+            "C5.2.7, so the curve in car_spec.yaml must already be clamped."
+        )
+    return limits
 
 
 def _section(root: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -548,15 +589,10 @@ def load_car_spec(path: Path | None = None) -> CarSpec:
     if any(b[0] <= a[0] for a, b in pairwise(torque_curve)):
         raise ContractError("car_spec: ICE torque curve rpm must be strictly increasing")
 
-    rolling_radius = _number(tyres.get("rolling_radius_m"), "car_spec: tyres.rolling_radius_m")
-    if rolling_radius <= 0.0:
-        raise ContractError("car_spec: tyres.rolling_radius_m must be > 0")
-
-    # Range checks belong to one place. `CarSpec._build_kernel_config` is the single validation
-    # path over every P1 kernel input, so it runs here, at load, rather than being deferred to
-    # whichever accessor happens to touch a value. A bad edit therefore fails on load and the
-    # stored KernelConfig cannot disagree with the typed fields beside it.
-    loaded = CarSpec(
+    # Range checks live in `build_kernel_config`, which `kernel_config` calls on every access.
+    # Repeating them here would be the second validation path over the same numbers that
+    # round 1 removed, and it would still miss a hand-built or replaced spec.
+    return CarSpec(
         spec=spec,
         mass_kg=_number(mass.get("total_kg"), "car_spec: mass.total_kg"),
         gravity_m_s2=_number(constants.get("gravity_m_s2"), "car_spec: constants.gravity_m_s2"),
@@ -579,7 +615,7 @@ def load_car_spec(path: Path | None = None) -> CarSpec:
         rev_limit_rpm=_number(ice.get("rev_limit_rpm"), "car_spec: powertrain.ice.rev_limit_rpm"),
         gear_ratios=ratios,
         final_drive=_number(gearbox.get("final_drive"), "car_spec: gearbox.final_drive"),
-        rolling_radius_m=rolling_radius,
+        rolling_radius_m=_number(tyres.get("rolling_radius_m"), "car_spec: tyres.rolling_radius_m"),
         dt_s=_number(integration.get("dt_s"), "car_spec: integration.dt_s"),
         torque_curve=tuple(torque_curve),
         cl_curve=_curve(aero.get("cl_curve"), "car_spec: aero.cl_curve", "cl"),
@@ -594,7 +630,6 @@ def load_car_spec(path: Path | None = None) -> CarSpec:
         ),
         raw=root,
     )
-    return replace(loaded, kernel=loaded.build_kernel_config())
 
 
 def _is_value_node(node: Any) -> bool:
@@ -674,6 +709,11 @@ def _audit_derived(entry: Mapping[str, Any], where: str, value: Any) -> list[str
     ``derived_points`` is how a claim stays honest when a cited curve needs a breakpoint the
     clause does not state. It only works if it is checked, so a point naming a speed the curve
     does not have is an audit failure rather than dead metadata.
+
+    Everything here is a *finding*. The audit's job is to report what is wrong with a file, so
+    a malformed entry - a string where a speed belongs, a missing ``basis`` - must be reported
+    rather than raised: raising takes the audit down and tells the reader nothing about the
+    other 22 citations. That is why this does not use the ``_number`` helper, which raises.
     """
     points = entry.get("derived_points")
     if points is None:
@@ -682,17 +722,16 @@ def _audit_derived(entry: Mapping[str, Any], where: str, value: Any) -> list[str
     name = where.rsplit(".", 1)[-1]
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return [f"{where}.derived_points: only a curve can declare derived points"]
-    speeds = [
-        _number(point["speed_km_h"], f"{where} curve")
-        for point in value
-        if isinstance(point, Mapping) and "speed_km_h" in point
-    ]
+    speeds = _curve_speeds(value)
     for index, point in enumerate(points):
         point_where = f"{where}.derived_points[{index}]"
-        if not isinstance(point, Mapping) or "speed_km_h" not in point:
+        if not _has_speed(point):
             findings.append(f"{point_where}: expected a mapping with speed_km_h")
             continue
-        speed = _number(point["speed_km_h"], f"{point_where}.speed_km_h")
+        speed, complaint = _speed(point, point_where)
+        if speed is None:
+            findings.append(complaint or f"{point_where}.speed_km_h: expected a number")
+            continue
         point_where = f"{where}.derived_points[{speed}]"
         if speed not in speeds:
             findings.append(
@@ -705,6 +744,37 @@ def _audit_derived(entry: Mapping[str, Any], where: str, value: Any) -> list[str
                 "in the clause"
             )
     return findings
+
+
+def _has_speed(point: Any) -> bool:
+    return isinstance(point, Mapping) and "speed_km_h" in point
+
+
+def _curve_speeds(points: Sequence[Any]) -> list[float]:
+    """The usable speeds of a curve, skipping any entry that does not have one."""
+    found: list[float] = []
+    for point in points:
+        if not _has_speed(point):
+            continue
+        speed = _speed(point, "curve")[0]
+        if speed is not None:
+            found.append(speed)
+    return found
+
+
+def _speed(point: Mapping[str, Any], where: str) -> tuple[float | None, str | None]:
+    """The point's speed and, when it is malformed, the finding describing why.
+
+    ``(None, message)`` for anything :func:`_number` would have raised on, so the audit reports
+    the bad entry and carries on to the next one instead of stopping.
+    """
+    node = point["speed_km_h"]
+    if isinstance(node, bool) or not isinstance(node, (int, float)):
+        return None, f"{where}.speed_km_h: expected a number, got {node!r}"
+    value = float(node)
+    if not math.isfinite(value):
+        return None, f"{where}.speed_km_h: expected a finite number, got {node!r}"
+    return value, None
 
 
 def _citation(entry: Any, where: str) -> tuple[str, int]:

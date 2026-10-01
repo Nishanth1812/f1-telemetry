@@ -119,5 +119,3 @@
 - [ ] All `PHASES.md` P1 exit-gate items pass or have a written evidence-based explanation.
 - [ ] `just check` passes.
 - [ ] Calibration inputs, target sources, and optional solver comparison are recorded for review.
-
-

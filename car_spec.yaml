@@ -230,12 +230,13 @@ powertrain:
     launch_speed_kmh: 50.0
     overtake_mode_extra_kw: 150.0
     deployment_curve_kw:
-      - { speed_km_h: 0.0, limit_kw: 1800.0 }
+      - { speed_km_h: 0.0, limit_kw: 350.0 }
       - { speed_km_h: 290.0, limit_kw: 350.0 }
       - { speed_km_h: 340.0, limit_kw: 100.0 }
       - { speed_km_h: 345.0, limit_kw: 0.0 }
     overtake_curve_kw:
-      - { speed_km_h: 0.0, limit_kw: 7100.0 }
+      - { speed_km_h: 0.0, limit_kw: 350.0 }
+      - { speed_km_h: 337.5, limit_kw: 350.0 }
       - { speed_km_h: 355.0, limit_kw: 0.0 }
     provenance: mixed
     source_date: 2026-10-01
@@ -248,24 +249,39 @@ powertrain:
         clause: C5.2.8
         page: 64
         quote: >-
-          When Overtake is not active: P(kW) = 1800 - 5 * car speed (kph) when the car speed
-          is below 340kph; P(kW) = 6900 - 20 * car speed (kph) when the car speed is equal to
+          When Overtake is not active: P(kW) = 1800 – 5 * car speed (kph) when the car speed
+          is below 340kph; P(kW) = 6900 – 20 * car speed (kph) when the car speed is equal to
           or above 340kph and below 345kph; P(kW) = 0 when the car speed is equal to or above
           345kph.
+        effective_limit: >-
+          min(C5.2.8, C5.2.7). The curve above is the effective limit: 350kW, not the 1800kW
+          the first segment of C5.2.8 would allow at rest, because C5.2.7 caps absolute ERS-K
+          electrical DC power at 350kW and the effective limit is the smaller of the two
+          clauses. 1800 - 5v reaches 350 at 290 km/h; 6900 - 20v is already below the cap from
+          340 km/h on, so the clamp is only visible on the first segment.
         derived_points:
           - speed_km_h: 290.0
             basis: >-
-              Not a breakpoint in C5.2.8. The clause gives two linear segments meeting at
-              340 km/h, but 1800 - 5v reaches the 350kW absolute ERS-K cap of C5.2.7 at
-              290 km/h, so the sampled curve has to turn there or the first segment would
-              report more than the cap allows. The limit value is C5.2.7's; only the speed is
-              derived.
+              Not a breakpoint in C5.2.8, and not a limit either. Both the 350kW knot and this
+              speed are derived: the limit is C5.2.7's 350kW absolute cap, and 290 km/h is
+              where the C5.2.8 first segment 1800 - 5v falls to that cap. Below 290 km/h the
+              clause's formula would permit up to 1800kW, so the effective limit is the cap
+              throughout.
       overtake_curve_kw:
         clause: C5.2.8
         page: 64
         quote: >-
-          When Overtake is active up to: P(kW) = 7100 - 20 * car speed (kph) when the car speed
+          When Overtake is active up to: P(kW) = 7100 – 20 * car speed (kph) when the car speed
           is below 355kph; P(kW) = 0 when the car speed is equal to or above 355kph.
+        effective_limit: >-
+          min(C5.2.8, C5.2.7), for the same reason as deployment_curve_kw. 7100 - 20v falls to
+          350kW at 337.5 km/h, so the cap binds below that.
+        derived_points:
+          - speed_km_h: 337.5
+            basis: >-
+              Not a breakpoint in C5.2.8. The limit is C5.2.7's 350kW absolute cap and 337.5
+              km/h is where 7100 - 20v reaches it. Below that speed the clause's formula would
+              permit up to 7100kW, which the absolute cap does not allow.
       store_energy_mj:
         clause: C5.2.9
         page: 64
@@ -275,7 +291,13 @@ powertrain:
       recharge_limit_mj_per_lap:
         clause: C5.2.10
         page: 64
-        quote: Recharge, as measured at the CU-K HV DC Bus, must not exceed a limit of 8.5MJ
+        quote: >-
+          Recharge, as measured at the CU-K HV DC Bus, must not exceed a limit of 8.5MJ in each
+          lap, subject to the following additional conditions:
+        quote_note: >-
+          Quoted with its trailing comma, as printed. Sub-item ii of the same article reads
+          "no less than 5 4MJ", a typographical error in the source document for 4MJ; the
+          typo is the FIA's and is not corrected here.
       torque_limit_nm:
         clause: C5.2.11
         page: 65
@@ -343,24 +365,41 @@ tyres:
     front_width_mm:
       clause: C10.7.2
       page: 111
-      quote: Tyre Mounting Width 315 +/- 0.5 (front wheel)
+      quote: Tyre Mounting Width 315 ± 0.5 401.3 ± 0.5
+      quote_note: >-
+        C10.7.2 states this as one table row under the column headings "Front Wheel" and
+        "Rear Wheel"; 315 is the front value and 401.3 the rear. Only the row is quoted - the
+        column headings are not part of the quoted line.
     rear_width_mm:
       clause: C10.7.2
       page: 111
-      quote: Tyre Mounting Width 401.3 +/- 0.5 (rear wheel)
+      quote: Tyre Mounting Width 315 ± 0.5 401.3 ± 0.5
+      quote_note: >-
+        The same table row as front_width_mm, read from the "Rear Wheel" column. C10.7.2 does
+        not print the value separately from the front.
     rim_diameter_mm:
       clause: C10.7.2
       page: 111
-      quote: Rim Diameter 462.5 / 463 (front and rear wheel)
+      quote: Rim Diameter 462.5 / 463 462.5 / 463
+      quote_note: >-
+        One row, with "462.5 / 463" under each of the Front Wheel and Rear Wheel columns; the
+        slash is the source document's tolerance notation, not a range this project resolves.
+        Recorded as the lower figure 462.5.
+  inference:
+    rim_is_18_inch: >-
+      An inference, not an FIA statement. C10.7.2 gives the rim diameter in millimetres and
+      never says "18 inch". 462.5 mm is consistent with an 18 inch rim (457.2 mm nominal plus a
+      flange allowance), and PLAN.md section 5 independently states that 18 inch wheels are
+      retained. Neither is the regulation's claim, so no field here asserts it.
   not_regulated:
     rolling_radius_m: >-
       PLAN.md section 4 gives 1.02-1.05 x loaded radius for F1; 0.36 m is the loaded-radius
       midpoint and is the input that couples gear ratios to road speed. No regulation fixes a
       rolling radius, and C10.7.2 fixes the rim diameter rather than the loaded tyre radius.
     wheel_diameter_m: >-
-      Overall tyre diameter, not a regulation value. The 18 inch rim of C10.7.2 (462.5mm rim
-      diameter) is cited above; the carcass height that turns that into a 0.72m rolling
-      diameter is a tyre-supplier choice.
+      Overall tyre diameter, not a regulation value. The rim diameter of C10.7.2 is cited
+      above; the carcass height that turns a 462.5mm rim into a 0.72m rolling diameter is a
+      tyre-supplier choice.
   note: >-
     `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
     replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
@@ -392,30 +431,47 @@ chassis:
       clause: C4.2
       page: 59
       quote: >-
-        the mass measured at the front axle must not be less than the Minimum Mass specified
-        in Article C4.1 factored by 0.44.
+        At all times during the Qualifying and Sprint Qualifying Sessions, with the car resting
+        on a horizontal plane: i. the mass measured at the front axle must not be less than the
+        Minimum Mass specified in Article C4.1 factored by 0.44.
+      quote_note: >-
+        The Qualifying-only scope is part of the clause and part of the quote, because it is
+        what makes C4.2 inapplicable to most P1 scenarios.
     minimum_rear_axle_fraction:
       clause: C4.2
       page: 59
       quote: >-
-        the mass measured at the rear axle must not be less than the Minimum Mass specified
-        in Article C4.1 factored by 0.54.
+        the mass measured at the rear axle must not be less than the Minimum Mass specified in
+        Article C4.1 factored by 0.54.
   c42_enforcement:
     status: not_enforced
-    reason: >-
-      C4.2 constrains the mass at each axle as a fraction of the C4.1 Minimum Mass, and the
-      C4.1 Minimum Mass is 724kg *plus* the Nominal Tyre Mass. The two fractions therefore
-      share a denominator this project cannot compute: the Nominal Tyre Mass is published by
-      the tyre supplier after the final tyre-testing camp (C4.7), so it is not in the
-      regulations and is not known here.
+    scope: >-
+      C4.2 applies "At all times during the Qualifying and Sprint Qualifying Sessions", not
+      during a Race or Sprint Session. It constrains the mass at each axle as a fraction of the
+      C4.1 Minimum Mass, and the C4.1 Minimum Mass is 724kg *plus* the Nominal Tyre Mass, so the
+      denominator is not mass.total_kg and not any single number in this file.
+    missing_input:
+      name: nominal_tyre_mass_kg
+      source: >-
+        C4.7 (page 60): the masses of new, production, dry-weather tyres are measured by the
+        tyre provider and published after the final day of TCC opportunity prior to the start of
+        the Championship, as the mean of a sample of 50 tyres per axle.
+      availability: >-
+        Unknown to this project, but obtainable - it is a published figure, not a regulation
+        secret. It is absent here only because the project has not looked it up. Any task that
+        needs to enforce C4.2 should obtain it and add it to mass as a cited value rather than
+        treating the limit as unenforceable.
     blocked_by:
-      - mass.minimum_mass_kg does not include a Nominal Tyre Mass, because it is not known
+      - mass.nominal_tyre_mass_kg is absent, so the C4.1 denominator is incomplete
       - mass.total_kg is a running mass above the floor, not the regulatory denominator
+      - C4.2 is a Qualifying-only check and P1 scenarios are straight-line runs, so it would
+        not apply to most of them even with the tyre mass known
     enforced_instead: >-
       The loader checks only that front_weight_fraction is a finite value strictly between 0
       and 1, which needs no missing input. Comparing 0.46 against 0.44 as if both were
       fractions of the same mass would enforce a rule that does not exist, so it is not done.
-    becomes_checkable_at: P2-T2, which owns the static axial split
+    becomes_checkable_at: >-
+      P2-T2, which owns the static axial split - once mass.nominal_tyre_mass_kg is obtained
   not_regulated:
     front_weight_fraction: >-
       PLAN.md section 5 placeholder: a synthesised static split, with no clause behind it.

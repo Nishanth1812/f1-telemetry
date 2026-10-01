@@ -24,7 +24,7 @@ recording. Against P0 every test below fails on behaviour - no ``citations()``, 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -129,18 +129,115 @@ def test_every_regulated_value_cites_the_clause_it_was_read_from(spec: CarSpec) 
 def test_a_curve_claim_declares_its_derived_breakpoints(spec: CarSpec) -> None:
     """A breakpoint the clause does not state must be machine-visible, not buried in prose.
 
-    C5.2.8 states the deployment limit as two linear segments meeting at 340 km/h. The
-    290 km/h point in the curve is not in the clause: it is where ``1800 - 5v`` reaches the
-    350 kW absolute ERS-K cap of C5.2.7, so the piecewise curve has to turn there. The whole
-    curve is cited to C5.2.8, which would read as four regulated points unless the derived one
-    is declared in the claim itself.
+    C5.2.8 states the deployment limit as two linear segments meeting at 340 km/h, and C5.2.7
+    separately caps absolute ERS-K power at 350 kW. Below 290 km/h the first segment's
+    ``1800 - 5v`` would allow up to 1800 kW, so the effective limit is the smaller of the two
+    clauses and the curve has to turn where they cross. That crossing speed is derived, and
+    declaring it keeps the curve from reading as four regulated points.
     """
-    assert spec.derived_points() == {"powertrain.mgu_k.deployment_curve_kw": (290.0,)}
+    assert spec.derived_points() == {
+        "powertrain.mgu_k.deployment_curve_kw": (290.0,),
+        "powertrain.mgu_k.overtake_curve_kw": (337.5,),
+    }
 
     claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))
     assert claim["clause"] == "C5.2.8"
     entry = next(p for p in claim["derived_points"] if p["speed_km_h"] == 290.0)
     assert "C5.2.7" in entry["basis"]
+
+
+def test_the_ers_curves_never_exceed_the_absolute_cap(spec: CarSpec) -> None:
+    """C5.2.7 caps absolute ERS-K power at 350 kW, and C5.2.8 sits under it at low speed.
+
+    Taken alone, ``1800 - 5v`` permits 1800 kW at rest and ``7100 - 20v`` permits 7100 kW.
+    Both formulas are only ever the *propulsion* limit; the absolute cap still applies, so the
+    effective limit is the smaller of the two. A kernel reading the raw curve would be handed
+    five times the power the regulation allows.
+    """
+    config = spec.kernel_config()
+    cap = spec.mgu_k_peak_power_kw
+    assert cap == 350.0
+
+    for speeds, limits, label in (
+        (config.ers_speed_km_h, config.ers_limit_kw, "deployment"),
+        (config.ers_overtake_speed_km_h, config.ers_overtake_limit_kw, "overtake"),
+    ):
+        assert float(np.max(limits)) == pytest.approx(cap), label
+        assert float(limits[0]) == pytest.approx(cap), label
+        # Interpolating anywhere on the curve must stay under the cap, not just at the knots.
+        for speed in np.linspace(0.0, float(speeds[-1]), 201):
+            assert _interpolate(speeds, limits, float(speed)) <= cap + 1e-9, (label, speed)
+        assert float(limits[-1]) == 0.0, label
+
+
+def test_the_ers_curve_knots_are_where_c52_8_and_c52_7_cross(spec: CarSpec) -> None:
+    """The crossover speeds are arithmetic, not fitted, so they are pinned exactly."""
+    config = spec.kernel_config()
+    # 1800 - 5v = 350 -> v = 290 km/h.  7100 - 20v = 350 -> v = 337.5 km/h.
+    assert list(config.ers_speed_km_h) == [0.0, 290.0, 340.0, 345.0]
+    assert list(config.ers_limit_kw) == [350.0, 350.0, 100.0, 0.0]
+    assert list(config.ers_overtake_speed_km_h) == [0.0, 337.5, 355.0]
+    assert list(config.ers_overtake_limit_kw) == [350.0, 350.0, 0.0]
+    # The clauses' own formulas must reproduce the knots they are stated to give, and the cap
+    # must be what binds below each crossover. C5.2.8's first segment agrees with the second at
+    # 340 km/h, which is why the sampled curve needs no knot there for the clause's own sake.
+    assert _close(6900.0 - 20.0 * 340.0, 100.0)  # the 100 kW knot
+    assert _close(1800.0 - 5.0 * 340.0, 100.0)  # same point from the first segment
+    assert _close(6900.0 - 20.0 * 345.0, 0.0)  # zero from 345 km/h
+    assert _close(7100.0 - 20.0 * 355.0, 0.0)  # Overtake zero from 355 km/h
+    # Where each clause's formula falls to the C5.2.7 cap - the derived crossover speeds.
+    assert _close(1800.0 - 5.0 * 290.0, 350.0)
+    assert _close(7100.0 - 20.0 * 337.5, 350.0)
+
+
+@pytest.mark.parametrize("curve", ["deployment_curve_kw", "overtake_curve_kw"])
+def test_an_ers_curve_point_above_the_absolute_cap_is_rejected(
+    tmp_path: Path, repo: Path, curve: str
+) -> None:
+    """The cap is enforced at the boundary, not merely correct in today's committed file.
+
+    Both curves in ``car_spec.yaml`` sit at or below 350 kW, but that is a property of the data,
+    not a guarantee. A later edit that restores a raw C5.2.8 value - 1800 kW at rest from
+    ``1800 - 5v``, 7100 kW from ``7100 - 20v`` - would otherwise reach the kernel unchecked.
+    351 kW is one kW over the cap, so this tests the boundary rather than a tolerance.
+    """
+    root = _root(repo)
+    _at(root, ("powertrain", "mgu_k", curve))[0]["limit_kw"] = 351.0
+    with pytest.raises(ContractError, match=rf"{curve}.*C5\.2\.7 absolute cap"):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_the_cap_check_covers_a_hand_built_and_a_replaced_curve(spec: CarSpec) -> None:
+    """The check must reach curves that never went through the YAML file.
+
+    ``CarSpec`` is a public frozen dataclass and ``dataclasses.replace`` is the obvious way to
+    try a variant, so a cap check confined to ``load_car_spec`` would be trivially bypassable.
+    Also pins that the bound is inclusive, because the committed curve sits exactly on it and a
+    strict bound would fail the project's own data.
+    """
+    over_cap = car_spec_module.DeploymentCurve(
+        speed_km_h=(0.0, 290.0, 340.0, 345.0),
+        limit_kw=(1800.0, 350.0, 100.0, 0.0),
+    )
+    with pytest.raises(ContractError, match=r"deployment_curve_kw.*C5\.2\.7 absolute cap"):
+        replace(spec, deployment_curve=over_cap).kernel_config()
+
+    at_cap = car_spec_module.DeploymentCurve(speed_km_h=(0.0, 100.0), limit_kw=(350.0, 0.0))
+    config = replace(spec, deployment_curve=at_cap).kernel_config()
+    assert list(config.ers_limit_kw) == [350.0, 0.0]
+
+
+def _close(actual: float, expected: float) -> bool:
+    return abs(actual - expected) < 1e-9
+
+
+def _interpolate(speeds: np.ndarray, limits: np.ndarray, speed: float) -> float:
+    """Piecewise-linear evaluation, matching what a kernel will do with these arrays."""
+    index = int(np.searchsorted(speeds, speed, side="right")) - 1
+    index = min(max(index, 0), speeds.size - 2)
+    span = float(speeds[index + 1] - speeds[index])
+    weight = 0.0 if span == 0.0 else (speed - float(speeds[index])) / span
+    return float(limits[index]) * (1.0 - weight) + float(limits[index + 1]) * weight
 
 
 def test_a_derived_point_that_is_not_in_the_curve_is_an_audit_failure(
@@ -157,6 +254,27 @@ def test_a_derived_point_that_is_not_in_the_curve_is_an_audit_failure(
     ]
 
 
+def test_a_malformed_derived_point_speed_is_an_audit_finding_not_an_exception(
+    tmp_path: Path, repo: Path
+) -> None:
+    """The audit reports; it does not raise. A finding and a crash are different failures.
+
+    Every other malformed claim shape - a missing clause, a citation naming something that is
+    not a value - is already reported as a finding. A derived point with a string where a speed
+    belongs is the same class of mistake and must behave the same way, or a typo in the file
+    takes out the audit instead of telling anyone about it.
+    """
+    root = _root(repo)
+    _at(root, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))["derived_points"] = [
+        {"speed_km_h": "290", "basis": "the crossing"}
+    ]
+    findings = provenance_audit(load_car_spec(_write(root, tmp_path)).raw)
+    assert findings == [
+        "powertrain.mgu_k.regulation.deployment_curve_kw.derived_points[0].speed_km_h: expected "
+        "a number, got '290'"
+    ]
+
+
 def test_a_derived_point_without_a_basis_is_an_audit_failure(tmp_path: Path, repo: Path) -> None:
     root = _root(repo)
     _at(root, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))["derived_points"] = [
@@ -170,8 +288,18 @@ def test_a_derived_point_without_a_basis_is_an_audit_failure(tmp_path: Path, rep
 
 
 def test_the_overspecified_derived_point_is_the_only_one(spec: CarSpec) -> None:
-    """The Overtake curve is two points and both are stated by C5.2.8.ii verbatim."""
-    assert spec.derived_points().get("powertrain.mgu_k.overtake_curve_kw") is None
+    """Both ERS curves have exactly one derived knot, the C5.2.7 crossover. Nothing else.
+
+    Every other knot - 340, 345 and 355 km/h, and the 100 kW and 0 kW limits - is stated by
+    C5.2.8 verbatim, so declaring more would over-report the synthesis.
+    """
+    derived = spec.derived_points()
+    assert derived == {
+        "powertrain.mgu_k.deployment_curve_kw": (290.0,),
+        "powertrain.mgu_k.overtake_curve_kw": (337.5,),
+    }
+    for speeds in derived.values():
+        assert speeds in ((290.0,), (337.5,))
 
 
 def test_the_cited_clauses_still_say_what_the_values_claim(spec: CarSpec) -> None:
@@ -208,12 +336,14 @@ def test_the_cited_clauses_still_say_what_the_values_claim(spec: CarSpec) -> Non
     assert mgu_k["recharge_limit_mj_per_lap"] == 8.5
     assert mgu_k["torque_limit_nm"] == 500.0
     assert mgu_k["launch_speed_kmh"] == 50.0
-    # C5.2.8.i: P(kW) = 1800 - 5v below 340kph, 6900 - 20v to 345kph, zero from 345kph.
+    # C5.2.8.i: P(kW) = 1800 - 5v below 340kph, 6900 - 20v to 345kph, zero from 345kph,
+    # all as the *propulsion* limit - C5.2.7's 350kW absolute cap binds below 290kph.
     normal = {float(p["speed_km_h"]): float(p["limit_kw"]) for p in mgu_k["deployment_curve_kw"]}
-    assert normal == {0.0: 1800.0, 290.0: 350.0, 340.0: 100.0, 345.0: 0.0}
-    # C5.2.8.ii: Overtake, P(kW) = 7100 - 20v below 355kph, zero from 355kph.
+    assert normal == {0.0: 350.0, 290.0: 350.0, 340.0: 100.0, 345.0: 0.0}
+    # C5.2.8.ii: Overtake, P(kW) = 7100 - 20v below 355kph, zero from 355kph; the cap binds
+    # below 337.5kph.
     overtake = {float(p["speed_km_h"]): float(p["limit_kw"]) for p in mgu_k["overtake_curve_kw"]}
-    assert overtake == {0.0: 7100.0, 355.0: 0.0}
+    assert overtake == {0.0: 350.0, 337.5: 350.0, 355.0: 0.0}
     # C10.7.2: tyre mounting width 315mm front and 401.3mm rear on a 462.5mm rim.
     assert tyres["rim_diameter_mm"] == 462.5
     assert tyres["front_width_mm"] == 315.0
@@ -360,12 +490,22 @@ def test_the_c42_floor_is_not_enforced_against_total_mass(spec: CarSpec) -> None
     assert chassis["minimum_front_axle_fraction"] == 0.44
     assert chassis["minimum_rear_axle_fraction"] == 0.54
     assert chassis["regulation"]["minimum_front_axle_fraction"]["clause"] == "C4.2"
-    # And the missing input that blocks enforcement is named in the file, not glossed over.
+    # C4.2 is a Qualifying-only check, which is most of why P1 scenarios cannot be judged by it.
+    assert (
+        "Qualifying and Sprint Qualifying"
+        in chassis["regulation"]["minimum_front_axle_fraction"]["quote"]
+    )
+    # And the missing input that blocks enforcement is named in the file, not glossed over -
+    # as an obtainable published figure, not as something fundamentally unavailable.
     enforcement = chassis["c42_enforcement"]
-    assert "Nominal Tyre Mass" in enforcement["reason"]
     assert enforcement["status"] == "not_enforced"
+    assert "Nominal Tyre Mass" in enforcement["scope"]
+    missing = enforcement["missing_input"]
+    assert missing["name"] == "nominal_tyre_mass_kg"
+    assert "C4.7" in missing["source"]
+    assert "obtainable" in missing["availability"]
     assert enforcement["becomes_checkable_at"].startswith("P2-T2")
-    assert any("minimum_mass_kg" in item for item in enforcement["blocked_by"])
+    assert any("nominal_tyre_mass_kg" in item for item in enforcement["blocked_by"])
 
 
 def test_kernel_config_hands_over_plain_float64_arrays(spec: CarSpec) -> None:
@@ -491,6 +631,40 @@ def test_two_builds_from_one_spec_agree(spec: CarSpec) -> None:
             assert np.array_equal(value, other), field.name
         else:
             assert value == other, field.name
+
+
+def test_a_replaced_spec_rebuilds_its_kernel_config(spec: CarSpec) -> None:
+    """`dataclasses.replace` must not leave a stale configuration behind.
+
+    A cached `KernelConfig` built at load time survives `replace`, so a replaced spec reports
+    the *old* mass while carrying a new one - the typed field and the config disagree, and
+    nothing notices. Building on access means the config is always derived from the fields it
+    is asked about.
+    """
+    replaced = replace(spec, mass_kg=900.0)
+    assert replaced.kernel_config().mass_kg == 900.0
+    assert spec.kernel_config().mass_kg == 800.0
+
+
+def test_a_replaced_spec_still_gets_its_values_validated(spec: CarSpec) -> None:
+    """Validation must not depend on how the spec was constructed.
+
+    `CarSpec` is a public frozen dataclass and `replace` is the obvious way to build a variant
+    - a scenario setting a different mass, say. If validation only ran inside `load_car_spec`,
+    a replaced spec would hand an unchecked value straight to the kernel.
+    """
+    with pytest.raises(ContractError, match="rolling_radius_m"):
+        replace(spec, rolling_radius_m=0.0).kernel_config()
+    with pytest.raises(ContractError, match="power_split_ice"):
+        replace(spec, power_split_ice=1.5).kernel_config()
+    with pytest.raises(ContractError, match="front_weight_fraction"):
+        replace(
+            spec,
+            raw={
+                **spec.raw,
+                "chassis": {**_at(spec.raw, ("chassis",)), "front_weight_fraction": 1.5},
+            },
+        ).kernel_config()
 
 
 def test_the_audit_rejects_a_spec_claiming_to_be_calibrated(tmp_path: Path, repo: Path) -> None:
