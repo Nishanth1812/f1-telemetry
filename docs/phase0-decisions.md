@@ -107,14 +107,12 @@ platform-specific bug appears, the matrix is a five-line addition to
 
 ## 5. No analytics tests yet
 
-The `analytics` marker is registered in `pyproject.toml` and the CI stage runs
-`pytest -m analytics` today, collecting zero tests and passing. `PLAN.md` §12 requires that
-stage, and `PLAN.md` §9.1's detection table is a P7 deliverable. Registering the marker
-now means the stage exists and is visibly empty rather than absent, which is the
-difference between "not built yet" and "silently broken".
+The `analytics` marker is registered in `pyproject.toml`, but CI does not run it yet and
+there are no analytics tests in Phase 0. `PLAN.md` §12 requires that stage, and
+`PLAN.md` §9.1's detection table is a P7 deliverable.
 
-The same applies to the web build stage: it is present in the workflow and exits 0 with a
-message, and becomes a real build when P0-T9 lands.
+The web stage is already a real build: CI installs the locked dependencies with `npm ci`
+and runs `npm run build --prefix web`.
 
 ## 6. Provisional `car_spec` provenance
 
