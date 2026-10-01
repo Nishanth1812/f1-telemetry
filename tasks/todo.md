@@ -71,6 +71,8 @@
 
 **Description:** Connect the synthesized ICE torque curve and MGU-K drive to the wheels through the specified drivetrain, including eight-speed shifts and clutch state.
 
+**Progress:** P1-T4 ICE torque curve is implemented and committed (`5ce583f`). Task 4 remains in progress; gearbox, clutch, MGU-K drive and wheel rotation are next.
+
 **Acceptance criteria:**
 - [ ] Gear ratios and limits come from `car_spec.yaml`; gearbox progression and positive-throttle reverse behavior satisfy invariant 7.
 - [ ] Launch, trailing throttle, boost-cut/upshift, and low-speed cases exercise clutch and wheel-speed state.

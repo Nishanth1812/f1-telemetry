@@ -457,6 +457,24 @@ guard when only the denominator is guarded, so the correct value is `(omega r - 
    to measure it with — so it is a flag for Task 5's calibration, not a finding. Expect `Cd` or
    the power split to move.
 
+## Task 4 partial milestone: P1-T4 ICE torque curve
+
+Commit `5ce583f` adds the configured, piecewise-linear ICE torque lookup and the turbo-lag
+multiplier. `step_ice_torque` validates replaceable `KernelConfig` scalars and arrays before
+calling Numba; the compiled primitives remain flat and unvalidated for the kernel path. The
+boundary review caught malformed curves reaching a `boundscheck=False` lookup and negative
+full-load torque, with regressions for malformed arrays, scalar normalization, negative torque,
+and the lag threshold.
+
+**Ruling:** Keep the lag as a hard step: 0.35 strictly below 4,000 rpm and 1.0 at and above. The
+configured data has no recovery endpoint and P1-T4 asks for a multiplier collapsing below that
+threshold; a smooth recovery would require a new calibration input. If a recovery ramp is later
+required, add its endpoint to `car_spec.yaml` and the contract before changing the model.
+
+The calibration guide and physics package description now match that behavior. Final verification:
+`pytest -q` (213 passed), Ruff check/format, basedpyright (0 errors/warnings/notes), and
+`f1-check-contract` pass. Task 4 remains open for P1-T5 through P1-T7.
+
 ## Task 3 review follow-up
 
 Space Bunny Alpha's review found that replaceable `KernelConfig` arrays and scalars could create
