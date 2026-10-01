@@ -96,6 +96,7 @@ markers = [
   "golden: golden-trace regression comparison (reports, does not auto-fail)",
   "analytics: PLAN.md section 9 detection tables; no tests collected until P7",
   "codegen: contract/code-generation drift checks",
+  "contract: channels.yaml / car_spec.yaml schema, validation and provenance",
   "toolchain: environment and dependency toolchain probes",
 ]
 filterwarnings = ["error"]

@@ -2,12 +2,14 @@
 
 ## Task 1: Confirm P1 inputs and kernel configuration
 
+**Status:** Done. Report: `.superpowers/sdd/phase-1/reports/task-1.md`.
+
 **Description:** Verify P1 car inputs against the current FIA regulations and published sources, record provenance, and extend the existing car-spec parsing path to provide plain numeric arrays to the kernel.
 
 **Acceptance criteria:**
-- [ ] Each regulated P1 value records the FIA issue and clause/page; synthesized values are labeled as such.
-- [ ] Editing a P1 value in `car_spec.yaml` changes simulation configuration without a code edit.
-- [ ] Invalid or missing P1 configuration fails at the Python boundary before entering Numba.
+- [x] Each regulated P1 value records the FIA issue and clause/page; synthesized values are labeled as such.
+- [x] Editing a P1 value in `car_spec.yaml` changes simulation configuration without a code edit.
+- [x] Invalid or missing P1 configuration fails at the Python boundary before entering Numba.
 
 **Verification:** Focused car-spec tests; `uv run --frozen f1-check-contract`.
 
@@ -117,3 +119,4 @@
 - [ ] All `PHASES.md` P1 exit-gate items pass or have a written evidence-based explanation.
 - [ ] `just check` passes.
 - [ ] Calibration inputs, target sources, and optional solver comparison are recorded for review.
+

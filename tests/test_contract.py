@@ -302,6 +302,7 @@ def test_check_gate_reports_a_stale_artifact(tmp_path: Path) -> None:
 
 
 def test_car_spec_provenance_is_complete(spec: CarSpec) -> None:
+    """The P0 standing rule still holds; P1-T1's clause-level rules live in test_car_spec."""
     findings = provenance_audit(spec.raw)
     assert findings == [], f"car_spec.yaml provenance gaps: {findings}"
     assert spec.provenance == "provisional"
@@ -309,6 +310,7 @@ def test_car_spec_provenance_is_complete(spec: CarSpec) -> None:
     assert spec.spec["calibration_status"] == "uncalibrated"
     assert spec.spec["issue"] == 20
     assert str(spec.spec["issue_date"]) == "2026-08-05"
+    assert spec.spec["document_url"].endswith("iss_20_-_2026-08-05.pdf")
 
 
 def test_provenance_audit_catches_a_nested_section_without_a_source_date(
@@ -317,14 +319,14 @@ def test_provenance_audit_catches_a_nested_section_without_a_source_date(
     """`powertrain.ice` carries its own provenance line, so it owes its own source_date.
 
     The audit used to read only the top-level sections, so a nested block could claim
-    `provenance: synthesised` with nothing dating it and pass.
+    `provenance: mixed` with nothing dating it and pass.
     """
     root = yaml.safe_load((repo / "car_spec.yaml").read_text(encoding="utf-8"))
     del root["powertrain"]["ice"]["source_date"]
     path = tmp_path / "car_spec.yaml"
     path.write_text(yaml.safe_dump(root, sort_keys=False), encoding="utf-8")
     findings = provenance_audit(load_car_spec(path).raw)
-    assert findings == ["powertrain.ice: provenance 'synthesised' requires a source_date"]
+    assert findings == ["powertrain.ice: provenance 'mixed' requires a source_date"]
 
 
 def test_gearbox_lands_in_the_plan_top_speed_band(spec: CarSpec) -> None:

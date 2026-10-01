@@ -1,50 +1,107 @@
 description: >-
   The physics coefficient contract (PLAN.md section 5), versioned to a regulation issue.
-  PROVISIONAL: every value below is an order-of-magnitude P0 placeholder and none of it
-  is calibrated. PLAN.md section 5's starting figures are used verbatim where they exist;
-  everything else carries an explicit `provenance: synthesised` line, per the standing
-  rule that every coefficient is accounted for in docs/calibration.md. P1 replaces this
-  file field by field, and because nothing downstream hardcodes a number, a calibration
-  pass is a data edit here rather than a refactor.
+  Every number below is claimed by exactly one of two blocks: `regulation`, which names the
+  FIA 2026 Section C clause and page it was read from, or `not_regulated`, which says why it
+  is not a regulation number. `provenance_audit()` fails if a number is left unclaimed, so a
+  regulation value and a synthesised one can never be confused for one another. The file is
+  versioned to Issue 20 (2026-08-05) of the document at `spec.document_url`; because nothing
+  downstream hardcodes a number, calibration is a data edit here rather than a refactor.
 
 spec:
   regulation: FIA 2026 Formula One Regulations
   section: Section C (Technical)
   issue: 20
   issue_date: 2026-08-05
-  refinements:
-    - date: 2026-04-21
-      note: energy management, superclip duration, Overtake Mode
+  document_url: https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf
+  listing_url: https://www.fia.com/regulation/category/110/technical-regulations
+  verified_against_document: true
+  verified_on: 2026-10-01
+  verified_by: P1-T1, read clause by clause from the Issue 20 PDF at document_url
+  supersedes:
+    - issue: 16
+      issue_date: 2026-02-27
+      note: >-
+        The issue PLAN.md section 5 and PHASES.md P0-T3 cited. C4.1 was already
+        724/726kg in that issue, so the P0 reading of "mass ~800 kg" as a minimum was wrong.
   anticipated_drift:
     - date: 2026-06-10
-      note: 2027/2028 technical changes agreed; expect a spec bump
+      note: >-
+        2027/2028 technical changes agreed; Section C Issue 2 for 2027 is already published,
+        so this file will drift. Versioning makes that a data edit.
   provenance: provisional
   calibration_status: uncalibrated
   source_date: 2026-09-30
-  confirmed_against_regulation_text: false
-  confirmed_by: null
   note: >-
-    Source date is the date these placeholder values were written, not a measurement
-    date. `confirmed_against_regulation_text` flips to true only when P1-T9 records the
-    regulation clause each value was read from.
+    `calibration_status` stays uncalibrated until P1-T9 tunes against recorded targets.
+    `verified_against_document` means the regulation claims below were read out of Issue 20;
+    it says nothing about the uncalibrated numbers, which `not_regulated` explains.
 
 constants:
   gravity_m_s2: 9.80665
   air_density_kg_m3: 1.225
   air_temperature_k: 293.15
   provenance: standard
-  source: ISO 80000-3 gravitational acceleration; ISA sea-level, 20 degC
+  not_regulated:
+    gravity_m_s2: ISO 80000-3 standard gravitational acceleration, g0 = 9.80665 m/s^2.
+    air_density_kg_m3: ISA sea level, 15 degC, 101.325 kPa.
+    air_temperature_k: ISA reference 20 degC. Scenario-swept, not a car property.
+  note: >-
+    These are physical standards, not FIA limits, and are the one section where
+    `provenance: standard` is the correct claim rather than a placeholder.
+
+integration:
+  dt_s: 0.0001
+  provenance: plan
+  source_date: 2026-09-30
+  not_regulated:
+    dt_s: >-
+      A project decision, not a regulation limit: PLAN.md section 4 fixes the step at
+      100 us (10 kHz) for determinism. No FIA article sets a simulation step.
+  note: >-
+    New in P1-T1. The fixed step lives here rather than in the kernel so that changing it is
+    a data edit, per the cross-phase rule that no physical constant is hardcoded in Python.
 
 mass:
   total_kg: 800.0
+  minimum_mass_kg: 724.0
+  minimum_mass_qualifying_kg: 726.0
+  driver_reference_mass_kg: 82.0
+  provenance: mixed
+  source_date: 2026-10-01
   includes: [car, driver, fuel_at_start]
-  provenance: plan
-  source: PLAN.md section 5 ("mass ~800 kg including driver")
-  source_date: 2026-09-30
   tolerance_pct: 5.0
+  regulation:
+    minimum_mass_kg:
+      clause: C4.1
+      page: 59
+      quote: >-
+        In all other sessions, the Minimum Mass is 724kg plus the Nominal Tyre Mass.
+    minimum_mass_qualifying_kg:
+      clause: C4.1
+      page: 59
+      quote: >-
+        During the Sprint Qualifying and Qualifying sessions, The Minimum Mass is 726kg plus
+        the Nominal Tyre Mass.
+    driver_reference_mass_kg:
+      clause: C4.5
+      page: 60
+      quote: >-
+        The reference Mass of the Driver plus the mass of any Driver Ballast must not be less
+        than 82kg at any time during the Competition.
+  not_regulated:
+    total_kg: >-
+      PLAN.md section 5 figure ("mass ~800 kg including driver"), retained for now and well
+      above the C4.1 floor, because a real car runs ballast down to the floor plus a driver
+      and starting fuel. The regulation sets a floor, not a mass; P1-T9 tunes this against
+      the acceleration targets.
+    tolerance_pct: >-
+      An engineering tolerance on `total_kg`, not a regulation limit. C4.1 sets one mass and
+      no tolerance band.
   note: >-
-    Plan figure, explicitly "to be confirmed against the regulation text during phase 1".
-    FIA minimum is a floor, not a prediction; the real car carries ballast to the floor.
+    `includes` and `tolerance_pct` are metadata, not coefficients, and carry no claim. The
+    Nominal Tyre Mass added to the C4.1 floor is published by the tyre supplier after the
+    final tyre-testing camp (C4.7, page 60) and is not a fixed number in the regulations, so
+    it is not asserted here.
 
 aero:
   reference_area_m2: 1.5
@@ -64,20 +121,44 @@ aero:
     - { speed_m_s: 80.0, cd: 0.66 }
     - { speed_m_s: 105.0, cd: 0.62 }
   provenance: synthesised
-  source: order-of-magnitude 2026 active-aero shape, replaced by the published
-    Limebeer & Tremlett F1 parameter set in P1-T3
   source_date: 2026-09-30
+  not_regulated:
+    reference_area_m2: >-
+      Order of magnitude. No FIA article defines a reference area; the regulations constrain
+      the car geometrically (C2.3.1, C3.15) rather than aerodynamically.
+    ride_height_sensitivity: >-
+      Synthesised ground-effect sensitivity. Nothing in Section C Issue 20 quantifies it.
+    cl_curve: >-
+      Synthesised 2026 active-aero shape. P1-T3 replaces it with the published Limebeer and
+      Tremlett F1 parameter set.
+    cd_curve: Synthesised alongside the Cl curve; P1-T3 replaces both.
   note: >-
     Downforce and drag are deliberately non-proportional to v^2 across this range, per
-    PLAN.md section 5.1. The ride-height sensitivity term is what makes porpoising
-    observable in the telemetry later. These five-point curves are placeholders: P1-T3
-    replaces them and P1-T9 fits them against the 0-100 km/h and top-speed targets.
+    PLAN.md section 5.1. The ride-height sensitivity term is what makes porpoising observable
+    in the telemetry later.
 
 powertrain:
+  power_split_ice: 0.53
+  fuel_lhv_kj_kg: 44000.0
+  provenance: plan
+  source_date: 2026-09-30
+  not_regulated:
+    power_split_ice: >-
+      PLAN.md sections 5 and 6 ("400 kW ICE and 350 kW MGU-K on a 53/47 split"). The
+      regulations cap ERS-K power by an explicit speed-dependent curve (C5.2.8) and do not
+      state an ICE/ERS split.
+    fuel_lhv_kj_kg: >-
+      Lower heating value of the F1 fuel. C5.2.6 has the FIA measure the real LHV per lap
+      through the SECU; the regulations do not fix it.
   ice:
     peak_power_kw: 400.0
     rev_limit_rpm: 13000.0
     idle_rpm: 4000.0
+    fuel_energy_flow_max_mj_h: 3000.0
+    fuel_energy_flow_per_cylinder_max_mj_h: 550.0
+    fuel_energy_flow_low_rpm_limit_rpm: 10500.0
+    fuel_energy_flow_low_rpm_gain_mj_h_per_rpm: 0.27
+    fuel_energy_flow_low_rpm_offset_mj_h: 165.0
     torque_curve_nm:
       - { rpm: 2000.0, torque_nm: 60.0 }
       - { rpm: 4000.0, torque_nm: 150.0 }
@@ -90,25 +171,128 @@ powertrain:
     turbo_lag:
       collapse_below_rpm: 4000.0
       multiplier_at_collapse: 0.35
-    provenance: synthesised
-    source: >-
-      PLAN.md section 6. Published 400 kW peak power and peak-torque rpm shaped into a
-      table. No public F1 torque curve exists, so this is a synthesis by construction.
-    source_date: 2026-09-30
+    provenance: mixed
+    source_date: 2026-10-01
     calibrated: false
+    regulation:
+      idle_rpm:
+        clause: C5.13.4
+        page: 75
+        quote: The idle speed control target may not exceed 4,000rpm.
+      fuel_energy_flow_max_mj_h:
+        clause: C5.2.3
+        page: 64
+        quote: Fuel energy flow must not exceed 3000MJ/h.
+      fuel_energy_flow_per_cylinder_max_mj_h:
+        clause: C5.2.3
+        page: 64
+        quote: >-
+          with a maximum energy flow per cylinder never exceeding 550MJ/h under normal
+          operating conditions.
+      fuel_energy_flow_low_rpm_limit_rpm:
+        clause: C5.2.4
+        page: 64
+        quote: Below 10500rpm the fuel energy flow must not exceed EF(MJ/h)=0.27*N(rpm)+ 165
+      fuel_energy_flow_low_rpm_gain_mj_h_per_rpm:
+        clause: C5.2.4
+        page: 64
+        quote: EF(MJ/h)=0.27*N(rpm)+ 165
+      fuel_energy_flow_low_rpm_offset_mj_h:
+        clause: C5.2.4
+        page: 64
+        quote: EF(MJ/h)=0.27*N(rpm)+ 165
+    not_regulated:
+      peak_power_kw: >-
+        Published industry figure (PLAN.md section 6), NOT a regulation number. Issue 20 does
+        not state an ICE power in kW at all; C5.2.3 and C5.2.4 bound the ICE through fuel
+        energy flow instead, which is why both are recorded as cited values here. P1-T4 uses
+        the fuel-energy-flow limits as the real constraint on the torque curve.
+      rev_limit_rpm: >-
+        Not in Section C. C5.14 (page 76) only requires every high rev limit to sit inside a
+        750rpm band and forbids response changes more than 750rpm below the final limit; the
+        absolute limiter value is set by PU manufacturer declaration, not by these
+        regulations.
+      torque_curve_nm: >-
+        Synthesised. PLAN.md section 6 shaped the published 400 kW peak into a table with a
+        turbo-lag multiplier. No public F1 torque curve exists. P1-T4 owns it.
+      turbo_lag: >-
+        Synthesised turbo-lag multiplier. The regulations constrain the driver torque-demand
+        map (C5.12.2, C5.12.3) but publish no turbo characteristic.
+    source: >-
+      PLAN.md section 6 for the power and torque table; FIA 2026 Section C Issue 20 for the
+      idle ceiling and the fuel-energy-flow limits.
   mgu_k:
     peak_power_kw: 350.0
-    store_energy_mj: 7.0
+    torque_limit_nm: 500.0
+    store_energy_mj: 4.0
+    recharge_limit_mj_per_lap: 8.5
     superclip_s: 3.0
+    launch_speed_kmh: 50.0
     overtake_mode_extra_kw: 150.0
-    provenance: plan
-    source: PLAN.md sections 5 and 6
-    source_date: 2026-09-30
-  power_split_ice: 0.53
-  fuel_lhv_kj_kg: 44000.0
-  provenance: plan
-  source: PLAN.md sections 5 and 6 ("400 kW ICE and 350 kW MGU-K on a 53/47 split")
-  source_date: 2026-09-30
+    deployment_curve_kw:
+      - { speed_km_h: 0.0, limit_kw: 1800.0 }
+      - { speed_km_h: 290.0, limit_kw: 350.0 }
+      - { speed_km_h: 340.0, limit_kw: 100.0 }
+      - { speed_km_h: 345.0, limit_kw: 0.0 }
+    overtake_curve_kw:
+      - { speed_km_h: 0.0, limit_kw: 7100.0 }
+      - { speed_km_h: 355.0, limit_kw: 0.0 }
+    provenance: mixed
+    source_date: 2026-10-01
+    regulation:
+      peak_power_kw:
+        clause: C5.2.7
+        page: 64
+        quote: The absolute electrical DC power of the ERS-K may not exceed 350kW.
+      deployment_curve_kw:
+        clause: C5.2.8
+        page: 64
+        quote: >-
+          When Overtake is not active: P(kW) = 1800 - 5 * car speed (kph) when the car speed
+          is below 340kph; P(kW) = 6900 - 20 * car speed (kph) when the car speed is equal to
+          or above 340kph and below 345kph; P(kW) = 0 when the car speed is equal to or above
+          345kph. Sampled at the breakpoints, with 290kph included because it is where
+          1800 - 5v reaches the 350kW absolute ERS-K cap.
+      overtake_curve_kw:
+        clause: C5.2.8
+        page: 64
+        quote: >-
+          When Overtake is active up to: P(kW) = 7100 - 20 * car speed (kph) when the car speed
+          is below 355kph; P(kW) = 0 when the car speed is equal to or above 355kph.
+      store_energy_mj:
+        clause: C5.2.9
+        page: 64
+        quote: >-
+          The difference between the maximum and the minimum state of charge of the ES may not
+          exceed 4MJ at any time the car is on the track.
+      recharge_limit_mj_per_lap:
+        clause: C5.2.10
+        page: 64
+        quote: Recharge, as measured at the CU-K HV DC Bus, must not exceed a limit of 8.5MJ
+      torque_limit_nm:
+        clause: C5.2.11
+        page: 65
+        quote: The MGU-K mechanical torque magnitude may not exceed 500Nm.
+      launch_speed_kmh:
+        clause: C5.2.12
+        page: 65
+        quote: >-
+          During a standing start from the grid the MGU-K may only be used once the car has
+          reached 50 km/h.
+    not_regulated:
+      superclip_s: >-
+        PLAN.md section 6 estimate of the superclip duration (2-4s). Issue 20 contains no
+        superclip duration article; searching the document text for "clip" returns nothing.
+        Retained as a project assumption and labelled as one.
+      overtake_mode_extra_kw: >-
+        PLAN.md section 6 shorthand ("Overtake Mode +150 kW cap"). The regulation does not
+        express Overtake as a flat bonus: C5.2.8.ii defines an alternative ERS-K power profile
+        (7100 - 20v), which is recorded above as `overtake_curve_kw`. P1-T4 should drop this
+        scalar in favour of the curve.
+    note: >-
+      `store_energy_mj` changed from PLAN.md's 7 MJ to the 4 MJ of C5.2.9. The 7 MJ figure is
+      the C5.2.10 per-lap recharge reduction threshold (8.5 MJ reduced to 7 MJ), not the
+      usable store size, so the two were conflated in the P0 file.
 
 gearbox:
   ratios: [3.883, 3.437, 3.041, 2.691, 2.381, 2.107, 1.865, 1.634]
@@ -118,6 +302,17 @@ gearbox:
   shift_time_s: 0.04
   provenance: synthesised
   source_date: 2026-09-30
+  not_regulated:
+    ratios: >-
+      Synthetic geometric 8-speed set. Section C Issue 20 prescribes no gear ratios and no
+      final drive; P1-T4 replaces these during calibration.
+    final_drive: Synthetic, as for `ratios`.
+    shift_up_rpm: >-
+      Synthetic shift point, chosen below the 13000rpm limiter. C5.14 bounds rev-limit
+      variation but says nothing about shift strategy.
+    shift_down_rpm: Synthetic, as for `shift_up_rpm`.
+    shift_time_s: >-
+      Synthetic 40ms gearshift. No FIA article sets a gearshift duration.
   derivation: >-
     Geometric 8-speed, chosen so that 8th gear at the 13000 rpm limiter lands on the
     PLAN.md section 11 top-speed band of 350-370 km/h given the 0.36 m rolling radius, and
@@ -131,22 +326,79 @@ gearbox:
 
 tyres:
   rolling_radius_m: 0.36
-  nominal_width_mm: 305.0
   wheel_diameter_m: 0.72
-  provenance: plan
-  source: >-
-    PLAN.md section 4 gives 1.02-1.05 x loaded radius for F1; 0.36 m is the
-    loaded-radius midpoint and is the input that couples gear ratios to road speed.
-  source_date: 2026-09-30
-  note: Pacejka coefficients, load sensitivity and relaxation lengths are P2-T3/P2-T5
-    work and are deliberately absent from a P0 skeleton.
+  front_width_mm: 315.0
+  rear_width_mm: 401.3
+  rim_diameter_mm: 462.5
+  provenance: mixed
+  source_date: 2026-10-01
+  regulation:
+    front_width_mm:
+      clause: C10.7.2
+      page: 111
+      quote: Tyre Mounting Width 315 +/- 0.5 (front wheel)
+    rear_width_mm:
+      clause: C10.7.2
+      page: 111
+      quote: Tyre Mounting Width 401.3 +/- 0.5 (rear wheel)
+    rim_diameter_mm:
+      clause: C10.7.2
+      page: 111
+      quote: Rim Diameter 462.5 / 463 (front and rear wheel)
+  not_regulated:
+    rolling_radius_m: >-
+      PLAN.md section 4 gives 1.02-1.05 x loaded radius for F1; 0.36 m is the loaded-radius
+      midpoint and is the input that couples gear ratios to road speed. No regulation fixes a
+      rolling radius, and C10.7.2 fixes the rim diameter rather than the loaded tyre radius.
+    wheel_diameter_m: >-
+      Overall tyre diameter, not a regulation value. The 18 inch rim of C10.7.2 (462.5mm rim
+      diameter) is cited above; the carcass height that turns that into a 0.72m rolling
+      diameter is a tyre-supplier choice.
+  note: >-
+    `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
+    replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
+    not match Issue 20. Pacejka coefficients, load sensitivity and relaxation lengths are
+    P2-T3/P2-T5 work and are deliberately absent.
 
 chassis:
   wheelbase_m: 3.4
-  floor_width_m: 1.9
+  overall_width_m: 1.9
   front_weight_fraction: 0.46
-  provenance: plan
-  source: PLAN.md section 5
-  source_date: 2026-09-30
-  note: front_weight_fraction is a placeholder; P2-T2 replaces it with the measured
-    static distribution once the roll stiffness distribution is known.
+  minimum_front_axle_fraction: 0.44
+  minimum_rear_axle_fraction: 0.54
+  provenance: mixed
+  source_date: 2026-10-01
+  regulation:
+    overall_width_m:
+      clause: C2.3.1
+      page: 10
+      quote: >-
+        no part of the car may lie more than 950mm from the plane Y=0 at Legality Setup
+        (excluding tyres, Wheel Rims and parts attached to them).
+    wheelbase_m:
+      clause: C2.3.3
+      page: 11
+      quote: >-
+        The distance between the planes XF = 0 and XR = 0 must be less than or equal to 3400mm
+        at Legality Setup.
+    minimum_front_axle_fraction:
+      clause: C4.2
+      page: 59
+      quote: >-
+        the mass measured at the front axle must not be less than the Minimum Mass specified
+        in Article C4.1 factored by 0.44.
+    minimum_rear_axle_fraction:
+      clause: C4.2
+      page: 59
+      quote: >-
+        the mass measured at the rear axle must not be less than the Minimum Mass specified
+        in Article C4.1 factored by 0.54.
+  not_regulated:
+    front_weight_fraction: >-
+      PLAN.md section 5 placeholder. C4.2 is a floor, not a distribution, so 0.46 is a
+      synthesised static split that satisfies it. P2-T2 replaces it with the measured static
+      distribution once the roll stiffness distribution is known.
+  note: >-
+    `overall_width_m` replaces the P0 `floor_width_m: 1.9`. PLAN.md section 5's "1.9 m floor
+    width" is really the C2.3.1 overall-width limit of 1900mm; keeping a key named
+    `floor_width_m` would have cited a floor-width clause the regulations do not contain.
