@@ -362,6 +362,12 @@ tyres:
   front_width_mm: 315.0
   rear_width_mm: 401.3
   rim_diameter_mm: 462.5
+  slip_ratio_min_speed_m_s: 1.0
+  longitudinal_pacejka:
+    b: 11.0
+    c: 1.65
+    e: 0.97
+    mu: 1.7
   provenance: mixed
   source_date: 2026-10-01
   regulation:
@@ -403,11 +409,31 @@ tyres:
       Overall tyre diameter, not a regulation value. The rim diameter of C10.7.2 is cited
       above; the carcass height that turns a 462.5mm rim into a 0.72m rolling diameter is a
       tyre-supplier choice.
+    slip_ratio_min_speed_m_s: >-
+      The `eps` in `kappa = (omega r - v) / max(v, eps)`, added by the P1-T3/P1-T6 force work
+      because PHASES.md P1-T6 requires the divide to be guarded at low speed. 1.0 m/s is a
+      project choice with a visible consequence: at a standing start the slip ratio is
+      `omega r / 1.0`, so a launch sits on the falling branch of the Magic Formula rather than on
+      the part of the curve that rises. No regulation fixes a simulation guard, and Task 4 of
+      tasks/plan.md owns the launch model that has to live with it.
+    longitudinal_pacejka: >-
+      Synthesised longitudinal Magic Formula shape, added by the same force work. No public F1
+      Pacejka coefficient set has been read into this project: PLAN.md section 4 names Limebeer
+      and Tremlett's open F1 model as the seed to use, and that set is not imported here, because
+      a parameter set this project cannot cite is worth less than one it labels. `c` and `e` are
+      the conventional longitudinal shape and curvature factors, `b` is chosen so the peak
+      lands near 0.36 slip ratio, and `mu` is a plausible F1 slick peak longitudinal friction
+      coefficient. All four are placeholders for calibration in P1-T9, which should check the
+      resulting accelerations against a published source rather than against this file.
   note: >-
     `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
     replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
-    not match Issue 20. Pacejka coefficients, load sensitivity and relaxation lengths are
-    P2-T3/P2-T5 work and are deliberately absent.
+    not match Issue 20. `longitudinal_pacejka` and `slip_ratio_min_speed_m_s` arrived with the
+    P1-T3/P1-T6 force work (Task 3 of tasks/plan.md), which needs a longitudinal force; lateral
+    coefficients, load sensitivity on `D` and `B`, and relaxation lengths remain
+    P2-T3/P2-T5 work and are still deliberately absent. The P1 force model is deliberately
+    linear in `Fz` - `D = mu Fz` with no load sensitivity - so that changing it later is a
+    visible act rather than an invisible correction.
 
 chassis:
   wheelbase_m: 3.4

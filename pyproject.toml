@@ -68,11 +68,12 @@ ignore = [
 "src/f1telemetry/generated/*" = ["E501", "UP040"]
 "tests/*" = ["ANN001", "ANN201"]
 # The layer-isolation rule bans importing the physics kernel from layers 4-6. The
-# toolchain probe and the longitudinal kernel are the two places that have to import
-# a kernel, because proving the kernel compiles and runs the car correctly is the
-# whole point of those tests.
+# toolchain probe, the longitudinal kernel and the force model are the places that have
+# to import compiled code, because proving it compiles and produces the right forces is
+# the whole point of those tests.
 "tests/test_numba_toolchain.py" = ["TID251"]
 "tests/test_longitudinal_kernel.py" = ["TID251"]
+"tests/test_forces.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "f1telemetry.physics" = { msg = "Layers 4-6 may not import from the physics core (PLAN.md section 3)." }
@@ -101,6 +102,7 @@ markers = [
   "contract: channels.yaml / car_spec.yaml schema, validation and provenance",
   "toolchain: environment and dependency toolchain probes",
   "kernel: P1 physics kernel - fixed step, state layout, caller-owned buffers, determinism",
+  "forces: P1 aero and longitudinal tyre force model - Cl/Cd(v), dynamic pressure, slip ratio, Pacejka, grip limit",
 ]
 filterwarnings = ["error"]
 

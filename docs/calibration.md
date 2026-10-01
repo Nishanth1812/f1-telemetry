@@ -225,13 +225,43 @@ synthetic. `PLAN.md` section 6's "approximately 1.6 apart, geometric" cannot hol
 gears - 1.6^7 is a 27x span and cannot reach a 350+ km/h top speed from a sane first gear -
 see `docs/phase0-decisions.md` section 6.
 
-**Aero curves (`aero`) — synthesised.** Five-point `Cl(v)` and `Cd(v)` tables with
+**Aero curves (`aero`) — synthesised.** Six-point `Cl(v)` and `Cd(v)` tables with
 `Cl` rising 1.80 → 3.35 and `Cd` falling 1.15 → 0.62 across 0-105 m/s, deliberately
 non-proportional to v^2 per `PLAN.md` section 5.1. `reference_area_m2: 1.5` is order of
 magnitude: no FIA article defines a reference area, because the regulations constrain the car
 geometrically rather than aerodynamically. `ride_height_sensitivity: 0.18` is a synthesised
-ground-effect term and is what will make porpoising observable later. Task 3 replaces the
-curves with the published Limebeer and Tremlett F1 parameter set.
+ground-effect term and is what will make porpoising observable later.
+
+**These curves are what the P1-T3 force model consumes, and they stay as Task 1 left them.**
+`PLAN.md` section 4 names Limebeer and Tremlett's open F1 model as the parameter set to seed
+from, and Task 1 wrote a note here saying Task 3 would replace these tables with it. Task 3
+did not, and did not pretend to: a coefficient set this project has not read is not a citation,
+and `PLAN.md` section 4's own rule is not to invent numbers you cannot cite. The tables are
+labelled synthesised, the force model reads them as data, and replacing them stays open work
+(see section 5). Task 5 is where the resulting accelerations and top speed get checked against
+published figures, and the coefficients that fail that check are the ones to replace.
+
+**Longitudinal Pacejka (`tyres.longitudinal_pacejka`) — synthesised.** `b: 11.0`, `c: 1.65`,
+`e: 0.97`, `mu: 1.7`, added by Task 3 because P1-T6 needs a longitudinal force. `c` and `e` are
+the conventional longitudinal Magic Formula shape and curvature factors; `b` is chosen so the
+peak lands near 0.36 slip ratio, which is a few tenths of a slip ratio rather than the whole
+one; `mu` is a plausible F1 slick peak longitudinal friction coefficient. `e` is checked for
+finiteness rather than for a sign, because the curvature factor carries one, and the other three
+are checked as magnitudes. No public F1 Pacejka set has been read into this project, so all four
+are placeholders for calibration.
+
+**Slip-ratio guard (`tyres.slip_ratio_min_speed_m_s: 1.0`) — synthesised.** The `eps` in
+`kappa = (omega r − v) / max(v, eps)`, which `PHASES.md` P1-T6 requires and which is a
+divide-by-zero at a standing start without it. 1.0 m/s is a project choice with a visible
+consequence: at rest the slip ratio is `omega r / 1.0`, so a launch sits on the falling branch of
+the Magic Formula rather than the part of the curve that rises. Task 4 owns the launch model and
+has to live with it.
+
+**No load sensitivity, deliberately.** `D = mu Fz` is linear in vertical load. `PLAN.md`
+section 4 says a constant-`mu` tyre understates high-speed downforce badly, and that is exactly
+what this model does; load sensitivity on `D` and `B` is P2-T3's work. It is stated as a linear
+model in `forces.tyre_longitudinal_force` and asserted as one in the tests, so that P2-T3's
+correction is a visible edit rather than a silent one.
 
 **Rolling radius and wheel diameter (`tyres`) — synthesised.** `PLAN.md` section 4 gives
 1.02-1.05 x loaded radius for F1; 0.36 m is that midpoint and is the number that couples gear
@@ -301,8 +331,13 @@ one matters because `KernelConfig` exposes a single `aero_speed_m_s` axis: a `Cd
 different breakpoints would produce a `cd` array of a different length to the axis indexing it,
 which is an out-of-bounds read inside compiled code rather than a load error. The cap check
 likewise matters because C5.2.8's formulas permit far more than the absolute limit, so a curve
-restoring a raw C5.2.8 value would otherwise hand the kernel power the regulation forbids. All
-of them raise `ContractError` at the boundary.
+restoring a raw C5.2.8 value would otherwise hand the kernel power the regulation forbids.
+
+Task 3 added the checks the tyre model needs: `slip_ratio_min_speed_m_s` finite and positive,
+because it is the one denominator in the tyre model that would otherwise divide by zero at a
+standing start, and the three Pacejka magnitudes positive with the curvature factor finite — the
+curvature factor carries a sign, so a sign check would be the wrong rule. All of them raise
+`ContractError` at the boundary.
 
 ## 5. Still outstanding for later tasks
 
@@ -312,7 +347,13 @@ of them raise `ContractError` at the boundary.
 * **ICE torque curve.** Task 4 owns it, and it should be validated against the C5.2.3/5.2.4
   energy-flow limits rather than the 400 kW shorthand.
 * **Gearbox.** Task 4 replaces the provisional ratios with the drag-limited top-speed solve.
-* **Aero curves.** Task 3 replaces them with the published F1 parameter set.
+* **Aero curves.** Task 3 consumed them; it did not replace them (see section 3). Replacing the
+  synthesised `Cl`/`Cd` tables with a published F1 parameter set is still open, and should happen
+  alongside the Task 5 calibration, since the same published figures decide both.
+* **Longitudinal Pacejka coefficients.** `b`, `c`, `e` and `mu` are placeholders (section 3). The
+  first evidence that they are wrong will be a Task 5 0-100 km/h figure outside the chosen
+  tolerance, or a peak longitudinal deceleration that cannot reach the Task 6 energy balance.
+* **Load sensitivity.** `D = mu Fz` has none. P2-T3, with the lateral force.
 * **`fastest-lap` cross-check.** Task 6, per `PHASES.md` P1-T10.
 * **2027 regulations.** Section C Issue 2 is already published. A 2027 run would be a new
   `car_spec.yaml` keyed to a new issue, not an edit to this one.

@@ -113,6 +113,11 @@ class KernelConfig:
     aero_speed_m_s: np.ndarray
     cl: np.ndarray
     cd: np.ndarray
+    pacejka_b: float
+    pacejka_c: float
+    pacejka_e: float
+    pacejka_mu: float
+    slip_ratio_min_speed_m_s: float
     ice_peak_power_kw: float
     rev_limit_rpm: float
     idle_rpm: float
@@ -347,6 +352,20 @@ class CarSpec:
         wheel_diameter = _positive(
             tyres.get("wheel_diameter_m"), "car_spec: tyres.wheel_diameter_m"
         )
+        # P1-T3: the longitudinal Magic Formula and the guard on its slip denominator. `e` is
+        # checked for finiteness rather than for a sign, because the curvature factor carries
+        # one; `b`, `c` and `mu` are magnitudes. The slip guard has to be positive, since it is
+        # the denominator of the one division in the tyre model that can otherwise divide by
+        # zero at a standing start.
+        pacejka = _section(tyres, "longitudinal_pacejka")
+        pacejka_b = _positive(pacejka.get("b"), "car_spec: tyres.longitudinal_pacejka.b")
+        pacejka_c = _positive(pacejka.get("c"), "car_spec: tyres.longitudinal_pacejka.c")
+        pacejka_e = _number(pacejka.get("e"), "car_spec: tyres.longitudinal_pacejka.e")
+        pacejka_mu = _positive(pacejka.get("mu"), "car_spec: tyres.longitudinal_pacejka.mu")
+        slip_guard = _positive(
+            tyres.get("slip_ratio_min_speed_m_s"),
+            "car_spec: tyres.slip_ratio_min_speed_m_s",
+        )
         wheelbase = _positive(chassis.get("wheelbase_m"), "car_spec: chassis.wheelbase_m")
         front_weight = _number(
             chassis.get("front_weight_fraction"), "car_spec: chassis.front_weight_fraction"
@@ -371,6 +390,11 @@ class CarSpec:
             aero_speed_m_s=np.array(cl.speed_m_s, dtype=np.float64),
             cl=np.array(cl.value, dtype=np.float64),
             cd=np.array(cd.value, dtype=np.float64),
+            pacejka_b=pacejka_b,
+            pacejka_c=pacejka_c,
+            pacejka_e=pacejka_e,
+            pacejka_mu=pacejka_mu,
+            slip_ratio_min_speed_m_s=slip_guard,
             ice_peak_power_kw=ice_peak,
             rev_limit_rpm=rev_limit,
             idle_rpm=idle_rpm,

@@ -23,6 +23,7 @@ check, and no ``front_weight_fraction`` range.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from pathlib import Path
@@ -537,7 +538,9 @@ def test_editing_the_yaml_changes_the_kernel_config_with_no_code_edit(
 
     _at(root, ("mass",))["total_kg"] = 780.0
     _at(root, ("gearbox",))["final_drive"] = 3.4
-    _at(root, ("aero",))["cl_curve"][2]["cl"] = 2.9
+    _at(root, ("aero", "cl_curve", 2))["cl"] = 2.9
+    _at(root, ("tyres", "longitudinal_pacejka"))["mu"] = 1.85
+    _at(root, ("tyres",))["slip_ratio_min_speed_m_s"] = 2.0
     _at(root, ("powertrain", "ice"))["torque_curve_nm"][4]["torque_nm"] = 340.0
     after = load_car_spec(_write(root, tmp_path)).kernel_config()
 
@@ -545,7 +548,34 @@ def test_editing_the_yaml_changes_the_kernel_config_with_no_code_edit(
     assert after.mass_kg == 780.0
     assert after.final_drive == 3.4
     assert after.cl[2] == 2.9
+    assert after.pacejka_mu == 1.85
+    assert after.slip_ratio_min_speed_m_s == 2.0
     assert after.torque_nm[4] == 340.0
+
+
+def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpec) -> None:
+    """P1-T3's four Magic Formula coefficients and the slip guard are handed over as numbers.
+
+    Scalars, not a mapping, because a kernel cannot read a dict (PLAN.md section 4.1 rule 1) and
+    because the values are asserted against the file rather than against themselves: a builder
+    that read the right keys and attached them to the wrong fields would still satisfy a test
+    that only checked they were present. What the coefficients *do* is the force model's business
+    and is asserted in ``tests/test_forces.py``.
+    """
+    config = spec.kernel_config()
+    pacejka = _at(spec.raw, ("tyres", "longitudinal_pacejka"))
+    assert config.pacejka_b == pacejka["b"] > 0.0
+    assert config.pacejka_c == pacejka["c"] > 0.0
+    assert config.pacejka_e == pacejka["e"]
+    assert config.pacejka_mu == pacejka["mu"] > 0.0
+    guard = _at(spec.raw, ("tyres",))["slip_ratio_min_speed_m_s"]
+    assert config.slip_ratio_min_speed_m_s == guard > 0.0
+    # Both are claimed as synthesised, and the claim says which model it is, so a later edit
+    # that imports a published parameter set without changing the claim fails the audit's eye.
+    claim = _at(spec.raw, ("tyres", "not_regulated", "longitudinal_pacejka"))
+    assert "Pacejka" in claim
+    assert "ynthesised" in claim
+    assert "eps" in _at(spec.raw, ("tyres", "not_regulated", "slip_ratio_min_speed_m_s"))
 
 
 @pytest.mark.parametrize(
@@ -575,6 +605,12 @@ def test_editing_the_yaml_changes_the_kernel_config_with_no_code_edit(
         (("gearbox", "shift_time_s"), -0.01, "shift_time_s"),
         (("tyres", "rolling_radius_m"), 0.0, "rolling_radius_m"),
         (("tyres", "wheel_diameter_m"), 0.0, "wheel_diameter_m"),
+        (("tyres", "slip_ratio_min_speed_m_s"), 0.0, "slip_ratio_min_speed_m_s"),
+        (("tyres", "slip_ratio_min_speed_m_s"), math.inf, "slip_ratio_min_speed_m_s"),
+        (("tyres", "longitudinal_pacejka", "b"), 0.0, "longitudinal_pacejka.b"),
+        (("tyres", "longitudinal_pacejka", "c"), -1.0, "longitudinal_pacejka.c"),
+        (("tyres", "longitudinal_pacejka", "e"), math.inf, "longitudinal_pacejka.e"),
+        (("tyres", "longitudinal_pacejka", "mu"), 0.0, "longitudinal_pacejka.mu"),
         (("chassis", "wheelbase_m"), 0.0, "wheelbase_m"),
     ],
 )
@@ -593,6 +629,7 @@ def test_invalid_p1_configuration_fails_in_python_before_the_kernel(
         (("gearbox", "ratios"), "ratios"),
         (("powertrain", "ice", "torque_curve_nm"), "torque_curve_nm"),
         (("powertrain", "mgu_k", "deployment_curve_kw"), "limit_kw"),
+        (("tyres", "longitudinal_pacejka"), "longitudinal_pacejka"),
     ],
 )
 def test_a_missing_curve_or_ratio_list_fails_at_the_python_boundary(
