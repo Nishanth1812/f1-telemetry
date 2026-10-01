@@ -45,9 +45,9 @@
 
 ## Task 3: Add aero and longitudinal tire forces
 
-**Status:** Done. Commit: `1f54838`. `src/f1telemetry/physics/forces.py` (new) and
-`tests/test_forces.py` (new, 36 tests, `forces` marker). Also touched: `car_spec.yaml`
-(`tyres.longitudinal_pacejka`, `tyres.slip_ratio_min_speed_m_s`), `KernelConfig` and its builder,
+**Status:** Done. Commits: `1f54838`, `c47ba59`. `src/f1telemetry/physics/forces.py` (new) and
+`tests/test_forces.py` (38 tests, `forces` marker). Also touched: `car_spec.yaml` (`aero` provenance,
+`tyres.longitudinal_pacejka`, `tyres.slip_ratio_min_speed_m_s`), `KernelConfig` and its builder,
 `docs/calibration.md`, `pyproject.toml`. The Task 2 kernel is untouched. Ledger:
 `.superpowers/sdd/phase-1/progress.md` § Task 3 status.
 
@@ -58,7 +58,7 @@
 - [x] Slip ratio guards its low-speed denominator; force sign and tire load behavior are covered by tests.
 - [x] Force calculations remain finite and respect the configured longitudinal grip limit.
 
-**Verification:** `uv run --frozen pytest tests/test_forces.py` (36 passed); `uv run --frozen pytest
+**Verification:** `uv run --frozen pytest tests/test_forces.py` (38 passed); `uv run --frozen pytest
 -m forces`; `uv run --frozen pytest`; `just check`.
 
 **Dependencies:** Tasks 1–2.

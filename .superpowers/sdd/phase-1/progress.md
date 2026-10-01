@@ -457,3 +457,11 @@ guard when only the denominator is guarded, so the correct value is `(omega r - 
    to measure it with — so it is a flag for Task 5's calibration, not a finding. Expect `Cd` or
    the power split to move.
 
+## Task 3 review follow-up
+
+Space Bunny Alpha's review found that replaceable `KernelConfig` arrays and scalars could create
+extra Numba specializations or feed invalid curves to the lookup, and that the aero provenance
+notes still promised a replacement Task 3 did not make. Commit `c47ba59` validates these inputs,
+tests integer normalization and malformed arrays, and corrects the notes. The follow-up added two
+force tests; `pytest` passes (194 total), Ruff and basedpyright are clean, contract/codegen checks
+pass, and the web build succeeds.
