@@ -2,17 +2,25 @@
 
 ``PHASES.md`` P1-T1 asks for a flat ``@njit(cache=True, fastmath=False)`` kernel over
 preallocated float64 arrays at ``dt = 100 µs``, and P1-T2 asks for the determinism harness
-that proves it. Three claims are checked here, each in the form that would actually fail:
+that proves it. The claims are checked here in the form that would actually fail:
 
-* **Fixed step, semi-implicit.** Row ``n`` of a trace is the state after exactly ``n`` steps
-  of the configured ``dt_s``, and position advances with the *updated* speed, so the scheme is
+* **It really is a compiled, cached kernel.** The dispatcher's own options are read back
+  (``fastmath=False``, ``nogil``, ``boundscheck=False``) instead of being trusted from the
+  decorator text, and ``cache=True`` is proven the way P0 proved it for the probe: numba wrote
+  a cache index next to the module.
+* **Fixed step, semi-implicit.** Row ``n`` of a trace is the state after exactly ``n`` steps of
+  the configured ``dt_s``, and position advances with the *updated* speed, so the scheme is
   semi-implicit rather than explicit. The scheme is pinned against the explicit alternative,
   not against a number copied out of a run.
 * **Determinism.** Two runs with the same configuration and the same buffers produce
   byte-identical traces, and the run reads no clock and no random source. Byte comparison, not
   ``allclose``: a tolerance would hide the last-bit differences a wall-clock read introduces.
-* **No work the caller did not ask for.** The step loop allocates nothing measurable in
-  Numba's runtime, the caller owns every buffer, and the inputs are left untouched.
+* **No work the caller did not ask for.** The step loop allocates nothing measurable in Numba's
+  runtime, the caller owns every buffer, and the inputs are left untouched.
+* **One way in.** The compiled loop runs with ``boundscheck=False``, so ``simulate`` is the only
+  door: a buffer of the wrong type, layout, size or writability, a step count that is not an
+  integer, or a ``dt_s``/``mass_kg`` that would quietly produce NaNs is refused in Python,
+  before the loop starts.
 
 Every physical number here comes from the loaded ``car_spec.yaml``, including the drive force
 used for the representative run - it is the car's own weight, so the run accelerates at one
@@ -25,10 +33,12 @@ compiles here, this one proves the car's integrator is right.
 from __future__ import annotations
 
 import importlib
+import math
 import os
 from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -40,6 +50,11 @@ if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
 
 pytestmark = pytest.mark.kernel
+
+# The compiled loop is private to the module - that is the point of the fix these tests cover -
+# and the dispatcher's own attributes are the only honest evidence of what the compiler was
+# told, so the two tests below read them off the object rather than off the decorator text.
+COMPILED_LOOP = longitudinal._integrate  # pyright: ignore[reportPrivateUsage]
 
 # Wall-clock and randomness entry points. A simulation that reads any of them cannot be
 # byte-reproducible, so the determinism test replaces them with functions that raise.
@@ -72,9 +87,7 @@ def drive_force(config: KernelConfig, steps_per_second: int) -> np.ndarray:
     Taken from the configuration rather than written down, which keeps this file free of tuned
     numbers and makes the analytic expectation exact.
     """
-    return longitudinal.constant_longitudinal_force(
-        steps=steps_per_second, force_n=config.mass_kg * config.gravity_m_s2
-    )
+    return np.full(steps_per_second, config.mass_kg * config.gravity_m_s2, dtype=np.float64)
 
 
 def _run(
@@ -113,73 +126,76 @@ def _reference(
     return out
 
 
+def _cache_index_files() -> list[Path]:
+    """The `.nbi` cache index files numba has written for this kernel module.
+
+    ``cache=True`` writes one ``<module>.<signature>.nbi`` index next to the source, unless
+    ``NUMBA_CACHE_DIR`` redirects it, and both are searched so the test does not depend on
+    which is in force - the same search :mod:`f1telemetry.kernels.probe` documents for P0.
+    """
+    here = Path(str(longitudinal.__file__)).resolve()
+    roots = [here.parent / "__pycache__"]
+    override = os.environ.get("NUMBA_CACHE_DIR")
+    if override:
+        roots.insert(0, Path(override))
+    found: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            found.extend(sorted(root.glob("longitudinal.*.nbi")))
+    return found
+
+
 def _refuse(what: str) -> None:
     raise AssertionError(f"the simulation read {what}")
 
 
-def test_the_kernel_compiles_to_machine_code(config: KernelConfig) -> None:
-    """A dispatcher entry is not a compiled kernel: a signature is the evidence."""
-    state = longitudinal.initial_state()
-    force = np.zeros(4, dtype=np.float64)
-    out = longitudinal.allocate(4)
-    longitudinal.simulate(config, 4, state, force, out)
-    scratch = np.zeros(longitudinal.STATE_SIZE, dtype=np.float64)
-    longitudinal.step(state, 0.0, scratch, config.dt_s, config.mass_kg)
-    assert len(longitudinal.step.signatures) >= 1
-    assert len(longitudinal.integrate.signatures) >= 1
+def test_the_kernel_compiles_to_machine_code_and_writes_a_compile_cache(
+    config: KernelConfig,
+) -> None:
+    """A dispatcher entry is not a compiled kernel, and `cache=True` can do nothing silently.
+
+    Two pieces of evidence, both measured rather than read back out of this file: calling the
+    kernel registers a compiled signature, and that compile leaves a cache index for it beside
+    the module. This is the check P0-T1b makes for the probe; the reason it is repeated here is
+    that the claim under test is this kernel's, not the toolchain's.
+    """
+    _run(config, 4, np.zeros(4, dtype=np.float64))
+    assert len(COMPILED_LOOP.signatures) >= 1, (
+        "the run returned without compiling a signature, which means it fell back to Python"
+    )
+    assert _cache_index_files(), (
+        "numba wrote no .nbi cache index for the longitudinal kernel, so cache=True is not "
+        "taking effect"
+    )
 
 
 def test_the_kernel_options_match_plan_section_4_1() -> None:
-    """PLAN.md section 4.1 rule 4: cache on, fastmath off, and both assertable."""
-    options = dict(longitudinal.integrate.targetoptions)
+    """PLAN.md section 4.1 rule 4, read off the dispatcher rather than off the decorator.
+
+    ``boundscheck=False`` is the option that makes the compiled loop unsafe to call directly -
+    an undersized buffer is a silent out-of-bounds write - and it is why ``_integrate`` is
+    private and ``simulate`` validates. Asserted here so that cannot be changed by accident.
+    """
+    options = dict(COMPILED_LOOP.targetoptions)
     assert options["fastmath"] is False
     assert options["nopython"] is True
     assert options["nogil"] is True
-    assert "cache" not in options
-    assert longitudinal.TARGET_OPTIONS["cache"] is True
-    assert longitudinal.TARGET_OPTIONS["fastmath"] is False
+    assert options["boundscheck"] is False
+    assert options["error_model"] == "numpy"
 
 
-def test_the_fixed_step_is_ten_kilohertz_and_comes_from_the_car_spec(
-    config: KernelConfig,
-) -> None:
-    """The step is data, not a constant in the kernel: 100 µs is what the spec says."""
-    assert config.dt_s == pytest.approx(1.0e-4, rel=0.0, abs=0.0)
-    assert 1.0 / config.dt_s == pytest.approx(10_000.0, rel=0.0, abs=0.0)
-    assert round(1.0 / config.dt_s) == 10_000
-
-
-def test_the_caller_seeds_the_state_and_owns_the_trace_buffer() -> None:
-    """Row 0 of the trace is the caller's state; the caller hands over the whole buffer."""
-    state = longitudinal.initial_state(distance_m=12.5, speed_m_s=30.0)
-    assert state.shape == (longitudinal.STATE_SIZE,)
-    assert state.dtype == np.float64
-    assert state[longitudinal.X_INDEX] == 12.5
-    assert state[longitudinal.V_INDEX] == 30.0
-    out = longitudinal.allocate(5)
-    assert out.shape == (6, longitudinal.STATE_SIZE)
-    assert out.dtype == np.float64
-    assert out.flags.writeable
-
-
-def test_a_zero_step_run_writes_only_the_initial_state(config: KernelConfig) -> None:
-    """A run of no steps is not a special case: row 0 is the caller's state, and nothing else."""
-    state = longitudinal.initial_state(distance_m=3.0, speed_m_s=11.0)
-    out = longitudinal.allocate(0)
-    assert out.shape == (1, longitudinal.STATE_SIZE)
-    returned = longitudinal.simulate(config, 0, state, np.zeros(0, dtype=np.float64), out)
-    assert np.array_equal(returned, state.reshape(1, longitudinal.STATE_SIZE))
-
-
-def test_a_coasting_run_holds_speed_and_advances_one_step_per_row(
+def test_the_step_is_data_and_each_row_is_exactly_one_configured_step(
     config: KernelConfig,
     steps_per_second: int,
 ) -> None:
-    """With no force, every row is the previous row advanced by exactly ``dt_s``.
+    """100 µs is what the spec says, and a coasting row is the previous row by exactly that.
 
     This is the fixed-step claim in its simplest falsifiable form: one simulated second of rows
     covers exactly one second of travel, at the speed the caller seeded.
     """
+    assert config.dt_s == pytest.approx(1.0e-4, rel=0.0, abs=0.0)
+    assert round(1.0 / config.dt_s) == 10_000
+
     steps = steps_per_second
     speed = 30.0
     state = longitudinal.initial_state(speed_m_s=speed)
@@ -192,49 +208,27 @@ def test_a_coasting_run_holds_speed_and_advances_one_step_per_row(
     assert travelled[-1] == pytest.approx(speed * config.dt_s * steps, rel=1.0e-12)
 
 
-def test_the_trace_advances_by_exactly_one_configured_step_per_row(
-    config: KernelConfig,
-    drive_force: np.ndarray,
-) -> None:
-    """Every row adds the same velocity increment, and the totals match the analytic run."""
-    steps = drive_force.size
-    force_n = config.mass_kg * config.gravity_m_s2
-    out = _run(config, steps, drive_force)
-    acceleration = force_n / config.mass_kg
-    increments = np.diff(out[:, longitudinal.V_INDEX])
-    assert np.allclose(increments, acceleration * config.dt_s, rtol=1.0e-9, atol=0.0)
-    elapsed = steps * config.dt_s
-    assert out[-1, longitudinal.V_INDEX] == pytest.approx(acceleration * elapsed, rel=1.0e-12)
-    # Semi-implicit Euler sums v_1..v_n where the closed form assumes the mean speed, so a
-    # constant-acceleration run lands half a step of velocity above 0.5*a*T^2. That offset is
-    # the scheme's own leading error, not slack in the test: it is asserted, not absorbed.
-    expected_distance = 0.5 * acceleration * elapsed * elapsed + 0.5 * acceleration * elapsed * (
-        config.dt_s
-    )
-    assert out[-1, longitudinal.X_INDEX] == pytest.approx(expected_distance, rel=1.0e-12)
-    closed_form = 0.5 * acceleration * elapsed * elapsed
-    assert out[-1, longitudinal.X_INDEX] - closed_form == pytest.approx(
-        0.5 * acceleration * elapsed * config.dt_s,
-        rel=1.0e-9,
-    )
+def test_the_caller_owns_the_state_and_trace_buffers(config: KernelConfig) -> None:
+    """Row 0 of the trace is the caller's state, and the caller hands over the whole buffer.
 
+    ``steps`` of zero is the degenerate case of the same rule: row 0 is the seeded state and
+    nothing else is written, so a run of no length is not a special case.
+    """
+    state = longitudinal.initial_state(distance_m=12.5, speed_m_s=30.0)
+    assert state.shape == (longitudinal.STATE_SIZE,)
+    assert state.dtype == np.float64
+    assert state[longitudinal.X_INDEX] == 12.5
+    assert state[longitudinal.V_INDEX] == 30.0
 
-def test_the_kernel_agrees_with_a_plain_python_reference(
-    config: KernelConfig,
-    drive_force: np.ndarray,
-) -> None:
-    """Bit for bit, not approximately: the compiled loop must do the arithmetic it claims."""
-    steps = drive_force.size
-    state = longitudinal.initial_state(speed_m_s=5.0)
-    out = _run(config, steps, drive_force, state)
-    expected = _reference(
-        steps,
-        config.dt_s,
-        config.mass_kg,
-        config.mass_kg * config.gravity_m_s2,
-        state,
-    )
-    assert np.array_equal(out, expected)
+    steps = 5
+    out = longitudinal.allocate(steps)
+    assert out.shape == (steps + 1, longitudinal.STATE_SIZE)
+    assert out.dtype == np.float64
+    assert out.flags.writeable
+
+    empty = longitudinal.allocate(0)
+    returned = longitudinal.simulate(config, 0, state, np.zeros(0, dtype=np.float64), empty)
+    assert np.array_equal(returned, state.reshape(1, longitudinal.STATE_SIZE))
 
 
 def test_position_uses_the_updated_speed_so_the_scheme_is_semi_implicit(
@@ -273,48 +267,74 @@ def test_position_uses_the_updated_speed_so_the_scheme_is_semi_implicit(
     assert gap == pytest.approx(expected_gap, rel=1.0e-12)
 
 
-def test_a_representative_run_is_finite(
+def test_the_kernel_agrees_with_a_plain_python_reference(
     config: KernelConfig,
     drive_force: np.ndarray,
 ) -> None:
-    """One simulated second at 10 kHz: finite throughout, and accelerating the whole way."""
+    """Bit for bit, not approximately: the compiled loop must do the arithmetic it claims."""
+    steps = drive_force.size
+    state = longitudinal.initial_state(speed_m_s=5.0)
+    out = _run(config, steps, drive_force, state)
+    expected = _reference(
+        steps,
+        config.dt_s,
+        config.mass_kg,
+        config.mass_kg * config.gravity_m_s2,
+        state,
+    )
+    assert np.array_equal(out, expected)
+
+
+def test_a_representative_run_is_finite_and_lands_on_the_analytic_run(
+    config: KernelConfig,
+    drive_force: np.ndarray,
+) -> None:
+    """One simulated second at 10 kHz: finite throughout, accelerating, and exactly where the
+    scheme says it should be.
+
+    Semi-implicit Euler sums v_1..v_n where the closed form assumes the mean speed, so a
+    constant-acceleration run lands half a step of velocity above 0.5*a*T^2. That offset is the
+    scheme's own leading error, asserted rather than absorbed by a tolerance.
+    """
     steps = drive_force.size
     out = _run(config, steps, drive_force)
+    acceleration = config.gravity_m_s2
+    elapsed = steps * config.dt_s
     assert np.isfinite(out).all()
     assert np.all(np.diff(out[:, longitudinal.V_INDEX]) > 0.0)
     assert np.all(np.diff(out[:, longitudinal.X_INDEX]) > 0.0)
-    assert out[-1, longitudinal.V_INDEX] > 0.0
-    assert out[-1, longitudinal.X_INDEX] > 0.0
+    assert np.allclose(
+        np.diff(out[:, longitudinal.V_INDEX]),
+        acceleration * config.dt_s,
+        rtol=1.0e-9,
+        atol=0.0,
+    )
+    assert out[-1, longitudinal.V_INDEX] == pytest.approx(acceleration * elapsed, rel=1.0e-12)
+    closed_form = 0.5 * acceleration * elapsed * elapsed
+    assert out[-1, longitudinal.X_INDEX] == pytest.approx(
+        closed_form + 0.5 * acceleration * elapsed * config.dt_s,
+        rel=1.0e-12,
+    )
 
 
-def test_two_runs_with_the_same_inputs_are_byte_identical(
+def test_a_second_run_reproduces_the_first_byte_for_byte(
     config: KernelConfig,
     drive_force: np.ndarray,
     spec: CarSpec,
 ) -> None:
-    """P1-T2: same spec, same buffers, same seed -> the same bytes, not merely the same numbers.
+    """P1-T2: same spec, same buffers, same inputs -> the same bytes, not merely the same numbers.
 
-    The configuration is rebuilt from the spec for the second run, so the check also rules out
-    a kernel that keys off the identity of the config object rather than its values.
+    The second run is deliberately hostile in two ways. Its config is rebuilt from the spec, so
+    the check also rules out a kernel keyed off the identity of the config object rather than
+    its values; and it writes over a buffer poisoned with NaN, so anything the first run left
+    behind - an accumulator the caller never zeroed, a row the loop skipped - would show up.
     """
-    first = _run(config, drive_force.size, drive_force)
-    second = _run(spec.kernel_config(), drive_force.size, drive_force)
-    assert first.tobytes() == second.tobytes()
-
-
-def test_the_same_buffer_can_be_reused_for_a_second_identical_run(
-    config: KernelConfig,
-    drive_force: np.ndarray,
-) -> None:
-    """Reuse is the point of caller-owned buffers: the second run must not inherit the first."""
     steps = drive_force.size
-    state = longitudinal.initial_state()
-    out = longitudinal.allocate(steps)
-    longitudinal.simulate(config, steps, state, drive_force, out)
-    first = out.tobytes()
-    out[:] = np.nan
-    longitudinal.simulate(config, steps, state, drive_force, out)
-    assert out.tobytes() == first
+    reused = _run(config, steps, drive_force)
+    reused[:] = np.nan
+    longitudinal.simulate(config, steps, longitudinal.initial_state(), drive_force, reused)
+    rebuilt = _run(spec.kernel_config(), steps, drive_force)
+    assert reused.tobytes() == rebuilt.tobytes()
 
 
 def test_the_run_reads_no_clock_and_no_random_source(
@@ -342,13 +362,19 @@ def test_the_step_loop_performs_no_allocation(config: KernelConfig) -> None:
 
     The first half of the test is the control: a kernel that *does* allocate inside its loop has
     to show a count that grows, otherwise the counters are not measuring anything and the second
-    half would pass vacuously.
+    half would pass vacuously. The counters themselves are asserted on rather than skipped when
+    they are off, for the same reason - a measurement that silently stops measuring is not a pass.
     """
-    if os.environ.get("NUMBA_NRT_STATS") != "1":
-        pytest.skip("numba NRT allocation counters are off; tests/conftest.py sets NUMBA_NRT_STATS")
-
     from numba import njit
+    from numba.core import config as numba_config
     from numba.core.runtime import nrt
+
+    # numba parses this flag into its own config namespace at import time by writing module
+    # globals, so it is read through getattr rather than off the module directly.
+    assert getattr(numba_config, "NRT_STATS", False), (
+        "numba's NRT allocation counters are off, so this test would pass vacuously; "
+        "tests/conftest.py sets NUMBA_NRT_STATS before numba is imported"
+    )
 
     @njit(cache=False)
     def allocating(steps: int) -> float:
@@ -360,7 +386,7 @@ def test_the_step_loop_performs_no_allocation(config: KernelConfig) -> None:
 
     def allocations_for(steps: int) -> tuple[tuple[int, int], tuple[int, int]]:
         """Allocations for one run of the kernel, and for one run of the control kernel."""
-        force = longitudinal.constant_longitudinal_force(steps=steps, force_n=1.0)
+        force = np.full(steps, 1.0, dtype=np.float64)
         state = longitudinal.initial_state()
         out = longitudinal.allocate(steps)
         longitudinal.simulate(config, steps, state, force, out)
@@ -402,6 +428,24 @@ def test_the_caller_owns_every_buffer_and_the_inputs_survive_the_run(
     assert returned.ctypes.data == out.ctypes.data
     assert drive_force.tobytes() == force_before
     assert state.tobytes() == state_before
+
+
+def test_read_only_state_and_force_are_accepted_because_the_kernel_never_writes_them(
+    config: KernelConfig,
+) -> None:
+    """A caller may hand over inputs it does not own outright; ``out`` is the only destination."""
+    steps = 64
+    force_n = np.full(steps, config.mass_kg * config.gravity_m_s2, dtype=np.float64)
+    force_n.flags.writeable = False
+    state = longitudinal.initial_state(speed_m_s=3.0)
+    state.flags.writeable = False
+    out = longitudinal.allocate(steps)
+    returned = longitudinal.simulate(config, steps, state, force_n, out)
+    assert returned[-1, longitudinal.V_INDEX] == pytest.approx(
+        3.0 + config.gravity_m_s2 * steps * config.dt_s,
+        rel=1.0e-12,
+    )
+    assert force_n.tobytes() == np.full(steps, config.mass_kg * config.gravity_m_s2).tobytes()
 
 
 def test_editing_the_car_spec_changes_the_run_with_no_code_edit(
@@ -447,7 +491,7 @@ def test_a_buffer_the_run_cannot_fill_is_refused_in_python(
     state_size: int,
     rows: int,
 ) -> None:
-    """Every check the kernel cannot make belongs in the caller, before the loop starts."""
+    """Every check the loop cannot make belongs in the caller, before the loop starts."""
     force = np.zeros(force_size, dtype=np.float64)
     state = np.zeros(state_size, dtype=np.float64)
     out = np.zeros((rows, longitudinal.STATE_SIZE), dtype=np.float64)
@@ -464,13 +508,89 @@ def test_a_float32_buffer_is_refused_in_python(config: KernelConfig) -> None:
         longitudinal.simulate(config, 4, state, force, out)
 
 
-def test_a_negative_step_count_is_refused_in_python(config: KernelConfig) -> None:
-    """A negative step count is a caller mistake, and is caught before any buffer is sized."""
+def test_a_buffer_that_is_not_an_ndarray_is_refused_in_python(config: KernelConfig) -> None:
+    """A list would be converted by the dispatcher, and the caller would not get the buffer back."""
+    not_an_array: Any = [0.0, 0.0]
+    with pytest.raises(ValueError, match="ndarray"):
+        longitudinal.simulate(config, 4, not_an_array, np.zeros(4), np.zeros((5, 2)))
+
+
+def test_a_strided_buffer_is_refused_in_python(config: KernelConfig) -> None:
+    """Contiguity is part of the kernel contract, so it is checked rather than silently honoured."""
+    force = np.zeros(8, dtype=np.float64)[::2]
+    assert not force.flags.c_contiguous
+    with pytest.raises(ValueError, match="contiguous"):
+        longitudinal.simulate(config, 4, longitudinal.initial_state(), force, np.zeros((5, 2)))
+
+
+def test_a_read_only_output_buffer_is_refused_in_python(config: KernelConfig) -> None:
+    """``out`` is the kernel's only destination, so a read-only buffer is an out-of-bounds write."""
+    steps = 4
+    out = longitudinal.allocate(steps)
+    out.flags.writeable = False
+    with pytest.raises(ValueError, match="read-only"):
+        longitudinal.simulate(config, steps, longitudinal.initial_state(), np.zeros(steps), out)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0e-4, math.nan, math.inf])
+def test_a_step_that_could_not_produce_a_run_is_refused_in_python(
+    config: KernelConfig,
+    value: float,
+) -> None:
+    """``KernelConfig`` is a public frozen dataclass, so it can carry a step the loader would not.
+
+    Nothing in the loop checks ``dt_s``; a zero or nonfinite step is arithmetic that returns NaNs
+    or an empty-looking run rather than an error, which is the kind of bug that surfaces three
+    tasks later as an implausible trace.
+    """
+    broken = replace(config, dt_s=value)
+    with pytest.raises(ValueError, match="dt_s"):
+        _run(broken, 4, np.zeros(4, dtype=np.float64))
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, math.nan])
+def test_a_mass_that_could_not_produce_a_run_is_refused_in_python(
+    config: KernelConfig,
+    value: float,
+) -> None:
+    """Same for ``mass_kg``: the loop divides by it, so zero mass is a silent NaN trace."""
+    broken = replace(config, mass_kg=value)
+    with pytest.raises(ValueError, match="mass_kg"):
+        _run(broken, 4, np.zeros(4, dtype=np.float64))
+
+
+@pytest.mark.parametrize("steps", [4.0, 4.5, True, "4", None])
+def test_a_step_count_that_is_not_an_integer_is_refused_in_python(
+    config: KernelConfig,
+    steps: Any,
+) -> None:
+    """A float count would compile a second float64 specialisation of the same integrator.
+
+    ``int(4.0)`` would hide that, and ``bool`` is an ``int`` by Python's rules but never a
+    meaningful step count, so both are refused rather than coerced.
+    """
     with pytest.raises(ValueError, match="steps"):
         longitudinal.simulate(
             config,
-            -1,
+            steps,
             longitudinal.initial_state(),
-            np.zeros(0, dtype=np.float64),
-            longitudinal.allocate(0),
+            np.zeros(4, dtype=np.float64),
+            np.zeros((5, longitudinal.STATE_SIZE), dtype=np.float64),
         )
+
+
+def test_an_integer_like_step_count_is_accepted(config: KernelConfig) -> None:
+    """``operator.index`` is what the boundary uses, so a numpy integer is a legal count."""
+    steps = 4
+    force = np.zeros(steps, dtype=np.float64)
+    state = longitudinal.initial_state()
+    with_int = longitudinal.simulate(config, steps, state, force, longitudinal.allocate(steps))
+    numpy_integer: Any = np.int64(steps)
+    with_numpy = longitudinal.simulate(
+        config,
+        numpy_integer,
+        state,
+        force,
+        np.zeros((steps + 1, longitudinal.STATE_SIZE), dtype=np.float64),
+    )
+    assert with_int.tobytes() == with_numpy.tobytes()

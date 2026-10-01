@@ -10,20 +10,23 @@ from pathlib import Path
 
 import pytest
 
+# Numba's NRT allocation counters are the only thing that can see memory allocated inside
+# compiled code, and `tests/test_longitudinal_kernel.py` uses them to show that the step loop
+# allocates nothing. Numba reads the flag when its config module is first imported, so this has
+# to be set before the project imports below, which are what pull numba in.
+os.environ["NUMBA_NRT_STATS"] = "1"
+
 from f1telemetry.contracts.car_spec import CarSpec, car_spec_path, load_car_spec
 from f1telemetry.contracts.channels import (
     ChannelContract,
     channels_yaml_path,
     load_channel_contract,
 )
-from f1telemetry.testing.fixtures import cornering_record, straight_line_record
+from f1telemetry.testing.fixtures import (
+    cornering_record,
+    straight_line_record,
+)
 from f1telemetry.testing.records import SampleRecord
-
-# Numba's NRT allocation counters are the only thing that can see memory allocated inside
-# compiled code, and `tests/test_longitudinal_kernel.py` uses them to show that the step loop
-# allocates nothing. Numba reads the flag when its config module is first imported, so it has
-# to be set here, before any test module can import numba.
-os.environ["NUMBA_NRT_STATS"] = "1"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

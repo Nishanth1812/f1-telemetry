@@ -167,7 +167,7 @@ golden` (7 passed), `ruff check` and `ruff format --check` clean, `basedpyright`
 ## Task 2 status
 
 Done. `src/f1telemetry/kernels/longitudinal.py` (new) and `tests/test_longitudinal_kernel.py`
-(new, 22 tests, `kernel` marker). Also touched: `src/f1telemetry/kernels/__init__.py` (the
+(new, 34 tests, `kernel` marker). Also touched: `src/f1telemetry/kernels/__init__.py` (the
 package docstring claimed P0 held the only kernel), `tests/conftest.py` (Numba NRT counters, see
 below), `pyproject.toml` (`kernel` marker, one more `TID251` carve-out).
 
@@ -185,15 +185,24 @@ the force models do.
 
 ### Interface frozen for Task 3
 
-- `longitudinal.simulate(config, steps, state, force_n, out) -> out` is the entry point. It reads
-  `config.dt_s` and `config.mass_kg` **once**, in Python, outside the loop, per the Task 1
-  handoff - it does not rebuild the config per step.
+- `longitudinal.simulate(config, steps, state, force_n, out) -> out` is the **only** entry point.
+  It reads `config.dt_s` and `config.mass_kg` **once**, in Python, outside the loop, per the
+  Task 1 handoff - it does not rebuild the config per step. The compiled loop itself is
+  `_integrate`, private: `boundscheck=False` makes an undersized buffer a silent out-of-bounds
+  write, so there is exactly one way in and it validates.
+- What `simulate` refuses before the loop starts: a nonfinite or nonpositive `dt_s` or
+  `mass_kg`; a step count that is not an integer (`operator.index`, `bool` included in the
+  refusal, so `4.0` cannot compile a second float64 specialisation); and any buffer that is not
+  a C-contiguous `float64` `ndarray` of the right shape, with `out` additionally required to be
+  writable. Read-only `state` and `force_n` are fine - the kernel never writes them. The force
+  history is **not** scanned: that is Task 3's input to check, not Task 2's.
 - Buffer shapes, all caller-owned `float64`: `state` `(2,)`, `force_n` `(steps,)`,
   `out` `(steps + 1, 2)` with row 0 seeded from `state` and row *n* the state after *n* steps.
-  Shape and dtype are checked in `simulate`, never inside the loop.
-- `longitudinal.allocate(steps)`, `initial_state(distance_m, speed_m_s)` and
-  `constant_longitudinal_force(steps, force_n)` allocate caller buffers. The last one is a
-  placeholder until Task 3/4 produce real forces; Task 5 should not use it.
+- `longitudinal.allocate(steps)` and `initial_state(distance_m, speed_m_s)` are the whole
+  allocation surface. There is no force-array helper: `np.full` is one line and a helper that
+  only manufactures a constant force is a placeholder Task 3 makes obsolete.
+- There is no public `step`. The integrator is the API; a one-step entry point would be a second
+  way in and a second thing to keep in step with the scheme.
 - Tests import the kernel only from `tests/test_longitudinal_kernel.py`, which carries the
   `TID251` per-file ignore. Anything else that needs the kernel needs its own carve-out in
   `pyproject.toml`, or the layer-isolation rule will refuse it.
@@ -211,12 +220,20 @@ the force models do.
 
 ### Testing note for whoever runs this next
 
-`tests/conftest.py` sets `NUMBA_NRT_STATS=1` before numba is imported.
+`tests/conftest.py` sets `NUMBA_NRT_STATS=1` above the project imports, which is the only point
+at which numba reads it.
 `test_the_step_loop_performs_no_allocation` uses Numba's NRT counters to show the step loop
 allocates nothing, and it carries its own control - a kernel that does allocate in its loop, whose
-count must grow - so the measurement cannot pass vacuously if numba's internals move. Measured on
-this machine: 3 allocations per call for the kernel at both 1,000 and 100,000 steps, against
-1,000 and 100,000 for the control.
+count must grow - so the measurement cannot pass vacuously if numba's internals move. It also
+asserts that the counters are on instead of skipping when they are not: a measurement that
+silently stopped measuring is not a pass. Measured on this machine: 3 allocations per call for the
+kernel at both 1,000 and 100,000 steps, against 1,000 and 100,000 for the control.
+
+`cache=True` is proven the way P0-T1b proves it for the probe - the test calls the kernel and then
+looks for the `.nbi` cache index numba writes beside the module (or under `NUMBA_CACHE_DIR`) - and
+`fastmath`/`nogil`/`boundscheck`/`error_model` are read back off the dispatcher's own
+`targetoptions`. `TARGET_OPTIONS`, a literal copy of the decorator text, is gone: it could only
+ever agree with the decorator, which is the thing that needed checking.
 
 TDD record: RED was a behavioural probe against the pre-Task-2 tree (the only compiled kernel was
 the oscillator probe, which has no force input, decelerates a forward-moving car, and knows
@@ -225,3 +242,51 @@ two-part record Task 1 used, because a missing module cannot fail behaviourally.
 `pytest tests/test_longitudinal_kernel.py` 22 passed; `pytest -q` 136 passed; `pytest -m invariant`
 12 passed; `pytest -m golden` 7 passed; `ruff check`, `ruff format --check`, `basedpyright`
 (0 errors / 0 warnings / 0 notes), `f1-check-contract`, `f1-codegen` and the web build all clean.
+
+## Task 2 review — fix round
+
+Reviewer: Space Bunny Alpha, model `openrouter/stealth/space-bunny-alpha`. One follow-up commit on
+top of `dbbf767`; the fixes below are the review's eight findings and nothing else.
+
+1. **The cache claim was self-referential.** The old test asserted `TARGET_OPTIONS["cache"] is
+   True` against a dict literal that duplicated the decorator text, so it could not fail if
+   caching broke. It now compiles the kernel and requires the `.nbi` index numba writes beside the
+   module, and reads `fastmath`/`nopython`/`nogil`/`boundscheck`/`error_model` off
+   `dispatcher.targetoptions`. `TARGET_OPTIONS` is deleted rather than kept as a second copy of
+   the same six values. Falsified by changing the decorator to `cache=False`: one failure, in the
+   cache test only.
+2. **The compiled loop was public.** `integrate` was exported, callable directly, and compiled with
+   `boundscheck=False`, so an undersized `out` wrote past its end without a word. It is now
+   `_integrate`, out of `__all__`, and the module docstring says why the private name is the safety
+   property rather than a style choice.
+3. **Zero mass and a NaN step produced NaNs silently.** `simulate` now refuses a nonfinite or
+   nonpositive `config.dt_s` or `config.mass_kg` before Numba sees them. `KernelConfig` is loader
+   validated, but it is a public frozen dataclass and `dataclasses.replace` is the same path a
+   YAML edit takes, so the kernel boundary checks the two scalars it actually uses. The force
+   history is left alone: scanning it is Task 3's job.
+4. **A buffer check could itself crash or lie.** `_check_buffer` takes `object` and raises
+   `ValueError` naming the buffer when it is not an `ndarray`, requires C-contiguity for every
+   buffer (the contract already said so), and requires `out` to be writable. Read-only `state`
+   and `force_n` stay legal - the kernel only reads them - and a test says so.
+5. **The duplicate `step` is gone.** It was a second public entry point implementing a scheme
+   `integrate` already implements, which is two things to keep in step rather than one.
+6. **`constant_longitudinal_force` is gone.** It existed only to give the tests a force array and
+   called itself a temporary placeholder; the tests use `np.full` and the docstring says why.
+7. **`NUMBA_NRT_STATS` was set after the imports it had to precede**, and the allocation test
+   *skipped* when the counters were off - the one case where the measurement is worthless was the
+   case that passed silently. The flag is now set above the project imports in `conftest.py`, and
+   the test asserts on `numba.core.config.NRT_STATS` (read with `getattr`: numba writes these
+   flags into its module globals at import, so there is no static attribute to read).
+8. **A float step count reached Numba**, which would have compiled a second float64
+   specialisation of the integrator and quietly accepted `4.0`. The boundary now goes through
+   `operator.index`, refuses `bool` as well as non-integers, and returns a real `int`.
+
+Test count went 22 -> 34, and the file got smaller in what it claims: the duplicate byte-identity
+and buffer-reuse tests are one test now, the driven-run increment/finite/analytic checks are one
+test, and `representative run is finite` no longer restates what the reference test proves. What
+replaced them is the new boundary coverage and the falsifiable cache proof.
+
+Final verification: `pytest tests/test_longitudinal_kernel.py` 34 passed (from a cold `__pycache__`,
+so the cache test proves a real compile), `pytest -q` 148 passed, `pytest -m invariant` 12 passed,
+`pytest -m golden` 7 passed, `ruff check` and `ruff format --check` clean, `basedpyright`
+0 errors / 0 warnings / 0 notes, `f1-check-contract` clean, `f1-codegen` 0 files changed.

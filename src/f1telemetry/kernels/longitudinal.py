@@ -29,15 +29,20 @@ fixes; the tests assert the file still says so.
 reassociation, which would make the byte-identity claim version-dependent rather than a
 property of the kernel.
 
-Neither kernel validates anything, and neither can: a compiled function that raises would be a
-different kind of kernel. Everything the loop cannot check - buffer shapes, dtypes and sizes -
-is checked by :func:`simulate` before the loop starts, which is where ``PHASES.md`` says such
-checks belong, so a mistake surfaces as a :class:`ValueError` naming the buffer instead of as
-an out-of-bounds read at speed.
+The compiled loop is :func:`_integrate`, and it is private on purpose: ``boundscheck=False``
+means an undersized buffer is an out-of-bounds write with no error at all, so the only way
+that can be safe is for there to be exactly one way in. :func:`simulate` is that way. It is the
+whole boundary - the one-way ``@njit`` boundary ``PHASES.md`` asks for - and it refuses a
+nonfinite or nonpositive ``dt_s`` or ``mass_kg``, a step count that is not an integer, and any
+buffer that is not a C-contiguous ``float64`` ``ndarray`` of exactly the size the run needs. A
+mistake surfaces as a :class:`ValueError` naming the buffer instead of as a silent write past
+the end of an array.
 """
 
 from __future__ import annotations
 
+import math
+import operator
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -48,49 +53,20 @@ if TYPE_CHECKING:
 
 __all__ = [
     "STATE_SIZE",
-    "TARGET_OPTIONS",
     "V_INDEX",
     "X_INDEX",
     "allocate",
-    "constant_longitudinal_force",
     "initial_state",
-    "integrate",
     "simulate",
-    "step",
 ]
 
 STATE_SIZE: Final[int] = 2
 X_INDEX: Final[int] = 0
 V_INDEX: Final[int] = 1
 
-# Mirrors the probe's options. Kept as data so a test can assert the compiler was told what
-# this module claims it was told, rather than trusting the decorator text.
-TARGET_OPTIONS: Final[dict[str, object]] = {
-    "cache": True,
-    "fastmath": False,
-    "nogil": True,
-    "boundscheck": False,
-    "error_model": "numpy",
-}
-
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
-def step(state: np.ndarray, force_n: float, out: np.ndarray, dt_s: float, mass_kg: float) -> None:
-    """One semi-implicit Euler step of the straight-line point mass.
-
-    ``state`` and ``out`` are ``[distance_m, speed_m_s]``. Semi-implicit means the position is
-    advanced with the speed this step produced, not the speed it started with; the explicit
-    alternative is the same arithmetic with ``state[V_INDEX]`` on the second line, and the two
-    schemes part company by one step of velocity - ``acceleration * dt_s**2`` per step, growing
-    with the run - so the choice is pinned by a test rather than left to taste.
-    """
-    acceleration = force_n / mass_kg
-    out[V_INDEX] = state[V_INDEX] + acceleration * dt_s
-    out[X_INDEX] = state[X_INDEX] + out[V_INDEX] * dt_s
-
-
-@njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
-def integrate(
+def _integrate(
     steps: int,
     dt_s: float,
     mass_kg: float,
@@ -105,8 +81,14 @@ def integrate(
     per step plus the initial condition. ``force_n`` holds the net longitudinal force for each
     step, so no force is computed here and none is allocated.
 
+    Semi-implicit means the position is advanced with the speed this step produced, not the
+    speed it started with; the explicit alternative is the same arithmetic with ``out[index,
+    V_INDEX]`` on the last line, and the two schemes part company by one step of velocity per
+    step, so the choice is pinned by a test rather than left to taste.
+
     The loop reads and writes only the three arrays it was given, and returns the caller's
-    ``out`` so a scenario can hold the buffer it wrote into.
+    ``out`` so a scenario can hold the buffer it wrote into. Nothing is checked here - see the
+    module docstring - so it must only ever be reached through :func:`simulate`.
     """
     out[0, X_INDEX] = state[X_INDEX]
     out[0, V_INDEX] = state[V_INDEX]
@@ -125,19 +107,8 @@ def initial_state(distance_m: float = 0.0, speed_m_s: float = 0.0) -> np.ndarray
 
 def allocate(steps: int) -> np.ndarray:
     """Caller-owned output buffer, shape ``(steps + 1, STATE_SIZE)``."""
-    _check_steps(steps)
-    return np.zeros((steps + 1, STATE_SIZE), dtype=np.float64)
-
-
-def constant_longitudinal_force(steps: int, force_n: float = 0.0) -> np.ndarray:
-    """Caller-owned force history, shape ``(steps,)``, constant over the run.
-
-    Task 3 and Task 4 replace this with computed forces. It exists now because the integrator
-    takes force as an input, so a run needs a force array whether or not anything can yet
-    produce a physically interesting one.
-    """
-    _check_steps(steps)
-    return np.full(steps, force_n, dtype=np.float64)
+    count = _checked_steps(steps)
+    return np.zeros((count + 1, STATE_SIZE), dtype=np.float64)
 
 
 def simulate(
@@ -149,31 +120,70 @@ def simulate(
 ) -> np.ndarray:
     """Integrate a straight-line run from a validated :class:`KernelConfig`, in fixed steps.
 
-    The one entry point a scenario uses. It reads ``dt_s`` and ``mass_kg`` from the config once,
-    here in Python, and hands the compiled loop nothing but numbers - the kernel never sees the
-    config object, a YAML document or a keyword argument.
+    The one entry point a scenario uses, and the only thing in this module that touches the
+    compiled loop. It reads ``dt_s`` and ``mass_kg`` out of the config once, here in Python, and
+    hands the compiled loop nothing but numbers - the kernel never sees the config object, a
+    YAML document or a keyword argument.
 
     Every buffer is the caller's, and every one is validated before the loop starts rather than
-    inside it: a bad shape or dtype raises :class:`ValueError` naming the buffer, which is the
-    one-way ``@njit`` boundary ``PHASES.md`` asks for. ``steps`` may be zero, which writes the
-    initial state into row 0 and nothing else.
+    inside it, because ``boundscheck=False`` means the loop cannot. So are the two config
+    scalars and the step count: :class:`KernelConfig` is normally range-checked by the loader,
+    but it is a public frozen dataclass and can be built or replaced directly, and a zero mass
+    or a NaN step is arithmetic that returns NaNs rather than an error. ``steps`` may be zero,
+    which writes the initial state into row 0 and nothing else.
 
     Returns ``out``, so a caller can write ``out = simulate(...)`` without giving up the buffer.
     """
-    _check_steps(steps)
-    _check_buffer("state", state, (STATE_SIZE,))
-    _check_buffer("force_n", force_n, (steps,))
-    _check_buffer("out", out, (steps + 1, STATE_SIZE))
-    return integrate(steps, config.dt_s, config.mass_kg, force_n, state, out)
+    count = _checked_steps(steps)
+    for name, value in (("dt_s", config.dt_s), ("mass_kg", config.mass_kg)):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"simulate: config.{name} must be finite and > 0, got {value!r}. The kernel "
+                "divides by mass_kg and multiplies by dt_s, so neither value is checked for "
+                "you once the loop starts"
+            )
+    _check_buffer("state", state, (STATE_SIZE,), writable=False)
+    _check_buffer("force_n", force_n, (count,), writable=False)
+    _check_buffer("out", out, (count + 1, STATE_SIZE), writable=True)
+    return _integrate(count, config.dt_s, config.mass_kg, force_n, state, out)
 
 
-def _check_steps(steps: int) -> None:
-    if steps < 0:
-        raise ValueError(f"steps must be >= 0, got {steps}")
+def _checked_steps(steps: int) -> int:
+    """The step count as a genuine ``int``, or a :class:`ValueError`.
+
+    ``operator.index`` rather than ``int()`` on purpose: a float count would otherwise be
+    passed straight to the compiled loop, where it compiles a *second* float64 specialisation
+    of the same integrator and a ``4.0`` step count would quietly succeed. ``bool`` is refused
+    even though it is an ``int``, because ``simulate(config, True, ...)`` is a bug.
+    """
+    if isinstance(steps, bool):
+        raise ValueError(f"steps must be an integer, got {steps!r} of type {type(steps).__name__}")
+    try:
+        count = operator.index(steps)
+    except TypeError as error:
+        raise ValueError(
+            f"steps must be an integer, got {steps!r} of type {type(steps).__name__}"
+        ) from error
+    if count < 0:
+        raise ValueError(f"steps must be >= 0, got {count}")
+    return count
 
 
-def _check_buffer(name: str, array: np.ndarray, shape: tuple[int, ...]) -> None:
-    """Refuse a buffer the kernel would read out of bounds or quietly re-quantise."""
+def _check_buffer(name: str, array: object, shape: tuple[int, ...], *, writable: bool) -> None:
+    """Refuse a buffer the kernel would read out of bounds or quietly re-quantise.
+
+    ``state`` and ``force_n`` are read-only as far as the kernel is concerned, so a caller may
+    hand over a buffer it does not want written; ``out`` is the kernel's only destination and
+    must be writable. Contiguity is part of the contract in ``car_spec.KernelConfig`` and in
+    ``PLAN.md`` section 4.1, and a strided buffer would compile as a differently-typed kernel
+    rather than being rejected.
+    """
+    if not isinstance(array, np.ndarray):
+        raise ValueError(
+            f"simulate: {name} must be a numpy ndarray, got {type(array).__name__}. Anything "
+            "else would be copied into the kernel, so the buffer the caller holds is not the "
+            "one the run writes"
+        )
     if array.dtype != np.float64:
         raise ValueError(
             f"simulate: {name} buffer must be float64, got {array.dtype}. The kernel is "
@@ -181,3 +191,13 @@ def _check_buffer(name: str, array: np.ndarray, shape: tuple[int, ...]) -> None:
         )
     if array.shape != shape:
         raise ValueError(f"simulate: {name} buffer must have shape {shape}, got {array.shape}")
+    if not array.flags.c_contiguous:
+        raise ValueError(
+            f"simulate: {name} buffer must be C-contiguous; a strided buffer compiles as a "
+            "different kernel signature and the run stops being the one the tests pin"
+        )
+    if writable and not array.flags.writeable:
+        raise ValueError(
+            f"simulate: {name} buffer is read-only. It is the kernel's only destination, so a "
+            "read-only buffer makes the run write out of bounds"
+        )
