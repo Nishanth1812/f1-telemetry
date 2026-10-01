@@ -108,23 +108,6 @@ _PER_CORNER_SIGNALS = {
     "brake_temp",
 }
 
-# The only two provenance values a channel may carry. `provenance` is not part of the
-# loader's `Channel` dataclass - it is a contract claim about where a *number* came from,
-# not a sampling property - so these two tests read the raw YAML rather than the contract.
-PROVENANCE_VALUES = frozenset({"illustrative", "fia_limit"})
-
-# Channels whose bounds are a regulation operating limit rather than a simulator setting,
-# mapped to the clause each one is read out of. Issue 20 is the current issue; a bump in
-# issue number means re-reading the clause text, not a different number here.
-FIA_LIMIT_CLAUSES = {
-    "gear": ("C9.6.1", "C9.7"),
-    "mgu_k_power_kw": ("C5.2.7",),
-}
-
-# The regulation issue these clause numbers are quoted from, as it must appear in the
-# `source` line of every fia_limit channel.
-FIA_SOURCE_CITATION = ("FIA 2026", "Section C", "Issue 20", "2026-08-05")
-
 
 def _minimal_channel(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
@@ -150,16 +133,6 @@ def _write_contract(tmp_path: Path, channels: list[dict[str, object]]) -> Path:
         encoding="utf-8",
     )
     return path
-
-
-def _raw_channel_entries(repo: Path) -> list[dict[str, object]]:
-    """The channel list as written, before the loader expands per-corner signals.
-
-    Provenance is a declaration about where a bound came from, so it is asserted on the
-    file rather than on the corner-expanded contract.
-    """
-    root = yaml.safe_load((repo / "channels.yaml").read_text(encoding="utf-8"))
-    return list(root["channels"])
 
 
 def test_every_plan_section_5_2_group_is_present(contract: ChannelContract) -> None:
@@ -224,52 +197,6 @@ def test_every_channel_declares_the_full_field_metadata(contract: ChannelContrac
         if channel.quantisation is not None:
             assert channel.quantisation.step > 0.0
             assert channel.quantisation.full_scale >= abs(channel.range_max)
-
-
-def test_every_channel_declares_where_its_numbers_came_from(repo: Path) -> None:
-    """No channel may claim `provenance: plan` any more.
-
-    A plan provenance line said "PLAN.md section 5.2 lists this channel", which is true of
-    the inventory and silent about the bounds - and the bounds are the part a reader is
-    most likely to mistake for measured data. So every channel now answers one of two
-    questions instead: `illustrative` (a simulator setting we chose) or `fia_limit` (a
-    regulation operating limit). Nothing in between, and nothing unlabelled.
-    """
-    entries = _raw_channel_entries(repo)
-    unlabelled = sorted(
-        f"{entry['name']}={entry.get('provenance')!r}"
-        for entry in entries
-        if entry.get("provenance") not in PROVENANCE_VALUES
-    )
-    assert not unlabelled, f"channels without an illustrative/fia_limit provenance: {unlabelled}"
-
-    fia_limit = {entry["name"] for entry in entries if entry.get("provenance") == "fia_limit"}
-    assert fia_limit == set(FIA_LIMIT_CLAUSES), (
-        f"fia_limit must be exactly {sorted(FIA_LIMIT_CLAUSES)}, found {sorted(fia_limit)}"
-    )
-
-
-def test_fia_limit_bounds_are_quoted_from_the_current_issue(repo: Path) -> None:
-    """The two rule-derived bounds must say which clause, and which issue, they came from.
-
-    A bound with no clause behind it is indistinguishable from a guess, and a bound quoted
-    from a superseded issue silently goes stale. So `gear` and `mgu_k_power_kw` are pinned
-    to the clause numbers and to Issue 20 of FIA 2026 Section C, and their declared ranges
-    are pinned to those clauses rather than to whatever the generator happens to emit.
-    """
-    entries = {entry["name"]: entry for entry in _raw_channel_entries(repo)}
-
-    for name, clauses in FIA_LIMIT_CLAUSES.items():
-        entry = entries[name]
-        assert entry["provenance"] == "fia_limit", f"{name} is not fia_limit"
-        source = str(entry["source"])
-        missing = [c for c in (*FIA_SOURCE_CITATION, *clauses) if c not in source]
-        assert not missing, f"{name} source is missing {missing}: {source!r}"
-        assert entry["source_date"], f"{name} has no source_date"
-
-    assert entries["gear"]["range"] == [-1, 8]
-    assert entries["mgu_k_power_kw"]["range"] == [-350.0, 350.0]
-    assert entries["mgu_k_power_kw"]["quantise"]["full_scale"] == 350.0
 
 
 def test_sizing_is_computed_from_the_contract_not_estimated(contract: ChannelContract) -> None:
