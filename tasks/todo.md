@@ -45,14 +45,21 @@
 
 ## Task 3: Add aero and longitudinal tire forces
 
+**Status:** Done. Commit: `1f54838`. `src/f1telemetry/physics/forces.py` (new) and
+`tests/test_forces.py` (new, 36 tests, `forces` marker). Also touched: `car_spec.yaml`
+(`tyres.longitudinal_pacejka`, `tyres.slip_ratio_min_speed_m_s`), `KernelConfig` and its builder,
+`docs/calibration.md`, `pyproject.toml`. The Task 2 kernel is untouched. Ledger:
+`.superpowers/sdd/phase-1/progress.md` § Task 3 status.
+
 **Description:** Calculate speed-dependent drag/downforce and longitudinal Pacejka force from wheel slip and vertical load.
 
 **Acceptance criteria:**
-- [ ] `Cl(v)` and `Cd(v)` are configuration-driven functions and aero forces use the documented dynamic-pressure relationship.
-- [ ] Slip ratio guards its low-speed denominator; force sign and tire load behavior are covered by tests.
-- [ ] Force calculations remain finite and respect the configured longitudinal grip limit.
+- [x] `Cl(v)` and `Cd(v)` are configuration-driven functions and aero forces use the documented dynamic-pressure relationship.
+- [x] Slip ratio guards its low-speed denominator; force sign and tire load behavior are covered by tests.
+- [x] Force calculations remain finite and respect the configured longitudinal grip limit.
 
-**Verification:** Focused force tests for low speed, zero slip, increasing speed, and load changes.
+**Verification:** `uv run --frozen pytest tests/test_forces.py` (36 passed); `uv run --frozen pytest
+-m forces`; `uv run --frozen pytest`; `just check`.
 
 **Dependencies:** Tasks 1–2.
 

@@ -334,3 +334,126 @@ it is left as it stands.
 Verification for this follow-up: `pytest tests/test_longitudinal_kernel.py` 34 passed,
 `pytest -q` 148 passed, `pytest -m invariant` 12 passed, `ruff check` and `ruff format --check` over
 the tree clean, `basedpyright` 0 errors / 0 warnings / 0 notes.
+
+## Task 3 status
+
+Done. Commit: `1f54838`. `src/f1telemetry/physics/__init__.py` and
+`src/f1telemetry/physics/forces.py` (new), `tests/test_forces.py` (new, 36 tests, `forces`
+marker), plus `car_spec.yaml` (`tyres.longitudinal_pacejka`, `tyres.slip_ratio_min_speed_m_s`),
+`KernelConfig` and its builder in `src/f1telemetry/contracts/car_spec.py`, `docs/calibration.md`,
+and `pyproject.toml` (the `forces` marker and one more `TID251` carve-out). The Task 2 kernel is
+untouched.
+
+### What was built
+
+Five `njit` primitives and one Python composition. `dynamic_pressure_pa` (`q = 1/2 rho v^2`),
+`speed_curve` (the `Cl`/`Cd` lookup), `aero_forces` (`(downforce, drag)`, drag signed along +x),
+`slip_ratio` (`kappa = (omega r - v) / max(v, eps)`) and `tyre_longitudinal_force` (the
+longitudinal Magic Formula with the load guard). `step_forces(config, speed, wheel_speed, load)`
+composes the three models for one step, returns `(downforce_n, drag_n, tyre_fx_n)`, and is the one
+place the configuration and the state are checked before any arithmetic.
+
+New configuration: `pacejka_b/c/e/mu` and `slip_ratio_min_speed_m_s` on `KernelConfig`, all
+range-checked in `build_kernel_config` — the three magnitudes and the slip guard positive, the
+curvature factor finite but signed, because `E` carries a sign. `car_spec.yaml` labels all five
+synthesised; the audit passes unchanged.
+
+### Rulings
+
+1. **Interface: elemental primitives plus one composition, no axle aggregation.** Task 3 needed
+   aero, slip and a longitudinal force, and nothing else. Deciding which wheels get drive torque
+   and which get brake torque is Task 4's, and splitting downforce between the axles is P2-T2's,
+   so `step_forces` takes one `load_n` and returns one `tyre_fx_n`. A four-corner force vector
+   would have been a decision this task does not own.
+2. **`STATE_SIZE` did not grow, against the Task 2 handoff's expectation.** The handoff said the
+   state layout was expected to grow because Task 3 needs per-wheel slip and vertical load. It
+   does not: both are *inputs* to a force model, supplied per step by the caller, not state. The
+   state that produces wheel speed (`omega`) is Task 4's wheel rotational state, so Task 4 is
+   where `STATE_SIZE` and the index constants change if they change. The 34 Task 2 tests are
+   untouched and still green, which is the evidence that nothing about the integrator moved.
+3. **Interpolation: piecewise-linear, clamped at both ends.** Task 1 froze one shared speed axis
+   and left the interpolation undecided. Linear because six knots labelled "order of magnitude"
+   are a table, not a fit, and because it is the arithmetic `_interpolate` in
+   `tests/test_car_spec.py` already uses, so the kernel and the contract tests interpolate
+   identically rather than approximately. Clamped above 105 m/s because the table stops there and
+   extending the last segment would make a fast car's drag a function of a two-point line.
+4. **The grip limit is measured, not clamped.** `|Fx| <= mu Fz` is the Magic Formula's own bound
+   (`|sin| <= 1`), so a clamp would be a branch that can never fire. The test sweeps slip and
+   requires the peak to *reach* `mu Fz`, so a formula returning a constant fraction of the limit
+   cannot pass it either.
+5. **`Fz <= 0` returns exactly `0.0`**, negative loads included. A negative load makes
+   `D = mu Fz` negative and the whole expression invert, which would push the car the wrong way
+   from a tyre carrying nothing.
+6. **The aero coefficients are read at `abs(v)`.** A car rolling backwards at 80 m/s meets the
+   same air at the same dynamic pressure as one rolling forwards; reading the curve at -80 m/s
+   would take the below-range end value. This is what makes downforce even in speed and drag odd,
+   as `GroundTruthStep` requires.
+7. **The `Cl`/`Cd` curves were *not* replaced with a published parameter set.** Task 1's
+   `car_spec.yaml` note and this file's section 3 both said Task 3 would substitute the
+   Limebeer and Tremlett open F1 model. It does not, and does not pretend to: this project has
+   not read that parameter set, and a number it cannot cite is worth less than one it labels
+   (PLAN.md section 4). Both documents now say the curves are consumed as synthesised data and
+   that replacing them is open work. The Pacejka coefficients are synthesised on the same
+   principle.
+8. **No load sensitivity, asserted as linear.** `D = mu Fz` is what P1 uses; `PLAN.md` section 4
+   says a constant-`mu` tyre understates high-speed downforce, and load sensitivity on `D` and
+   `B` is P2-T3's. It is stated in the docstring *and* asserted in the tests, so P2-T3's change
+   is a visible edit rather than a silent correction.
+9. **`cache=True` is not asserted for the new dispatchers.** Numba consumes it at decoration, so
+   it is not on `targetoptions`. The fresh-interpreter proof in
+   `tests/test_longitudinal_kernel.py` covers the convention these functions follow; duplicating
+   that ceremony for five dispatchers was not worth the test time. The option set that *is*
+   readable is asserted on every primitive.
+
+### TDD record
+
+RED, two parts, as Task 1 and Task 2 needed. The new module does not exist, so
+`pytest tests/test_forces.py` cannot collect: `ModuleNotFoundError: No module named
+'f1telemetry.physics'`. A behavioural probe against the pre-Task-3 tree showed the gap as
+behaviour rather than as a missing file: `KernelConfig` carries the aero arrays but raises
+`AttributeError` for `pacejka_b`, `pacejka_c`, `pacejka_e`, `pacejka_mu` and
+`slip_ratio_min_speed_m_s`; the `tyres` block of `car_spec.yaml` has no tyre model coefficients
+at all; and the only simulation entry point in the repository is a 2-state point mass over a
+caller-supplied `force_n` array, so a caller had no way to obtain a force from a car spec.
+
+GREEN: `pytest tests/test_forces.py` 36 passed; `pytest -q` 192 passed (148 at Task 2, plus 36
+force tests and 8 new car-spec cases); `pytest -m invariant` 12 passed; `pytest -m golden` 7
+passed; `pytest -m forces` 36 passed; `ruff check` and `ruff format --check` clean over the tree;
+`basedpyright` 0 errors / 0 warnings / 0 notes; `f1-check-contract` clean; `f1-codegen` 0 files
+changed; web production build passing.
+
+Two test-expectation bugs surfaced as red during the green phase and are worth recording, because
+both were the *test* being wrong about the physics rather than the physics being wrong:
+`aero_forces` originally read the curve at signed speed, which gave a car rolling backwards at
+80 m/s the drag of a stationary car, and the slip-ratio test expected `omega r / eps` below the
+guard when only the denominator is guarded, so the correct value is `(omega r - v) / eps`.
+
+### What Task 4 inherits
+
+1. **The seam is unchanged.** `longitudinal.simulate(config, steps, state, force_n, out)` still
+   takes the net longitudinal force per step as an input array, and the integrator is untouched.
+   Task 4 computes that array; Task 3 deliberately does not, because which wheels receive drive
+   torque and which receive brake torque is Task 4's decision.
+2. **Read the configuration once, outside the loop, and call the primitives.** The kernel should
+   take `air_density_kg_m3`, `reference_area_m2`, `aero_speed_m_s`, `cl`, `cd`, `pacejka_*` and
+   `slip_ratio_min_speed_m_s` from `KernelConfig` before the step loop and pass plain numbers to
+   `aero_forces`, `slip_ratio` and `tyre_longitudinal_force` — the same rule
+   `longitudinal.simulate` already follows for `dt_s` and `mass_kg`. `step_forces` is the
+   Python-facing composition and re-checks the config on every call; it is not a hot-path call.
+3. **A `TID251` carve-out will be needed.** `f1telemetry.physics` is on ruff's banned-api list, so
+   a kernel module that imports `f1telemetry.physics.forces` needs its own per-file ignore in
+   `pyproject.toml`, as the three test files now have.
+4. **The state layout is still Task 4's to change.** If wheel rotation becomes state, `STATE_SIZE`
+   and the index constants are what move; nothing in Task 3 depends on their current values.
+5. **The launch sits on the falling branch of the tyre curve.** With `eps = 1.0 m/s` a standing
+   start gives `kappa = omega r / 1.0`, which is far past the 0.36 peak, so a launch transmits
+   about 78 % of `mu Fz` rather than all of it. That is a consequence of the guard, recorded in
+   `car_spec.yaml` and `docs/calibration.md`, and it belongs to whoever models the launch.
+6. **Downforce has to be added to a load by the caller.** `step_forces` takes the vertical load
+   the patch carries; a straight-line run passes `static + downforce_n`. The front/rear split is
+   P2-T2's, so Task 4 chooses one and records it — invariant 3 only checks the sum.
+7. **A drag-limited top speed with the committed `Cd` and 750 kW lands above the PLAN section 11
+   band.** Rough arithmetic on the committed curves, not a measured run — there is no scenario yet
+   to measure it with — so it is a flag for Task 5's calibration, not a finding. Expect `Cd` or
+   the power split to move.
+
