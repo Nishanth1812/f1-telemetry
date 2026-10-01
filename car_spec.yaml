@@ -251,8 +251,15 @@ powertrain:
           When Overtake is not active: P(kW) = 1800 - 5 * car speed (kph) when the car speed
           is below 340kph; P(kW) = 6900 - 20 * car speed (kph) when the car speed is equal to
           or above 340kph and below 345kph; P(kW) = 0 when the car speed is equal to or above
-          345kph. Sampled at the breakpoints, with 290kph included because it is where
-          1800 - 5v reaches the 350kW absolute ERS-K cap.
+          345kph.
+        derived_points:
+          - speed_km_h: 290.0
+            basis: >-
+              Not a breakpoint in C5.2.8. The clause gives two linear segments meeting at
+              340 km/h, but 1800 - 5v reaches the 350kW absolute ERS-K cap of C5.2.7 at
+              290 km/h, so the sampled curve has to turn there or the first segment would
+              report more than the cap allows. The limit value is C5.2.7's; only the speed is
+              derived.
       overtake_curve_kw:
         clause: C5.2.8
         page: 64
@@ -393,10 +400,27 @@ chassis:
       quote: >-
         the mass measured at the rear axle must not be less than the Minimum Mass specified
         in Article C4.1 factored by 0.54.
+  c42_enforcement:
+    status: not_enforced
+    reason: >-
+      C4.2 constrains the mass at each axle as a fraction of the C4.1 Minimum Mass, and the
+      C4.1 Minimum Mass is 724kg *plus* the Nominal Tyre Mass. The two fractions therefore
+      share a denominator this project cannot compute: the Nominal Tyre Mass is published by
+      the tyre supplier after the final tyre-testing camp (C4.7), so it is not in the
+      regulations and is not known here.
+    blocked_by:
+      - mass.minimum_mass_kg does not include a Nominal Tyre Mass, because it is not known
+      - mass.total_kg is a running mass above the floor, not the regulatory denominator
+    enforced_instead: >-
+      The loader checks only that front_weight_fraction is a finite value strictly between 0
+      and 1, which needs no missing input. Comparing 0.46 against 0.44 as if both were
+      fractions of the same mass would enforce a rule that does not exist, so it is not done.
+    becomes_checkable_at: P2-T2, which owns the static axial split
   not_regulated:
     front_weight_fraction: >-
-      PLAN.md section 5 placeholder. C4.2 is a floor, not a distribution, so 0.46 is a
-      synthesised static split that satisfies it. P2-T2 replaces it with the measured static
+      PLAN.md section 5 placeholder: a synthesised static split, with no clause behind it.
+      It is not derived from the C4.2 floors, because those are fractions of a different
+      quantity (see c42_enforcement). P2-T2 replaces it with the measured static
       distribution once the roll stiffness distribution is known.
   note: >-
     `overall_width_m` replaces the P0 `floor_width_m: 1.9`. PLAN.md section 5's "1.9 m floor

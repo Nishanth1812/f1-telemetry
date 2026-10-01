@@ -13,6 +13,12 @@ The citation table below is pinned deliberately. It is the machine-checkable for
 these clauses out of the current issue", and it fails loudly when the file drifts from the
 document it claims to cite. The values themselves are re-checked against the clause wording in
 ``test_the_cited_clauses_still_say_what_the_values_claim``.
+
+``KernelConfig`` is referenced through the module rather than imported by name, so this file
+**collects against the P0 base**. That is deliberate: it is what makes the P1 tests fail on
+behaviour rather than on a missing symbol, which is the only kind of red evidence worth
+recording. Against P0 every test below fails on behaviour - no ``citations()``, no
+``kernel_config()``, no grid check, no ``front_weight_fraction`` range.
 """
 
 from __future__ import annotations
@@ -20,19 +26,22 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 import yaml
 
+from f1telemetry.contracts import car_spec as car_spec_module
 from f1telemetry.contracts.car_spec import (
     CarSpec,
     ContractError,
-    KernelConfig,
     load_car_spec,
     provenance_audit,
 )
+
+if TYPE_CHECKING:
+    from f1telemetry.contracts.car_spec import KernelConfig
 
 pytestmark = pytest.mark.contract
 
@@ -115,6 +124,54 @@ def test_spec_is_pinned_to_the_current_fia_issue(spec: CarSpec) -> None:
 
 def test_every_regulated_value_cites_the_clause_it_was_read_from(spec: CarSpec) -> None:
     assert spec.citations() == EXPECTED_CITATIONS
+
+
+def test_a_curve_claim_declares_its_derived_breakpoints(spec: CarSpec) -> None:
+    """A breakpoint the clause does not state must be machine-visible, not buried in prose.
+
+    C5.2.8 states the deployment limit as two linear segments meeting at 340 km/h. The
+    290 km/h point in the curve is not in the clause: it is where ``1800 - 5v`` reaches the
+    350 kW absolute ERS-K cap of C5.2.7, so the piecewise curve has to turn there. The whole
+    curve is cited to C5.2.8, which would read as four regulated points unless the derived one
+    is declared in the claim itself.
+    """
+    assert spec.derived_points() == {"powertrain.mgu_k.deployment_curve_kw": (290.0,)}
+
+    claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))
+    assert claim["clause"] == "C5.2.8"
+    entry = next(p for p in claim["derived_points"] if p["speed_km_h"] == 290.0)
+    assert "C5.2.7" in entry["basis"]
+
+
+def test_a_derived_point_that_is_not_in_the_curve_is_an_audit_failure(
+    tmp_path: Path, repo: Path
+) -> None:
+    root = _root(repo)
+    _at(root, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))["derived_points"] = [
+        {"speed_km_h": 123.0, "basis": "invented corner"}
+    ]
+    findings = provenance_audit(load_car_spec(_write(root, tmp_path)).raw)
+    assert findings == [
+        "powertrain.mgu_k.regulation.deployment_curve_kw.derived_points[123.0]: speed_km_h "
+        "123.0 is not a breakpoint of deployment_curve_kw; it has [0.0, 290.0, 340.0, 345.0]"
+    ]
+
+
+def test_a_derived_point_without_a_basis_is_an_audit_failure(tmp_path: Path, repo: Path) -> None:
+    root = _root(repo)
+    _at(root, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))["derived_points"] = [
+        {"speed_km_h": 290.0, "basis": "  "}
+    ]
+    findings = provenance_audit(load_car_spec(_write(root, tmp_path)).raw)
+    assert findings == [
+        "powertrain.mgu_k.regulation.deployment_curve_kw.derived_points[290.0].basis: expected "
+        "a sentence saying why this breakpoint is not in the clause"
+    ]
+
+
+def test_the_overspecified_derived_point_is_the_only_one(spec: CarSpec) -> None:
+    """The Overtake curve is two points and both are stated by C5.2.8.ii verbatim."""
+    assert spec.derived_points().get("powertrain.mgu_k.overtake_curve_kw") is None
 
 
 def test_the_cited_clauses_still_say_what_the_values_claim(spec: CarSpec) -> None:
@@ -226,6 +283,89 @@ def test_an_uncited_number_in_a_regulated_section_is_an_audit_failure(
     _at(root, ("mass",))["tyre_mass_kg"] = 40.0
     findings = provenance_audit(load_car_spec(_write(root, tmp_path)).raw)
     assert findings == ["mass: 'tyre_mass_kg' is a value with no regulation citation"]
+
+
+@pytest.mark.parametrize(
+    ("drop", "message"),
+    [
+        (2, "aero.cl_curve and aero.cd_curve must use the same speed_m_s breakpoints"),
+        (1, "aero.cl_curve and aero.cd_curve must use the same speed_m_s breakpoints"),
+    ],
+)
+def test_a_drag_curve_on_a_different_speed_grid_is_rejected(
+    tmp_path: Path, repo: Path, drop: int, message: str
+) -> None:
+    """Cl and Cd share one speed axis in ``KernelConfig``, so the grids must agree.
+
+    A Cd curve with different breakpoints would silently produce a ``cd`` array of a
+    different length to the ``aero_speed_m_s`` axis it is indexed by, which is an
+    out-of-bounds read inside the kernel rather than a load error. The loader is the only
+    place that can catch it.
+    """
+    root = _root(repo)
+    del _at(root, ("aero",))["cd_curve"][drop]
+    with pytest.raises(ContractError, match=message):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_a_cl_and_cd_grid_mismatch_is_caught_even_when_the_lengths_agree(
+    tmp_path: Path, repo: Path
+) -> None:
+    """Equal length is not enough: the same count at different speeds is still a mismatch."""
+    root = _root(repo)
+    _at(root, ("aero",))["cd_curve"][2]["speed_m_s"] = 41.0
+    with pytest.raises(ContractError, match=r"aero\.cl_curve and aero\.cd_curve"):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, -0.2, 1.5])
+def test_front_weight_fraction_must_be_a_strict_fraction(
+    tmp_path: Path, repo: Path, value: float
+) -> None:
+    """It is a fraction of a total mass, so it has no meaning outside (0, 1).
+
+    Note what is deliberately *not* checked: C4.2's 0.44 / 0.54 are fractions of the
+    regulatory Minimum Mass, which includes a separately published Nominal Tyre Mass, not
+    fractions of ``mass.total_kg``. See ``test_the_c42_floor_is_not_enforced_against_total_mass``.
+    """
+    root = _root(repo)
+    _at(root, ("chassis",))["front_weight_fraction"] = value
+    with pytest.raises(ContractError, match=r"chassis\.front_weight_fraction must be in \(0, 1\)"):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_the_c42_floor_is_not_enforced_against_total_mass(spec: CarSpec) -> None:
+    """C4.2 cannot be enforced here, and pretending otherwise would be wrong.
+
+    C4.2 reads "the mass measured at the front axle must not be less than the Minimum Mass
+    specified in Article C4.1 factored by 0.44". The Minimum Mass of C4.1 is *724 kg plus the
+    Nominal Tyre Mass*, and the Nominal Tyre Mass is published by the tyre supplier after the
+    final tyre-testing camp (C4.7) - it is not in the regulations and this project does not
+    have it. So the floor applies to ``minimum_mass_kg + nominal_tyre_mass_kg``, not to
+    ``mass.total_kg``, and comparing 0.46 against 0.44 as if both were fractions of the same
+    quantity would enforce a rule that does not exist.
+
+    What *is* enforced is the part that needs no missing input: the value is a fraction. The
+    two floors stay in ``car_spec.yaml`` as cited regulation data, and neither reaches
+    ``KernelConfig`` - the longitudinal kernel has no axle, so a P1 kernel would only misuse
+    them. P2-T2, which owns the axial split, is where C4.2 becomes checkable.
+    """
+    config = spec.kernel_config()
+    assert 0.0 < config.front_weight_fraction < 1.0
+
+    assert "minimum_front_axle_fraction" not in fields(car_spec_module.KernelConfig)
+    assert "minimum_rear_axle_fraction" not in fields(car_spec_module.KernelConfig)
+    # The floors are still recorded, with their clause, even though nothing consumes them yet.
+    chassis = _at(spec.raw, ("chassis",))
+    assert chassis["minimum_front_axle_fraction"] == 0.44
+    assert chassis["minimum_rear_axle_fraction"] == 0.54
+    assert chassis["regulation"]["minimum_front_axle_fraction"]["clause"] == "C4.2"
+    # And the missing input that blocks enforcement is named in the file, not glossed over.
+    enforcement = chassis["c42_enforcement"]
+    assert "Nominal Tyre Mass" in enforcement["reason"]
+    assert enforcement["status"] == "not_enforced"
+    assert enforcement["becomes_checkable_at"].startswith("P2-T2")
+    assert any("minimum_mass_kg" in item for item in enforcement["blocked_by"])
 
 
 def test_kernel_config_hands_over_plain_float64_arrays(spec: CarSpec) -> None:
@@ -344,7 +484,7 @@ def test_two_builds_from_one_spec_agree(spec: CarSpec) -> None:
     """Reproducibility starts here: the same spec must produce the same configuration."""
     first = spec.kernel_config()
     second = spec.kernel_config()
-    for field in fields(KernelConfig):
+    for field in fields(car_spec_module.KernelConfig):
         value = getattr(first, field.name)
         other = getattr(second, field.name)
         if isinstance(value, np.ndarray):

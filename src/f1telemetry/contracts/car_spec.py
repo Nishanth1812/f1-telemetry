@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
@@ -97,6 +97,10 @@ class KernelConfig:
     Scalars and 1-D ``float64`` arrays only, all C-contiguous and writable, so the kernel
     contract of ``PLAN.md`` section 4.1 holds: arrays in, arrays out, no dictionaries, no
     allocation, no string lookups. The caller owns every buffer.
+
+    Built once by :func:`load_car_spec` and reachable through
+    :meth:`CarSpec.kernel_config`. Every field is already range-checked at that point, so this
+    object carries no validation logic of its own and cannot disagree with the loader.
     """
 
     dt_s: float
@@ -169,6 +173,7 @@ class CarSpec:
     deployment_curve: DeploymentCurve | None = None
     overtake_curve: DeploymentCurve | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
+    kernel: KernelConfig | None = None
 
     @property
     def provenance(self) -> str:
@@ -204,12 +209,41 @@ class CarSpec:
         return self.wheel_rpm_at(gear, ice_rpm) * 2.0 * math.pi * self.rolling_radius_m / 60.0
 
     def kernel_config(self) -> KernelConfig:
-        """Validated flat arrays for the kernel.
+        """The validated flat arrays for the kernel.
 
-        Raises ``ContractError`` for any value that is missing, non-finite, or outside the
-        range where the physics it feeds is defined. The checks that matter are the ones a
-        compiled kernel cannot make: a division by a zero rolling radius, a slip denominator
-        that vanishes, a gear count the state vector was not sized for.
+        Built and range-checked exactly once, by :func:`load_car_spec`, so there is a single
+        validation path over these numbers rather than one per accessor. This method only
+        hands the stored result back.
+        """
+        if self.kernel is None:
+            raise ContractError("car spec was not built with a kernel configuration")
+        return self.kernel
+
+    def derived_points(self) -> dict[str, tuple[float, ...]]:
+        """``dotted.path`` -> curve speeds that the cited clause does **not** state.
+
+        A claim covers the value it names, but a piecewise curve usually needs at least one
+        breakpoint that is not in the regulation text - where two stated segments meet a third
+        limit, for instance. Claiming the whole curve to the clause would read as if every
+        point came from it. Those points are declared in the claim's ``derived_points`` list
+        and collected here, so a reader asking "which of these numbers are the regulation's?"
+        gets the partial answer from the same API as the citation table.
+        """
+        found: dict[str, tuple[float, ...]] = {}
+        for section in _TOP_LEVEL_SECTIONS:
+            block = self.raw.get(section)
+            if isinstance(block, Mapping):
+                _collect_derived(block, section, found)
+        return found
+
+    def build_kernel_config(self) -> KernelConfig:
+        """The one place every P1 kernel input is read and range-checked.
+
+        Values that :class:`CarSpec` already holds as typed, validated fields are read from
+        those fields, never re-parsed out of ``raw``; only the P1 inputs added beyond the P0
+        field set are parsed here. The checks are the ones a compiled kernel cannot make: a
+        division by a zero rolling radius, a slip denominator that vanishes, a speed grid
+        that would be indexed out of bounds.
         """
         raw = self.raw
         constants = _section(raw, "constants")
@@ -221,31 +255,38 @@ class CarSpec:
         gearbox = _section(raw, "gearbox")
         tyres = _section(raw, "tyres")
         chassis = _section(raw, "chassis")
-        integration = _section(raw, "integration")
 
-        cl = self.cl_curve or AeroCurve(speed_m_s=(0.0,), value=(0.0,))
-        cd = self.cd_curve or AeroCurve(speed_m_s=(0.0,), value=(0.0,))
-        deployment = self.deployment_curve or DeploymentCurve(speed_km_h=(0.0,), limit_kw=(0.0,))
-        overtake = self.overtake_curve or DeploymentCurve(speed_km_h=(0.0,), limit_kw=(0.0,))
+        cl = self.cl_curve
+        cd = self.cd_curve
+        deployment = self.deployment_curve
+        overtake = self.overtake_curve
+        if cl is None or cd is None or deployment is None or overtake is None:
+            raise ContractError("car spec was loaded without its curves")
+
+        _positive_values(cl.value, "car_spec: aero.cl_curve: every cl must be > 0")
+        _positive_values(cd.value, "car_spec: aero.cd_curve: every cd must be > 0")
+        if cl.speed_m_s != cd.speed_m_s:
+            raise ContractError(
+                "car_spec: aero.cl_curve and aero.cd_curve must use the same speed_m_s "
+                f"breakpoints; got cl {list(cl.speed_m_s)} and cd {list(cd.speed_m_s)}. "
+                "KernelConfig exposes one shared speed axis, so a mismatch would index the "
+                "wrong curve."
+            )
 
         mass_kg = _positive(self.mass_kg, "car_spec: mass.total_kg")
         gravity = _positive(self.gravity_m_s2, "car_spec: constants.gravity_m_s2")
         air_density = _positive(self.air_density_kg_m3, "car_spec: constants.air_density_kg_m3")
         air_temperature = _number(
-            integration.get("air_temperature_k", constants.get("air_temperature_k")),
-            "car_spec: constants.air_temperature_k",
+            constants.get("air_temperature_k"), "car_spec: constants.air_temperature_k"
         )
         reference_area = _positive(self.reference_area_m2, "car_spec: aero.reference_area_m2")
         ride_height = _non_negative(
             aero.get("ride_height_sensitivity"), "car_spec: aero.ride_height_sensitivity"
         )
-        _positive_values(cl.value, "car_spec: aero.cl_curve: every cl must be > 0")
-        _positive_values(cd.value, "car_spec: aero.cd_curve: every cd must be > 0")
-
-        dt_s = _positive(integration.get("dt_s"), "car_spec: integration.dt_s")
-        ice_peak = _positive(ice.get("peak_power_kw"), "car_spec: powertrain.ice.peak_power_kw")
+        dt_s = _positive(self.dt_s, "car_spec: integration.dt_s")
+        ice_peak = _positive(self.ice_peak_power_kw, "car_spec: powertrain.ice.peak_power_kw")
         idle_rpm = _positive(ice.get("idle_rpm"), "car_spec: powertrain.ice.idle_rpm")
-        rev_limit = _positive(ice.get("rev_limit_rpm"), "car_spec: powertrain.ice.rev_limit_rpm")
+        rev_limit = _positive(self.rev_limit_rpm, "car_spec: powertrain.ice.rev_limit_rpm")
         if idle_rpm >= rev_limit:
             raise ContractError(
                 f"car_spec: powertrain.ice.rev_limit_rpm ({rev_limit}) must exceed idle_rpm "
@@ -266,14 +307,12 @@ class CarSpec:
             )
 
         mgu_k_power = _positive(
-            mgu_k.get("peak_power_kw"), "car_spec: powertrain.mgu_k.peak_power_kw"
+            self.mgu_k_peak_power_kw, "car_spec: powertrain.mgu_k.peak_power_kw"
         )
         store_energy = _positive(
             mgu_k.get("store_energy_mj"), "car_spec: powertrain.mgu_k.store_energy_mj"
         )
-        power_split = _number(
-            powertrain.get("power_split_ice"), "car_spec: powertrain.power_split_ice"
-        )
+        power_split = _number(self.power_split_ice, "car_spec: powertrain.power_split_ice")
         if not 0.0 < power_split < 1.0:
             raise ContractError(
                 f"car_spec: powertrain.power_split_ice must be in (0, 1), got {power_split}"
@@ -294,13 +333,22 @@ class CarSpec:
                 f"({shift_up})"
             )
 
-        rolling_radius = _positive(
-            tyres.get("rolling_radius_m"), "car_spec: tyres.rolling_radius_m"
-        )
+        rolling_radius = self.rolling_radius_m
         wheel_diameter = _positive(
             tyres.get("wheel_diameter_m"), "car_spec: tyres.wheel_diameter_m"
         )
         wheelbase = _positive(chassis.get("wheelbase_m"), "car_spec: chassis.wheelbase_m")
+        front_weight = _number(
+            chassis.get("front_weight_fraction"), "car_spec: chassis.front_weight_fraction"
+        )
+        if not 0.0 < front_weight < 1.0:
+            raise ContractError(
+                "car_spec: chassis.front_weight_fraction must be in (0, 1), got "
+                f"{front_weight}. It is a fraction of a total mass. Note that C4.2's 0.44 / 0.54 "
+                "are fractions of the C4.1 Minimum Mass including the separately published "
+                "Nominal Tyre Mass, not of mass.total_kg, so they are not enforced here - see "
+                "chassis.c42_enforcement."
+            )
 
         return KernelConfig(
             dt_s=dt_s,
@@ -372,10 +420,7 @@ class CarSpec:
             overall_width_m=_positive(
                 chassis.get("overall_width_m"), "car_spec: chassis.overall_width_m"
             ),
-            front_weight_fraction=_number(
-                chassis.get("front_weight_fraction"),
-                "car_spec: chassis.front_weight_fraction",
-            ),
+            front_weight_fraction=front_weight,
         )
 
 
@@ -507,7 +552,11 @@ def load_car_spec(path: Path | None = None) -> CarSpec:
     if rolling_radius <= 0.0:
         raise ContractError("car_spec: tyres.rolling_radius_m must be > 0")
 
-    return CarSpec(
+    # Range checks belong to one place. `CarSpec._build_kernel_config` is the single validation
+    # path over every P1 kernel input, so it runs here, at load, rather than being deferred to
+    # whichever accessor happens to touch a value. A bad edit therefore fails on load and the
+    # stored KernelConfig cannot disagree with the typed fields beside it.
+    loaded = CarSpec(
         spec=spec,
         mass_kg=_number(mass.get("total_kg"), "car_spec: mass.total_kg"),
         gravity_m_s2=_number(constants.get("gravity_m_s2"), "car_spec: constants.gravity_m_s2"),
@@ -545,6 +594,7 @@ def load_car_spec(path: Path | None = None) -> CarSpec:
         ),
         raw=root,
     )
+    return replace(loaded, kernel=loaded.build_kernel_config())
 
 
 def _is_value_node(node: Any) -> bool:
@@ -562,7 +612,11 @@ def _is_value_node(node: Any) -> bool:
     if isinstance(node, Sequence) and not isinstance(node, (str, bytes)) and node:
         return all(isinstance(entry, (int, float, Mapping)) for entry in node)
     if isinstance(node, Mapping):
-        return "provenance" not in node and not set(node) & set(_CLAIM_BLOCKS)
+        if "provenance" in node or set(node) & set(_CLAIM_BLOCKS):
+            return False
+        # A group of numbers (or curves) is a parameter group a claim may name; a group of
+        # prose and metadata is documentation, which no claim should have to explain.
+        return any(_is_value_node(value) for value in node.values())
     return False
 
 
@@ -578,6 +632,79 @@ def _collect_citations(
     for key, value in node.items():
         if isinstance(value, Mapping) and "provenance" in value:
             _collect_citations(value, f"{path}.{key}", found)
+
+
+def _collect_derived(
+    node: Mapping[str, Any], path: str, found: dict[str, tuple[float, ...]]
+) -> None:
+    """Collect ``derived_points`` declared inside a ``regulation`` claim."""
+    block = node.get("regulation")
+    if isinstance(block, Mapping):
+        for name, entry in block.items():
+            speeds = _derived_speeds(entry, f"{path}.regulation.{name}")
+            if speeds:
+                found[f"{path}.{name}"] = speeds
+    for key, value in node.items():
+        if isinstance(value, Mapping) and "provenance" in value:
+            _collect_derived(value, f"{path}.{key}", found)
+
+
+def _derived_speeds(entry: Any, where: str) -> tuple[float, ...]:
+    if not isinstance(entry, Mapping):
+        return ()
+    points = entry.get("derived_points")
+    if points is None:
+        return ()
+    if not isinstance(points, Sequence) or isinstance(points, (str, bytes)) or not points:
+        raise ContractError(f"{where}.derived_points: expected a non-empty list of points")
+    speeds: list[float] = []
+    for index, point in enumerate(points):
+        point_where = f"{where}.derived_points[{index}]"
+        if not isinstance(point, Mapping) or "speed_km_h" not in point:
+            raise ContractError(f"{point_where}: expected a mapping with speed_km_h")
+        speeds.append(_number(point["speed_km_h"], f"{point_where}.speed_km_h"))
+    if any(b <= a for a, b in pairwise(speeds)):
+        raise ContractError(f"{where}.derived_points: speed_km_h must be strictly increasing")
+    return tuple(speeds)
+
+
+def _audit_derived(entry: Mapping[str, Any], where: str, value: Any) -> list[str]:
+    """Every declared derived point must be in the curve, and must say why it is there.
+
+    ``derived_points`` is how a claim stays honest when a cited curve needs a breakpoint the
+    clause does not state. It only works if it is checked, so a point naming a speed the curve
+    does not have is an audit failure rather than dead metadata.
+    """
+    points = entry.get("derived_points")
+    if points is None:
+        return []
+    findings: list[str] = []
+    name = where.rsplit(".", 1)[-1]
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return [f"{where}.derived_points: only a curve can declare derived points"]
+    speeds = [
+        _number(point["speed_km_h"], f"{where} curve")
+        for point in value
+        if isinstance(point, Mapping) and "speed_km_h" in point
+    ]
+    for index, point in enumerate(points):
+        point_where = f"{where}.derived_points[{index}]"
+        if not isinstance(point, Mapping) or "speed_km_h" not in point:
+            findings.append(f"{point_where}: expected a mapping with speed_km_h")
+            continue
+        speed = _number(point["speed_km_h"], f"{point_where}.speed_km_h")
+        point_where = f"{where}.derived_points[{speed}]"
+        if speed not in speeds:
+            findings.append(
+                f"{point_where}: speed_km_h {speed} is not a breakpoint of {name}; it has {speeds}"
+            )
+        basis = point.get("basis")
+        if not isinstance(basis, str) or not basis.strip():
+            findings.append(
+                f"{point_where}.basis: expected a sentence saying why this breakpoint is not "
+                "in the clause"
+            )
+    return findings
 
 
 def _citation(entry: Any, where: str) -> tuple[str, int]:
@@ -624,6 +751,8 @@ def _audit_claims(node: Mapping[str, Any], path: str, findings: list[str]) -> No
             claimed[key] = name
             if name == "regulation":
                 findings.extend(_audit_citation(entry, where))
+                if isinstance(entry, Mapping):
+                    findings.extend(_audit_derived(entry, where, values[key]))
             elif not isinstance(entry, str) or not entry.strip():
                 findings.append(f"{where}: expected a sentence saying why this is not regulated")
     for key in values:

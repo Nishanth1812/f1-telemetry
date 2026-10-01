@@ -59,9 +59,23 @@ document). Verification for the clauses used:
 | C10.7.2 | 111 | 18 inch rims, 462.5/463 mm rim diameter, tyre mounting widths |
 | C10.10.1 | 115 | Front wheel origin not outboard of `Y=603`, rear not outboard of `Y=525` |
 
-`test_the_cited_clauses_still_say_what_the_values_claim` in `tests/test_car_spec.py` pins the
-numeric content of each of these clauses, so a future edit to `car_spec.yaml` that cites a
-clause it does not match will fail.
+**What is machine-checked, precisely.** The table above is the set of clauses that were *read*
+for this task. It is larger than the set that is *asserted*, and the difference is deliberate:
+some rows are there to record that a clause was checked and deliberately **not** recorded as a
+source - C5.14 (no absolute rev limiter stated), C5.2.5, C5.12.2/C5.12.3, C10.10.1, C4.7, C5.1.2,
+C5.1.18 - because none of them fixes a P1 kernel input.
+
+The assertions are:
+
+| Check | Covers |
+|---|---|
+| `test_every_regulated_value_cites_the_clause_it_was_read_from` | The exact `path -> (clause, page)` map for all **23** cited entries, so a citation cannot be dropped, re-pointed, or invented |
+| `test_the_cited_clauses_still_say_what_the_values_claim` | The numeric content of those same **23** entries: the value in `car_spec.yaml` must equal the number the quoted clause states |
+| `test_a_curve_claim_declares_its_derived_breakpoints` | The one breakpoint in the deployment curve that C5.2.8 does **not** state, declared as derived |
+
+So the coverage is 23 cited values, not every row of the table above. The unchecked rows are a
+reading record, not a gate; a reviewer should not read the table as a claim that all 30 rows are
+asserted by a test.
 
 ## 2. What Issue 20 changed in this file
 
@@ -84,9 +98,18 @@ note because Task 4 may still want the shorthand; it should not drive physics.
 **`powertrain.mgu_k.deployment_curve_kw` is new.** The non-Overtake deployment limit is
 piecewise linear in car speed: `1800 - 5*v` below 340 km/h, `6900 - 20*v` from 340 to
 345 km/h, zero at or above 345 km/h. It is stored as breakpoints at 0, 290, 340 and
-345 km/h. The 290 km/h point is not in the regulation text; it is where `1800 - 5*v` reaches
-the 350 kW absolute ERS-K cap of C5.2.7, so it is the corner of the two curves. This
-matters for P1: a car at 300 km/h may deploy at most 300 kW, not 350 kW.
+345 km/h. This matters for P1: a car at 300 km/h may deploy at most 300 kW, not 350 kW.
+
+**The 290 km/h breakpoint is derived, and that is now machine-visible.** It is not a breakpoint
+in C5.2.8: the clause gives two linear segments meeting at 340 km/h. The 290 km/h point exists
+because `1800 - 5*v` reaches the 350 kW absolute ERS-K cap of C5.2.7 at that speed, so the
+sampled curve has to turn there or the first segment would report more than the cap allows.
+The **limit value** at 290 km/h is C5.2.7's 350 kW; only the **speed** is derived. That is
+declared in the claim itself as `derived_points`, and `CarSpec.derived_points()` reports it
+alongside `citations()`, so a reader asking "which of these numbers are the regulation's?" gets
+a partial answer from the same API rather than having to read a `quote` string. The audit
+rejects a derived point naming a speed the curve does not contain, or one with an empty
+`basis`.
 
 **`powertrain.ice` gains the fuel-energy-flow limits (C5.2.3, C5.2.4, page 64).** The
 regulations do **not** state an ICE power in kW anywhere. They bound the ICE through fuel
@@ -109,9 +132,34 @@ Two values were left alone deliberately:
 
 * `mass.total_kg: 800.0`. C4.1 sets a **floor**, not a mass. A real car runs ballast down to
   the floor plus a driver and starting fuel, so a figure above 724 kg is not a contradiction
-  of the regulation and Task 9 tunes it against the acceleration targets.
-* `chassis.front_weight_fraction: 0.46`. C4.2 is also a floor, not a distribution. The 0.46
-  satisfies it and is a placeholder until P2-T2.
+  of the regulation and Task 5 tunes it against the acceleration targets.
+* `chassis.front_weight_fraction: 0.46`. See below - C4.2 cannot be enforced against it, so it
+  is a placeholder until P2-T2 rather than a synthesised value checked against the floors.
+
+### C4.2 cannot be enforced, and the file says so
+
+C4.2 reads "the mass measured at the front axle must not be less than the Minimum Mass
+specified in Article C4.1 factored by 0.44" (and 0.54 for the rear). The denominator is the
+C4.1 **Minimum Mass**, which is `724 kg *plus* the Nominal Tyre Mass`. The Nominal Tyre Mass
+is published by the tyre supplier after the final tyre-testing camp (C4.7, page 60) - it is not
+a number in the regulations, and this project does not have it.
+
+So `minimum_front_axle_fraction: 0.44` and `minimum_rear_axle_fraction: 0.54` are fractions of
+`minimum_mass_kg + nominal_tyre_mass_kg`, **not** of `mass.total_kg`. Comparing 0.46 against
+0.44 as though both were fractions of the same quantity would enforce a rule that does not
+exist, and would silently pass or fail for the wrong reason depending on how far
+`total_kg` happens to sit above the floor.
+
+What the loader enforces instead is the part that needs no missing input:
+`front_weight_fraction` must be a finite value strictly between 0 and 1. `car_spec.yaml`
+records the whole reasoning in `chassis.c42_enforcement` (`status: not_enforced`, the reason,
+the two inputs that block it, and `becomes_checkable_at: P2-T2`), so the gap is a stated
+limitation rather than an oversight.
+
+Neither floor reaches `KernelConfig`. A longitudinal kernel has no axle, so shipping them there
+would invite a P1 kernel to misuse a fraction of the wrong quantity; P2-T2, which owns the
+static axial split, is where C4.2 becomes checkable. `test_the_c42_floor_is_not_enforced_against_total_mass`
+pins all of this, including that the floors are still recorded with their clause.
 
 ## 3. Synthesised values
 
@@ -184,16 +232,29 @@ of the cross-phase rule "every coefficient gets a provenance line". It reports:
 * a value claimed by **both** blocks, since a number has one basis and claiming two means one
   of them is stale;
 * a section whose `provenance` says `regulated` or `mixed` while carrying uncited numbers;
-* an empty `not_regulated` sentence, which would be a placeholder for a reason.
+* an empty `not_regulated` sentence, which would be a placeholder for a reason;
+* a `derived_points` entry naming a speed its curve does not contain, or with an empty `basis`.
 
-`CarSpec.citations()` returns the `dotted.path -> (clause, page)` map for every regulated
-value, and `tests/test_car_spec.py` pins it. `CarSpec.kernel_config()` converts the validated
-view into flat scalars and contiguous writable `float64` arrays, so the kernel receives
-numbers and never YAML - `PLAN.md` section 4.1 rules 1 and 3. Every physical input is range-
-checked in Python first: a zero rolling radius, a non-positive torque multiplier, a power split
-outside (0, 1), a shift point above the rev limiter, or a deployment curve with a negative
-limit all raise `ContractError` at the boundary rather than producing a NaN inside a compiled
-kernel.
+Three APIs expose the result. `CarSpec.citations()` returns the
+`dotted.path -> (clause, page)` map for every regulated value. `CarSpec.derived_points()`
+returns the `dotted.path -> speeds` map for curve breakpoints the clause does not state.
+`tests/test_car_spec.py` pins both.
+
+`CarSpec.kernel_config()` hands the kernel flat scalars and contiguous writable `float64`
+arrays, so the kernel receives numbers and never YAML - `PLAN.md` section 4.1 rules 1 and 3.
+It is built **once, at load**, by `CarSpec.build_kernel_config`, which is the single validation
+path over these numbers: every value `CarSpec` already holds as a typed field is read from that
+field rather than re-parsed out of the raw document, and only the P1 inputs added beyond the P0
+field set are parsed there. So there is one place a coefficient can be wrong, and
+`kernel_config()` itself just returns the stored result.
+
+The checks are the ones a compiled kernel cannot make: a zero rolling radius, a non-positive
+torque multiplier, a power split outside (0, 1), a shift point above the rev limiter, a
+deployment curve with a negative limit, a `front_weight_fraction` outside (0, 1), and **mismatched
+`Cl` and `Cd` speed grids**. That last one matters because `KernelConfig` exposes a single
+`aero_speed_m_s` axis: a `Cd` curve on different breakpoints would produce a `cd` array of a
+different length to the axis indexing it, which is an out-of-bounds read inside compiled code
+rather than a load error. All of them raise `ContractError` at the boundary.
 
 ## 5. Still outstanding for later tasks
 
@@ -207,3 +268,11 @@ kernel.
 * **`fastest-lap` cross-check.** Task 6, per `PHASES.md` P1-T10.
 * **2027 regulations.** Section C Issue 2 is already published. A 2027 run would be a new
   `car_spec.yaml` keyed to a new issue, not an edit to this one.
+* **C4.2 enforcement.** Blocked on the Nominal Tyre Mass (see section 2). Becomes checkable at
+  P2-T2, where the axial split lives.
+* **A specification bump is a coordinated edit, not one file.** The same regulated numbers
+  appear in four places: `car_spec.yaml`, the `EXPECTED_CITATIONS` map in
+  `tests/test_car_spec.py`, the body of `test_the_cited_clauses_still_say_what_the_values_claim`,
+  and the clause table in section 1 of this document. Re-verifying against a new issue means
+  updating all four in one commit; the tests fail loudly if the first two disagree, but nothing
+  links the third and fourth automatically.

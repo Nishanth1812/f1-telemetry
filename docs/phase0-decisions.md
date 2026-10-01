@@ -253,6 +253,14 @@ assumptions.
 `provenance: mixed` is the new section-level value meaning "some values regulated, some not",
 and it requires a `source_date` like the other dated ones.
 
+**A cited curve may need a breakpoint the clause does not state.** `derived_points` inside a
+`regulation` claim names the curve speeds that are *not* in the quoted text, each with the
+reason. The deployment curve needs one: C5.2.8 gives two linear segments meeting at 340 km/h,
+but `1800 - 5v` reaches C5.2.7's 350 kW cap at 290 km/h, so the sampled curve turns there. The
+**limit** at that point is the regulation's; only the **speed** is derived. Without this the
+curve reads as four regulated points, and the disclosure lives only in `quote` prose that no
+check can see. `CarSpec.derived_points()` reports it beside `citations()`.
+
 **Two P0 keys were renamed rather than re-cited.** `tyres.nominal_width_mm: 305.0` became
 `front_width_mm: 315.0` and `rear_width_mm: 401.3` (C10.7.2 is a per-axle mounting width, and
 305 mm is a 2022-era number), and `chassis.floor_width_m: 1.9` became `chassis.overall_width_m`
@@ -266,8 +274,26 @@ is claimed `not_regulated` with `PLAN.md` §4 as the reason.
 
 **`CarSpec.kernel_config()` is the one-way boundary.** It returns flat scalars and contiguous
 writable `float64` arrays, range-checked in Python, so the kernel receives numbers and never
-YAML. That is `PLAN.md` §4.1 rules 1 and 3 made concrete. A zero rolling radius or a negative
-deployment limit raises `ContractError` before any array reaches Numba.
+YAML. That is `PLAN.md` §4.1 rules 1 and 3 made concrete. A zero rolling radius, a negative
+deployment limit or mismatched `Cl`/`Cd` speed grids raise `ContractError` before any array
+reaches Numba.
+
+**The boundary is built once, at load.** `CarSpec.build_kernel_config()` is the only place these
+numbers are validated, and `load_car_spec` calls it so the `KernelConfig` is constructed during
+loading rather than on first access. An earlier version of this work validated lazily inside
+`kernel_config()`, reading most values back out of the raw document while reaching the typed
+fields for others - two routes to every coefficient, split line by line rather than by a rule,
+which is exactly the drift the cross-phase rules exist to prevent. Now a value the `CarSpec`
+already holds as a typed field is read from that field, and only the P1 inputs beyond the P0
+field set are parsed from raw.
+
+**`chassis.c42_enforcement` records what cannot be enforced.** C4.2's 0.44 / 0.54 axle minima are
+fractions of the C4.1 Minimum Mass, which is 724 kg *plus* a Nominal Tyre Mass the tyre supplier
+publishes after the final testing camp (C4.7) and the regulations do not contain. So the floors
+cannot be compared against `mass.total_kg` without enforcing a rule that does not exist. The
+loader checks only that `front_weight_fraction` is in (0, 1); the floors stay in the file as
+cited data, out of `KernelConfig` because a longitudinal kernel has no axle, and the gap is
+recorded as `status: not_enforced` with `becomes_checkable_at: P2-T2`.
 
 **Generated type aliases use `TypeAlias`, not the PEP 695 `type` statement.** ruff's
 `UP040` prefers the new form, but ruff mis-analyses `type X = 'a' | 'b'` and reports every
