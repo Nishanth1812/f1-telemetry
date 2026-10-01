@@ -6,8 +6,8 @@ that proves it. The claims are checked here in the form that would actually fail
 
 * **It really is a compiled, cached kernel.** The dispatcher's own options are read back
   (``fastmath=False``, ``nogil``, ``boundscheck=False``) instead of being trusted from the
-  decorator text, and ``cache=True`` is proven the way P0 proved it for the probe: numba wrote
-  a cache index next to the module.
+  decorator text, and ``cache=True`` is proven by a fresh interpreter writing a cache index
+  into a directory that was empty a moment earlier.
 * **Fixed step, semi-implicit.** Row ``n`` of a trace is the state after exactly ``n`` steps of
   the configured ``dt_s``, and position advances with the *updated* speed, so the scheme is
   semi-implicit rather than explicit. The scheme is pinned against the explicit alternative,
@@ -35,9 +35,10 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import subprocess
+import sys
 from dataclasses import replace
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -47,6 +48,8 @@ from f1telemetry.contracts.car_spec import CarSpec
 from f1telemetry.kernels import longitudinal
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from f1telemetry.contracts.car_spec import KernelConfig
 
 pytestmark = pytest.mark.kernel
@@ -65,6 +68,26 @@ TIME_AND_RANDOM: tuple[tuple[str, str], ...] = (
     ("time", "time_ns"),
     ("random", "random"),
     ("random", "randrange"),
+)
+
+# The body of the fresh interpreter the cache test runs: the same entry point this file uses,
+# with the configuration loaded from the same car_spec.yaml, so the only thing isolated from the
+# pytest process is the compile cache. It prints the speed reached so the parent can see that the
+# run happened rather than taking the child's silence as success.
+CACHE_PROBE_SCRIPT = (
+    "import numpy as np\n"
+    "from f1telemetry.contracts.car_spec import load_car_spec\n"
+    "from f1telemetry.kernels import longitudinal\n"
+    "config = load_car_spec().kernel_config()\n"
+    "steps = 4\n"
+    "trace = longitudinal.simulate(\n"
+    "    config,\n"
+    "    steps,\n"
+    "    longitudinal.initial_state(),\n"
+    "    np.full(steps, config.mass_kg * config.gravity_m_s2),\n"
+    "    longitudinal.allocate(steps),\n"
+    ")\n"
+    "print(trace[-1, longitudinal.V_INDEX])\n"
 )
 
 
@@ -126,46 +149,55 @@ def _reference(
     return out
 
 
-def _cache_index_files() -> list[Path]:
-    """The `.nbi` cache index files numba has written for this kernel module.
-
-    ``cache=True`` writes one ``<module>.<signature>.nbi`` index next to the source, unless
-    ``NUMBA_CACHE_DIR`` redirects it, and both are searched so the test does not depend on
-    which is in force - the same search :mod:`f1telemetry.kernels.probe` documents for P0.
-    """
-    here = Path(str(longitudinal.__file__)).resolve()
-    roots = [here.parent / "__pycache__"]
-    override = os.environ.get("NUMBA_CACHE_DIR")
-    if override:
-        roots.insert(0, Path(override))
-    found: list[Path] = []
-    for root in roots:
-        if root.is_dir():
-            found.extend(sorted(root.glob("longitudinal.*.nbi")))
-    return found
-
-
 def _refuse(what: str) -> None:
     raise AssertionError(f"the simulation read {what}")
 
 
 def test_the_kernel_compiles_to_machine_code_and_writes_a_compile_cache(
     config: KernelConfig,
+    tmp_path: Path,
 ) -> None:
     """A dispatcher entry is not a compiled kernel, and `cache=True` can do nothing silently.
 
-    Two pieces of evidence, both measured rather than read back out of this file: calling the
-    kernel registers a compiled signature, and that compile leaves a cache index for it beside
-    the module. This is the check P0-T1b makes for the probe; the reason it is repeated here is
-    that the claim under test is this kernel's, not the toolchain's.
+    Two pieces of evidence, both measured rather than read back out of this file.
+
+    Calling the kernel registers a compiled signature, which rules out a Python fallback. The
+    cache claim needs more than that, because it is not a claim about this process: a test that
+    accepts a cache index from anywhere on disk is happy with one an earlier run left behind, so
+    it goes on passing after the decorator is changed to `cache=False`. A test that cannot fail
+    when the thing it names breaks is not a test.
+
+    So the compile happens in a fresh interpreter whose `NUMBA_CACHE_DIR` is this test's empty
+    `tmp_path`, and the index has to turn up there. The subprocess is not optional: this module
+    and its dispatcher are already imported in the pytest process, so its signature was compiled
+    before the test could ask for a cold one. `NUMBA_CACHE_DIR` also takes priority over the
+    `__pycache__` beside the source, so the child cannot load an index an earlier run wrote.
     """
     _run(config, 4, np.zeros(4, dtype=np.float64))
     assert len(COMPILED_LOOP.signatures) >= 1, (
         "the run returned without compiling a signature, which means it fell back to Python"
     )
-    assert _cache_index_files(), (
-        "numba wrote no .nbi cache index for the longitudinal kernel, so cache=True is not "
-        "taking effect"
+
+    environment = dict(os.environ)
+    environment["NUMBA_CACHE_DIR"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", CACHE_PROBE_SCRIPT],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=environment,
+    )
+    reported = completed.stdout.strip()
+    assert reported, f"the fresh interpreter printed no trace row; stderr was {completed.stderr}"
+    assert math.isfinite(float(reported)), f"the fresh interpreter reported {reported}"
+
+    # numba nests the index under a subdirectory derived from the source location, so the temp
+    # dir is searched rather than listed.
+    written = sorted(tmp_path.rglob("longitudinal.*.nbi"))
+    assert written, (
+        f"numba wrote no .nbi cache index for the longitudinal kernel into the empty {tmp_path}, "
+        f"so cache=True is not taking effect; the directory holds "
+        f"{sorted(path.name for path in tmp_path.rglob('*'))}"
     )
 
 

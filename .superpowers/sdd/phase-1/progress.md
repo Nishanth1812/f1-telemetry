@@ -229,19 +229,26 @@ asserts that the counters are on instead of skipping when they are not: a measur
 silently stopped measuring is not a pass. Measured on this machine: 3 allocations per call for the
 kernel at both 1,000 and 100,000 steps, against 1,000 and 100,000 for the control.
 
-`cache=True` is proven the way P0-T1b proves it for the probe - the test calls the kernel and then
-looks for the `.nbi` cache index numba writes beside the module (or under `NUMBA_CACHE_DIR`) - and
-`fastmath`/`nogil`/`boundscheck`/`error_model` are read back off the dispatcher's own
-`targetoptions`. `TARGET_OPTIONS`, a literal copy of the decorator text, is gone: it could only
-ever agree with the decorator, which is the thing that needed checking.
+`cache=True` is proven by a **fresh interpreter** - a subprocess with `NUMBA_CACHE_DIR` pointed at
+an empty pytest `tmp_path` - which loads `car_spec.yaml`, calls `simulate`, and has to leave numba's
+`.nbi` cache index in that directory. The subprocess is the point, not the ceremony: the kernel
+module and its dispatcher are already imported in the pytest process, so an in-process check can
+only ever find an index an earlier run left behind, and it would keep passing if the decorator were
+changed to `cache=False`. `NUMBA_CACHE_DIR` takes priority over the `__pycache__` beside the
+source, so the child cannot load one of those either. `fastmath`/`nogil`/`boundscheck`/
+`error_model` are read back off the dispatcher's own `targetoptions`. `TARGET_OPTIONS`, a literal
+copy of the decorator text, is gone: it could only ever agree with the decorator, which is the
+thing that needed checking.
 
 TDD record: RED was a behavioural probe against the pre-Task-2 tree (the only compiled kernel was
 the oscillator probe, which has no force input, decelerates a forward-moving car, and knows
 nothing about the car's mass), plus a collection `ImportError` for the new module - the same
 two-part record Task 1 used, because a missing module cannot fail behaviourally. GREEN:
-`pytest tests/test_longitudinal_kernel.py` 22 passed; `pytest -q` 136 passed; `pytest -m invariant`
+`pytest tests/test_longitudinal_kernel.py` 34 passed; `pytest -q` 148 passed; `pytest -m invariant`
 12 passed; `pytest -m golden` 7 passed; `ruff check`, `ruff format --check`, `basedpyright`
 (0 errors / 0 warnings / 0 notes), `f1-check-contract`, `f1-codegen` and the web build all clean.
+Those two counts are the numbers after the fix round below; the first Task 2 commit was 22 and 136,
+and merging and splitting the tests is what moved them.
 
 ## Task 2 review — fix round
 
@@ -250,11 +257,12 @@ top of `dbbf767`; the fixes below are the review's eight findings and nothing el
 
 1. **The cache claim was self-referential.** The old test asserted `TARGET_OPTIONS["cache"] is
    True` against a dict literal that duplicated the decorator text, so it could not fail if
-   caching broke. It now compiles the kernel and requires the `.nbi` index numba writes beside the
-   module, and reads `fastmath`/`nopython`/`nogil`/`boundscheck`/`error_model` off
-   `dispatcher.targetoptions`. `TARGET_OPTIONS` is deleted rather than kept as a second copy of
-   the same six values. Falsified by changing the decorator to `cache=False`: one failure, in the
-   cache test only.
+   caching broke. It now compiles the kernel, requires a `.nbi` cache index to appear in a
+   directory that was empty beforehand, and reads `fastmath`/`nopython`/`nogil`/`boundscheck`/
+   `error_model` off `dispatcher.targetoptions`. `TARGET_OPTIONS` is deleted rather than kept as a
+   second copy of the same six values. The index search this round started with looked beside the
+   source, which is satisfied by an index an earlier run left there - the second follow-up below
+   is about that, and about the "falsified by changing the decorator" claim that came with it.
 2. **The compiled loop was public.** `integrate` was exported, callable directly, and compiled with
    `boundscheck=False`, so an undersized `out` wrote past its end without a word. It is now
    `_integrate`, out of `__all__`, and the module docstring says why the private name is the safety
@@ -290,3 +298,39 @@ Final verification: `pytest tests/test_longitudinal_kernel.py` 34 passed (from a
 so the cache test proves a real compile), `pytest -q` 148 passed, `pytest -m invariant` 12 passed,
 `pytest -m golden` 7 passed, `ruff check` and `ruff format --check` clean, `basedpyright`
 0 errors / 0 warnings / 0 notes, `f1-check-contract` clean, `f1-codegen` 0 files changed.
+
+## Task 2 review — second follow-up
+
+One finding, and it is about the fix round's own cache proof rather than about the kernel.
+
+**The `.nbi` search it introduced could be satisfied by history.** It looked in `__pycache__`
+beside the module and, if `NUMBA_CACHE_DIR` was set, there too - and `__pycache__` holds
+`longitudinal._integrate-68.py312.nbi` after any run, which is every run after the first. Change
+the decorator to `cache=False` with that file already on disk and the test still passes, so the
+"falsified by changing the decorator to `cache=False`" sentence in finding 1 above only held from
+a cold directory. It was not a false claim when written; it was a claim about a starting state the
+suite does not guarantee.
+
+`tests/test_longitudinal_kernel.py` proves `cache=True` where history cannot reach it. A fresh
+interpreter subprocess with `NUMBA_CACHE_DIR` set to pytest's empty `tmp_path` imports the module,
+loads `car_spec.yaml` through `load_car_spec()`, calls `simulate`, and then the index has to be in
+that directory - searched recursively, because numba nests it under a subdirectory derived from the
+source location. `NUMBA_CACHE_DIR` takes priority over the `__pycache__` beside the source, so the
+child cannot quietly load an index compiled earlier either. The child prints the speed it reached,
+so the parent can see the run happened rather than read silence as success. A subprocess is
+required, not tidy: the pytest process has already imported the module and compiled the dispatcher,
+so there is no cold compile left in it to observe.
+
+Re-measured: with the decorator set to `cache=False` the test fails and the temp directory is
+empty; at `cache=True` it passes. The compiled-signature half of that test stays in-process, since
+a signature list is per-process and this one is honest there. The helper that searched both roots
+is gone with the `Path` import it needed; `os` stays for the subprocess environment.
+
+Not fixed here, and worth a note rather than a change: `probe.cache_index_path()` in P0 has the
+same staleness hole, so `tests/test_numba_toolchain.py::test_kernel_writes_a_compile_cache` can
+pass from a warm `__pycache__` too. P0 is closed and this round is scoped to the Task 2 kernel, so
+it is left as it stands.
+
+Verification for this follow-up: `pytest tests/test_longitudinal_kernel.py` 34 passed,
+`pytest -q` 148 passed, `pytest -m invariant` 12 passed, `ruff check` and `ruff format --check` over
+the tree clean, `basedpyright` 0 errors / 0 warnings / 0 notes.
