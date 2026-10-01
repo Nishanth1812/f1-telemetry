@@ -475,6 +475,24 @@ The calibration guide and physics package description now match that behavior. F
 `pytest -q` (213 passed), Ruff check/format, basedpyright (0 errors/warnings/notes), and
 `f1-check-contract` pass. Task 4 remains open for P1-T5 through P1-T7.
 
+## Task 4 partial milestone: P1-T5 gearbox and clutch
+
+P1-T5 adds a compiled gearbox step in `src/f1telemetry/physics/gearbox.py`. Its caller-owned
+`float64` state is `[gear, shift_remaining_s, clutch_engagement]`: the step advances gear and shift
+timer, reads the caller's clutch engagement without overwriting it, and applies the shift boost cut
+to a local engagement value. It uses the configured shift points and returns differential-side
+torque after applying the selected gear ratio and final drive, then the clutch capacity ceiling.
+Wheel-speed coupling and force assembly remain with P1-T6/T7.
+
+The clutch capacity is synthetic and explicitly differential-side. `car_spec.yaml` sets 3000 Nm:
+the committed curve and ratios offer 3844 Nm in first gear and 1618 Nm in eighth, so gears 1–3
+clamp at full engagement while gears 4–8 pass through. The value is a provisional model input for
+later launch calibration, not a measured or regulated figure. Zero shift duration is rejected so
+the timer continues to prevent repeated shifts at a held threshold.
+
+Verification: `pytest -q` (253 passed), Ruff check/format, basedpyright (0 errors/warnings/notes),
+and `f1-check-contract` pass. Task 4 remains open for P1-T6/T7 and MGU-K drive integration.
+
 ## Task 3 review follow-up
 
 Space Bunny Alpha's review found that replaceable `KernelConfig` arrays and scalars could create

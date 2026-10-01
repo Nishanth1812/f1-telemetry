@@ -603,6 +603,11 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
         (("gearbox", "shift_up_rpm"), 20000.0, "shift_up_rpm"),
         (("gearbox", "shift_down_rpm"), 13000.0, "shift_down_rpm"),
         (("gearbox", "shift_time_s"), -0.01, "shift_time_s"),
+        # P1-T5: zero is now refused too, not just negative values. `physics.gearbox.step_gearbox`
+        # needs the shift timer to be strictly positive, because that timer is the only thing that
+        # freezes the gear while a shift runs; at zero an rpm sitting on the upshift point advances
+        # the box a gear per step. The loader and the step have to agree on the rule.
+        (("gearbox", "shift_time_s"), 0.0, "shift_time_s"),
         (("tyres", "rolling_radius_m"), 0.0, "rolling_radius_m"),
         (("tyres", "wheel_diameter_m"), 0.0, "wheel_diameter_m"),
         (("tyres", "slip_ratio_min_speed_m_s"), 0.0, "slip_ratio_min_speed_m_s"),

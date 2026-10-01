@@ -233,6 +233,68 @@ synthetic. `PLAN.md` section 6's "approximately 1.6 apart, geometric" cannot hol
 gears - 1.6^7 is a 27x span and cannot reach a 350+ km/h top speed from a sane first gear -
 see `docs/phase0-decisions.md` section 6.
 
+The eight ratios and `final_drive` are **used**, not merely counted, and the gear reduction happens
+**before** the clutch. `step_gearbox` computes `engine torque × throttle × ratio × final_drive` and
+then applies the clutch ceiling, so the same 330 Nm of engine torque arrives at the differential as
+3 844 Nm in first and 1 618 Nm in eighth. The order is `PLAN.md` section 6's chain read literally —
+`torque_curve → gearbox → clutch → differential → wheels` — and it is not cosmetic: clamping the
+engine torque first and multiplying afterwards leaves the clutch capacity **unreachable** rather
+than reporting a wrong number, because the engine peak is below the capacity and the minimum never
+selects it. A capacity that can never be selected is configuration no model reads.
+
+The product is still a **torque**, and that is the boundary of P1-T5: P1-T7 divides by the rolling
+radius to make `Fx`. Wheel-speed coupling, which needs the gear the step has not chosen yet, stays
+with P1-T6.
+
+**Clutch capacity (`gearbox.clutch_torque_capacity_nm: 3000.0`) — synthesised (P1-T5).** No FIA
+article states a clutch torque capacity and no public F1 figure is cited here.
+
+**The number is differential-side, and that is forced by `PLAN.md` section 6.** The chain there is
+`torque_curve(rpm) → gearbox(8-speed) → clutch → differential → wheels`, so the clutch sits *after*
+the gear reduction and the capacity is compared against the already-reduced torque:
+
+```text
+output = min(throttle × engine_torque × ratio(gear) × final_drive,  capacity × engagement)
+```
+
+Clamping the engine torque first and multiplying by the ratio afterwards is the same formula in the
+wrong order, and on this data its effect is not an inflated torque but a **dead clamp**:
+`min(330, 600) × 11.649` is still 3 844 Nm, because the engine peak sits below the capacity so the
+minimum never selects it. A capacity that can never be selected is configuration no model reads,
+which is the same failure as the ratio table being decorative.
+
+**Why 3 000 Nm.** It sits *inside* the range the committed box produces rather than above it. At the
+330 Nm engine peak the box offers, by gear:
+
+| gear | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| offered (Nm) | 3 844 | 3 403 | 3 011 | 2 664 | 2 357 | 2 086 | 1 846 | 1 618 |
+
+So 3 000 Nm gives the model the two regimes it needs, and the tests assert both ends of it:
+
+* **Gears 1–3 are clutch-limited at full engagement** — the low gears, which is where a launch
+  happens and where traction limiting belongs. At 0.5 engagement first gear transmits 1 500 Nm, at
+  0.2 it transmits 600 Nm.
+* **Gears 4–8 pass the gear train's own torque through unmodulated**, so the ratio table stays
+  observable across the top half of the box.
+
+A capacity *above* 3 844 Nm would be a ceiling no gear reaches — the dead clamp above, and the reason
+a first attempt at 4 200 Nm was rejected. A capacity *below* 1 618 Nm would flatten all eight gears
+to the same number. The useful band is between the eighth-gear and first-gear figures, and 3 000 Nm
+sits inside it.
+
+Putting the capacity *inside* the minimum rather than multiplying the result by the engagement is
+what keeps it load-bearing: `min(torque, capacity) × engagement` would make the capacity a constant
+factor the clamp could never reach, which is the dead branch the P1-T3 grip-limit ruling refused to
+write.
+
+This is the least-supported number added so far. It has no measured counterpart, nothing in Section C
+constrains it, and it is the first of the gearbox figures expected to move once Task 5 runs a
+standing start. Note that the units are part of the number: an engine-side capacity for the same
+physical clutch would be a different physical quantity, and quoting one where the other belongs
+produces the dead clamp described above rather than a wrong torque. `car_spec.yaml` says so in its
+`not_regulated` claim and its `note`.
+
 **Aero curves (`aero`) — synthesised.** Six-point `Cl(v)` and `Cd(v)` tables with
 `Cl` rising 1.80 → 3.35 and `Cd` falling 1.15 → 0.62 across 0-105 m/s, deliberately
 non-proportional to v^2 per `PLAN.md` section 5.1. `reference_area_m2: 1.5` is order of

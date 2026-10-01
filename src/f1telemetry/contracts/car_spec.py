@@ -146,6 +146,7 @@ class KernelConfig:
     shift_up_rpm: float
     shift_down_rpm: float
     shift_time_s: float
+    clutch_torque_capacity_nm: float
     rolling_radius_m: float
     wheel_diameter_m: float
     front_width_mm: float
@@ -333,11 +334,33 @@ class CarSpec:
                 f"car_spec: powertrain.power_split_ice must be in (0, 1), got {power_split}"
             )
 
+        # P1-T5 is the first task to read the ratios, and it reads them as an engine-speed to
+        # wheel-speed factor. A ratio at or below zero maps an engine speed onto a wheel speed with
+        # a sign or a scale the drivetrain cannot use, and no existing rule here covers that, so it
+        # is covered here rather than by the model that consumes it.
         ratios = np.array(self.gear_ratios, dtype=np.float64)
+        if not np.all(ratios > 0.0):
+            raise ContractError(
+                f"car_spec: gearbox.ratios must all be > 0, got {list(self.gear_ratios)}. "
+                "A zero ratio would stop the engine from turning the wheel and a negative one "
+                "would drive it the wrong way."
+            )
         final_drive = _positive(self.final_drive, "car_spec: gearbox.final_drive")
         shift_up = _positive(gearbox.get("shift_up_rpm"), "car_spec: gearbox.shift_up_rpm")
         shift_down = _positive(gearbox.get("shift_down_rpm"), "car_spec: gearbox.shift_down_rpm")
-        shift_time = _non_negative(gearbox.get("shift_time_s"), "car_spec: gearbox.shift_time_s")
+        # P1-T5: strictly positive, not merely non-negative. The shift timer is the only thing that
+        # freezes the gear while a shift runs, so `physics.gearbox.step_gearbox` refuses a zero
+        # shift time - at zero an rpm sitting on the upshift point advances the box a gear per
+        # step. The loader and the step have to agree, or the file could hold a value the model
+        # will not take.
+        shift_time = _positive(gearbox.get("shift_time_s"), "car_spec: gearbox.shift_time_s")
+        # P1-T5: the clutch capacity is the ceiling every transmitted torque is measured against, so
+        # it has to be positive. Zero would let the model apply it at all; a negative one would put
+        # the sign of the capacity on the wrong side of the engine's.
+        clutch_capacity = _positive(
+            gearbox.get("clutch_torque_capacity_nm"),
+            "car_spec: gearbox.clutch_torque_capacity_nm",
+        )
         if shift_up > rev_limit:
             raise ContractError(
                 f"car_spec: gearbox.shift_up_rpm ({shift_up}) exceeds rev_limit_rpm ({rev_limit})"
@@ -446,6 +469,7 @@ class CarSpec:
             shift_up_rpm=shift_up,
             shift_down_rpm=shift_down,
             shift_time_s=shift_time,
+            clutch_torque_capacity_nm=clutch_capacity,
             rolling_radius_m=rolling_radius,
             wheel_diameter_m=wheel_diameter,
             front_width_mm=_positive(tyres.get("front_width_mm"), "car_spec: tyres.front_width_mm"),

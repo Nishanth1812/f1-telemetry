@@ -337,6 +337,7 @@ gearbox:
   shift_up_rpm: 12500.0
   shift_down_rpm: 8000.0
   shift_time_s: 0.04
+  clutch_torque_capacity_nm: 3000.0
   provenance: synthesised
   source_date: 2026-09-30
   not_regulated:
@@ -350,6 +351,16 @@ gearbox:
     shift_down_rpm: Synthetic, as for `shift_up_rpm`.
     shift_time_s: >-
       Synthetic 40ms gearshift. No FIA article sets a gearshift duration.
+    clutch_torque_capacity_nm: >-
+      Synthetic clutch capacity, measured at the differential. No FIA article states one, and no
+      public F1 figure is cited here. PLAN.md section 6 draws the chain torque_curve ->
+      gearbox -> clutch -> differential -> wheels, so this number is compared against the torque
+      AFTER the gear reduction and it is sized accordingly. At the 330 Nm engine peak the committed
+      box offers 3844 Nm in first gear and 1618 Nm in eighth, so 3000 Nm sits inside that range:
+      it clamps gears 1-3 at full engagement and passes gears 4-8 through unmodulated. The low gears
+      are where a launch happens and where clutch-limited traction belongs, and leaving the top half
+      unclamped keeps the ratio table observable. A capacity above 3844 Nm would be a ceiling no
+      gear reaches and a capacity below 1618 Nm would flatten every gear to the same number.
   derivation: >-
     Geometric 8-speed, chosen so that 8th gear at the 13000 rpm limiter lands on the
     PLAN.md section 11 top-speed band of 350-370 km/h given the 0.36 m rolling radius, and
@@ -360,6 +371,11 @@ gearbox:
   note: >-
     Still wrong until the P1 drag-limited top-speed solve. PLAN.md section 11 gives
     350-370 km/h as an order-of-magnitude bound to be confirmed, not a target hit.
+    `clutch_torque_capacity_nm` is a launch-side number with no measured counterpart and is
+    the first of these to move when Task 5 runs a standing start. It is a DIFFERENTIAL-side
+    figure because the clutch sits after the gearbox in PLAN.md section 6's chain; an
+    engine-side capacity would be a different physical quantity, and quoting one where the
+    other belongs makes the clamp unreachable rather than wrong.
 
 tyres:
   rolling_radius_m: 0.36
