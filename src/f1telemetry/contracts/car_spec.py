@@ -900,7 +900,7 @@ def provenance_audit(root: Mapping[str, Any]) -> list[str]:
             findings.append("spec: no source_date")
         if spec.get("calibration_status") not in {None, "draft", "uncalibrated"}:
             findings.append(
-                f"spec: calibration_status is {spec.get('calibration_status')!r}; P0 must not "
-                "ship a car spec that claims to be calibrated"
+                f"spec: calibration_status is {spec.get('calibration_status')!r}; this phase "
+                "must not ship a car spec that claims to be calibrated"
             )
     return findings

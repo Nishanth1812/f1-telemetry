@@ -14,11 +14,11 @@ these clauses out of the current issue", and it fails loudly when the file drift
 document it claims to cite. The values themselves are re-checked against the clause wording in
 ``test_the_cited_clauses_still_say_what_the_values_claim``.
 
-``KernelConfig`` is referenced through the module rather than imported by name, so this file
-**collects against the P0 base**. That is deliberate: it is what makes the P1 tests fail on
-behaviour rather than on a missing symbol, which is the only kind of red evidence worth
-recording. Against P0 every test below fails on behaviour - no ``citations()``, no
-``kernel_config()``, no grid check, no ``front_weight_fraction`` range.
+``KernelConfig`` is referenced through the module rather than imported by name. For the P0
+regression run, the ``contract`` pytest marker introduced with P1 was copied into the temporary
+P0 worktree so collection could proceed. With that marker registered, the P1 tests failed on
+behaviour rather than a missing symbol: no ``citations()``, no ``kernel_config()``, no grid
+check, and no ``front_weight_fraction`` range.
 """
 
 from __future__ import annotations
@@ -672,6 +672,6 @@ def test_the_audit_rejects_a_spec_claiming_to_be_calibrated(tmp_path: Path, repo
     _at(root, ("spec",))["calibration_status"] = "calibrated"
     findings = provenance_audit(load_car_spec(_write(root, tmp_path)).raw)
     assert findings == [
-        "spec: calibration_status is 'calibrated'; P0 must not ship a car spec that claims "
+        "spec: calibration_status is 'calibrated'; this phase must not ship a car spec that claims "
         "to be calibrated"
     ]

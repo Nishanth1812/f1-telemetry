@@ -286,8 +286,11 @@ powertrain:
         clause: C5.2.9
         page: 64
         quote: >-
-          The difference between the maximum and the minimum state of charge of the ES may not
+          The diaerence between the maximum and the minimum state of charge of the ES may not
           exceed 4MJ at any time the car is on the track.
+        quote_note: >-
+          The source document spells "difference" as "diaerence". The typo is retained here
+          so this quoted text matches the FIA wording exactly.
       recharge_limit_mj_per_lap:
         clause: C5.2.10
         page: 64
