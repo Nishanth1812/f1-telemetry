@@ -31,7 +31,7 @@ Workspace: `.superpowers/sdd/phase-1/`.
 
 ## Task 1 status
 
-Done. Report: `reports/task-1.md`.
+Done after two fix rounds. Report: `reports/task-1.md`; round-2 review: `reports/task-1-review-round-2.md`. Commits: `a063b1e`, `b9fc915`, `a360e1f`, `c9bf718`, `782bdb9`.
 
 Interface frozen for Task 2. `CarSpec.kernel_config()` returns `KernelConfig`: flat scalars
 plus contiguous writable `float64` arrays, every one range-checked in Python. Shape notes for
@@ -57,16 +57,20 @@ the kernel:
   `power_split_ice`, `fuel_lhv_kj_kg`
 
 Two corrections Task 2-5 inherit: the MGU-K store is **4 MJ** (C5.2.9), not the 7 MJ the plan
-carried, and available ERS-K power is speed-limited, so it drops to 100 kW at 340 km/h and
-zero at 345 km/h. Both are enforced by the loader, so a kernel cannot silently use the old
-numbers.
+carried; and available ERS-K power is the **effective** limit, `min(C5.2.8, C5.2.7)` — 350 kW
+below 290 km/h (337.5 km/h in Overtake), 100 kW at 340 km/h, zero at 345. C5.2.8's own formulas
+permit 1800 kW at rest, so a kernel reading them raw would get five times the permitted power.
+Both corrections are enforced at the boundary, so a kernel cannot silently use the old numbers.
 
 Kernel-side hazard the loader cannot cover: `CONFIG.ers_speed_km_h` and
-`CONFIG.ers_overtake_speed_km_h` have different lengths (4 vs 2 breakpoints). A kernel that
+`CONFIG.ers_overtake_speed_km_h` have different lengths (4 vs 3 breakpoints). A kernel that
 reads either must use the matching array length, not a shared loop bound.
 
-`KernelConfig` is built once at load, not on first access, so a bad `car_spec.yaml` edit fails
-at `load_car_spec` rather than at first use. Task 2 should build its config eagerly, not lazily.
+`CarSpec.kernel_config()` rebuilds the arrays from the typed fields on every access, via
+`build_kernel_config()` — the single validation path. It is deliberately **not** cached: a config
+built at load and stored on the spec desynchronised under `dataclasses.replace`, and a spec built
+or replaced outside the loader skipped validation entirely. Task 2 should call `kernel_config()`
+once at the Python boundary, outside the Numba loop, rather than per step.
 
 ## Task 1 review — fix round 1
 
@@ -90,16 +94,17 @@ Reviewer could not independently confirm every regulatory quote from the diff. I
 
 ### Fix round 1 outcome
 
-All six Important findings addressed in commit `b9fc915`. `tests/test_car_spec.py` now
-**collects against the P0 base**, so the RED evidence is behavioural rather than an
-`ImportError`; recorded in `reports/task-1.md` §6.
+All six Important findings addressed in commit `b9fc915`. `tests/test_car_spec.py` references
+`KernelConfig` through the module so the file **collects against the P0 base** (with the P1
+`contract` marker carried over — see fix round 2), making the RED evidence behavioural rather
+than an `ImportError`.
 
 1. `Cl`/`Cd` speed grids must be identical, checked at load next to the `_positive_values` calls.
 2. `derived_points` inside a `regulation` claim, with `CarSpec.derived_points()`. Only the
    deployment curve has one: the 290 km/h corner, whose *limit* is C5.2.7's 350 kW and whose
    *speed* is derived. Audited: a derived point must be in the curve and must state why.
-3. `docs/calibration.md` §1 now separates the 30 clauses read from the 23 citation entries
-   asserted, and names which of the table's rows are unchecked.
+3. `docs/calibration.md` §1 separates the 23 clauses read from the 23 citation entries asserted,
+   and names which of the table's rows are read-but-not-cited.
 4. Behavioural RED recorded; see report.
 5. `CarSpec.build_kernel_config()` is the single validation path, called from `load_car_spec`.
    Typed `CarSpec` fields are read as fields; only P1-only inputs are parsed from raw.
@@ -112,3 +117,49 @@ Ruling recorded: finding #6 as written ("range-check `front_weight_fraction` aga
 floors or drop it") has no valid first option. Range-checking is done; comparison against the
 floors is not, and the reviewer's framing assumed the floors were fractions of the same mass
 they are not.
+
+
+## Task 1 review — fix round 2
+
+Reviewer: Space Bunny Alpha, model `openrouter/stealth/space-bunny-alpha`.
+Commits: `a360e1f` (cap + builder), `c9bf718` (docs), `782bdb9` (quotes and wording).
+
+- **C5.2.7's 350 kW absolute ERS-K cap is applied to both C5.2.8 propulsion profiles.** Verified
+  against the Issue 20 PDF at `spec.document_url`: C5.2.8 states the *propulsion* limit only
+  (`1800 - 5v` below 340 km/h), so on its own it permits 1800 kW at rest. The effective limit is
+  `min(C5.2.8, C5.2.7)`, now stored as `(0,350),(290,350),(340,100),(345,0)` and
+  `(0,350),(337.5,350),(355,0)`, with both crossover speeds declared in `derived_points`.
+- **The cap is enforced at the shared boundary**, not merely correct in today's file: a curve
+  point above 350 kW raises `ContractError` from `build_kernel_config`, for a YAML edit and for
+  a curve carried on a replaced spec. Interpolated output is checked across both curves.
+- **Removed the cached kernel config.** `kernel_config()` builds on access, so
+  `dataclasses.replace(spec, mass_kg=900)` cannot leave a stale array behind, and a spec built
+  outside the loader is validated too. `rolling_radius_m` is checked in the shared builder.
+- **Audit reports, never raises, for a malformed derived-point speed**, so one typo does not take
+  the audit down and hide the other 22 citations.
+- **Docs no longer overstate coverage.** The clause table has 23 rows, not 30; C5.12.2 is page 73
+  and C5.12.3 page 74; C10.7.2 does not say "18 inch" (that is an inference, recorded under
+  `tyres.inference`); the C10.7.2 and C5.2.10 quotes reproduce the document exactly, including
+  FIA's own "diaerence" typo, with column attribution in a `quote_note`; C5.2.5's 380 MJ/h arm
+  and C5.2.8.iii/.iv are named as read-but-out-of-scope.
+- **C4.2 clarified.** It is a Qualifying-only check, and its denominator is the C4.1 Minimum
+  Mass *including* the Nominal Tyre Mass — a figure the tyre supplier publishes before the
+  Championship (C4.7), so obtainable rather than unavailable. The floors stay cited in the file,
+  out of `KernelConfig`, with `chassis.c42_enforcement` naming the missing input.
+
+### Corrected TDD evidence
+
+The RED numbers recorded in round 1 (46 failed / 9 passed) were for the round-1 test file. Re-run
+against the P0 base at `0db4c30` with the **current** test file, the actual result is
+**55 failed, 8 passed** — 63 tests. The failure modes are behavioural: `AttributeError: 'CarSpec'
+object has no attribute 'kernel_config' / 'citations' / 'derived_points'`, and `KeyError` where a
+test edits a `regulation` block or curve the P0 file does not have.
+
+This regression run needs one piece of P1 configuration: the `contract` pytest marker was
+registered in `pyproject.toml` in `a063b1e`, and `--strict-config` rejects an unregistered
+marker, so the marker line was carried into the temporary P0 worktree for collection. It does not
+collect against an untouched P0 checkout.
+
+Final verification: `pytest -q` (114 passed), `pytest -m invariant` (12 passed), `pytest -m
+golden` (7 passed), `ruff check` and `ruff format --check` clean, `basedpyright` 0 errors /
+0 warnings / 0 notes, `f1-codegen` 0 files changed, web production build passing.
