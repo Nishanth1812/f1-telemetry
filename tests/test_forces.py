@@ -636,3 +636,42 @@ def test_editing_the_car_spec_changes_the_forces_with_no_code_edit(
     at_rest = forces.step_forces(config, 0.0, 12.0, load_n)
     at_rest_edited = forces.step_forces(edited, 0.0, 12.0, load_n)
     assert at_rest_edited[2] != at_rest[2], "doubling eps has to change the launch slip ratio"
+
+
+def test_step_forces_narrows_numeric_scalars_before_numba(config: KernelConfig) -> None:
+    """Equivalent int and float inputs use the same force arithmetic."""
+    float_config = replace(config, air_density_kg_m3=1.0)
+    forces.step_forces(float_config, 60.0, 66.0, 4_000.0)
+    compiled = len(forces.aero_forces.nopython_signatures)
+    assert compiled > 0
+    integer_config = replace(config, air_density_kg_m3=1)
+    forces.step_forces(integer_config, 60.0, 66.0, 4_000.0)
+    forces.step_forces(config, 60, 66, 4_000)
+    assert len(forces.aero_forces.nopython_signatures) == compiled
+    with pytest.raises(ValueError, match="speed_m_s"):
+        forces.step_forces(config, np.float32(60.0), 66.0, 4_000.0)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="pacejka_mu"):
+        forces.step_forces(replace(config, pacejka_mu=np.float32(1.7)), 60.0, 66.0, 4_000.0)
+
+
+def test_step_forces_validates_replaced_aero_arrays(config: KernelConfig) -> None:
+    """A replaced config cannot bypass the loader's array guarantees."""
+    repeated_axis = config.aero_speed_m_s.copy()
+    repeated_axis[2] = repeated_axis[1]
+    infinite_curve = config.cd.copy()
+    infinite_curve[2] = np.inf
+    malformed = (
+        replace(config, cl=config.cl.astype(np.float32)),
+        replace(config, cd=config.cd.astype(np.int64)),
+        replace(config, cl=config.cl[::-1]),
+        replace(config, aero_speed_m_s=config.aero_speed_m_s.tolist()),
+        replace(config, cl=config.cl.reshape(2, 3)),
+        replace(config, cd=config.cd[:-1]),
+        replace(config, aero_speed_m_s=repeated_axis),
+        replace(config, cd=infinite_curve),
+        replace(config, cl=-config.cl),
+        replace(config, cd=np.zeros_like(config.cd)),
+    )
+    for broken in malformed:
+        with pytest.raises(ValueError, match="step_forces: config"):
+            forces.step_forces(broken, 60.0, 66.0, 4_000.0)

@@ -252,92 +252,77 @@ def step_forces(
     ``static_load + downforce_n`` is the straight-line approximation; the sum of the corner loads
     then satisfies invariant 3 by construction.
 
-    The checks are the ones whose absence produces NaNs rather than errors: a nonfinite state
-    value, a zero or nonfinite air density or reference area, a shape factor or friction
-    coefficient of zero (which would make the tyre force identically zero whatever the slip), and
-    a zero or nonfinite ``slip_ratio_min_speed_m_s`` - the divide-by-zero this whole guard
-    exists to prevent, reachable through a hand-built or replaced
-    :class:`~f1telemetry.contracts.car_spec.KernelConfig` that never went through the loader.
+    ``KernelConfig`` is public and replaceable, so values are checked here before they reach Numba.
+    Scalars are narrowed to ``float`` to keep one compiled specialization; aero arrays must be
+    valid, contiguous float64 curves on a shared speed axis.
     """
-    _check_state("speed_m_s", speed_m_s)
-    _check_state("wheel_speed_m_s", wheel_speed_m_s)
-    _check_state("load_n", load_n)
+    speed_m_s = _checked_float("speed_m_s", speed_m_s)
+    wheel_speed_m_s = _checked_float("wheel_speed_m_s", wheel_speed_m_s)
+    load_n = _checked_float("load_n", load_n)
+    values = {
+        name: _checked_float(f"config.{name}", getattr(config, name))
+        for name in (*_POSITIVE_CONFIG_SCALARS, *_FINITE_CONFIG_SCALARS)
+    }
     for name in _POSITIVE_CONFIG_SCALARS:
-        value = getattr(config, name)
-        if not math.isfinite(value) or value <= 0.0:
+        if values[name] <= 0.0:
             raise ValueError(
-                f"step_forces: config.{name} must be finite and > 0, got {value!r}. It is a "
-                "multiplier or a denominator, so nothing downstream can recover from it"
-            )
-    for name in _FINITE_CONFIG_SCALARS:
-        value = getattr(config, name)
-        if not math.isfinite(value):
-            raise ValueError(
-                f"step_forces: config.{name} must be finite, got {value!r}. The curvature "
-                "factor carries a sign, but a nonfinite one is a NaN in the force"
+                f"step_forces: config.{name} must be finite and > 0, got {values[name]!r}"
             )
     _check_aero_arrays(config)
     downforce_n, drag_n = aero_forces(
         speed_m_s,
-        config.air_density_kg_m3,
-        config.reference_area_m2,
+        values["air_density_kg_m3"],
+        values["reference_area_m2"],
         config.aero_speed_m_s,
         config.cl,
         config.cd,
     )
-    slip = slip_ratio(wheel_speed_m_s, speed_m_s, config.slip_ratio_min_speed_m_s)
+    slip = slip_ratio(wheel_speed_m_s, speed_m_s, values["slip_ratio_min_speed_m_s"])
     tyre_fx_n = tyre_longitudinal_force(
         slip,
         load_n,
-        config.pacejka_b,
-        config.pacejka_c,
-        config.pacejka_e,
-        config.pacejka_mu,
+        values["pacejka_b"],
+        values["pacejka_c"],
+        values["pacejka_e"],
+        values["pacejka_mu"],
     )
     return downforce_n, drag_n, tyre_fx_n
 
 
-def _check_state(name: str, value: float) -> None:
-    """Refuse a state value that would make a force NaN rather than wrong."""
-    if not math.isfinite(value):
-        raise ValueError(
-            f"step_forces: {name} must be finite, got {value!r}. A NaN or an infinity here "
-            "propagates into the integrator, where it looks like a run that finished"
-        )
+def _checked_float(label: str, value: object) -> float:
+    """Return a finite numeric scalar as float, or fail before it reaches Numba."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"step_forces: {label} must be a real number, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"step_forces: {label} must be finite, got {value!r}")
+    return number
 
 
 def _check_aero_arrays(config: KernelConfig) -> None:
-    """Refuse a curve set the interpolated lookup would read out of bounds.
-
-    The loader already checks that ``cl`` and ``cd`` share the speed axis, that the axis is
-    strictly increasing, and that every coefficient is positive and finite. This repeats the
-    parts that make :func:`speed_curve` safe, because ``KernelConfig`` is a public frozen
-    dataclass that ``dataclasses.replace`` can put a hand-built array into, and an
-    out-of-bounds read there is silent - the same reason ``longitudinal.simulate`` re-checks
-    ``dt_s`` and ``mass_kg`` rather than trusting the loader.
-    """
-    axis = config.aero_speed_m_s
-    if axis.ndim != 1 or axis.size == 0:
-        raise ValueError(
-            "step_forces: config.aero_speed_m_s must be a non-empty 1-D array, got shape "
-            f"{axis.shape}"
-        )
-    if axis.shape != config.cl.shape or axis.shape != config.cd.shape:
+    """Validate aero arrays before they reach the compiled lookup."""
+    axis, cl, cd = config.aero_speed_m_s, config.cl, config.cd
+    arrays = (("aero_speed_m_s", axis), ("cl", cl), ("cd", cd))
+    for name, array in arrays:
+        if (
+            not isinstance(array, np.ndarray)
+            or array.dtype != np.float64
+            or array.ndim != 1
+            or array.size == 0
+            or not array.flags.c_contiguous
+        ):
+            raise ValueError(
+                f"step_forces: config.{name} must be a non-empty C-contiguous float64 vector"
+            )
+    if axis.shape != cl.shape or axis.shape != cd.shape:
         raise ValueError(
             "step_forces: config.aero_speed_m_s, config.cl and config.cd must share a length, "
-            f"got {axis.shape}, {config.cl.shape} and {config.cd.shape}. speed_curve indexes "
-            "both curves with the one axis."
+            f"got {axis.shape}, {cl.shape} and {cd.shape}"
         )
-    for index in range(axis.size):
-        if not math.isfinite(float(axis[index])) or not math.isfinite(float(config.cl[index])):
-            raise ValueError(
-                f"step_forces: config.aero_speed_m_s[{index}] and config.cl[{index}] must be finite"
-            )
-        if not math.isfinite(float(config.cd[index])):
-            raise ValueError(f"step_forces: config.cd[{index}] must be finite")
-        if index and float(axis[index]) <= float(axis[index - 1]):
-            raise ValueError(
-                f"step_forces: config.aero_speed_m_s must be strictly increasing, but "
-                f"[{index}] is {float(axis[index])} after {float(axis[index - 1])}. A repeated "
-                "speed would divide by zero in speed_curve."
-            )
+    for name, array in arrays:
+        if not np.isfinite(array).all():
+            raise ValueError(f"step_forces: config.{name} must be finite")
+    if not np.all(np.diff(axis) > 0.0):
+        raise ValueError("step_forces: config.aero_speed_m_s must be strictly increasing")
+    if not np.all(cl > 0.0) or not np.all(cd > 0.0):
+        raise ValueError("step_forces: config.cl and config.cd must be positive")

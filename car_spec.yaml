@@ -129,9 +129,14 @@ aero:
     ride_height_sensitivity: >-
       Synthesised ground-effect sensitivity. Nothing in Section C Issue 20 quantifies it.
     cl_curve: >-
-      Synthesised 2026 active-aero shape. P1-T3 replaces it with the published Limebeer and
-      Tremlett F1 parameter set.
-    cd_curve: Synthesised alongside the Cl curve; P1-T3 replaces both.
+      Synthesised 2026 active-aero shape, consumed as data by the P1-T3 force model. PLAN.md
+      section 4 names Limebeer and Tremlett's open F1 model as the parameter set to seed from,
+      but this project has not read that set and so cannot cite it; replacing these tables with
+      it stays open work rather than a claim this file makes.
+    cd_curve: >-
+      Synthesised alongside the Cl curve and read by the same model, on the same principle as
+      cl_curve: replacing both with a published F1 parameter set is still open. See
+      docs/calibration.md section 3.
   note: >-
     Downforce and drag are deliberately non-proportional to v^2 across this range, per
     PLAN.md section 5.1. The ride-height sensitivity term is what makes porpoising observable
