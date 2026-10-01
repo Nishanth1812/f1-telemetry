@@ -21,7 +21,7 @@
 
 ## Task 2: Add deterministic fixed-step straight-line kernel
 
-**Status:** Done, then fixed once by the Task 2 review. Commits: see the ledger in `.superpowers/sdd/phase-1/progress.md`. Kernel `src/f1telemetry/kernels/longitudinal.py`, focused tests `tests/test_longitudinal_kernel.py` (34 tests, `kernel` marker).
+**Status:** Done after two review fixes. Commits: `dbbf767`, `9a5503b`, `27fb512`. Kernel `src/f1telemetry/kernels/longitudinal.py`, focused tests `tests/test_longitudinal_kernel.py` (34 tests, `kernel` marker).
 
 **Description:** Add the P1 longitudinal state, caller-owned output buffers, and a flat 10 kHz semi-implicit integrator using the P0 Numba conventions.
 
