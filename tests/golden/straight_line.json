@@ -1,0 +1,341 @@
+{
+  "description": "Supplied fixture values, not simulation output. The baseline exists to prove the comparison machinery works and to catch a change to the fixture or the harness; P1 replaces it with a simulation run.",
+  "dt_s": 0.01,
+  "name": "straight_line",
+  "record_description": "Straight-line full-throttle acceleration. Supplied values, not simulation output: the four corner loads, the 53/47 power split and the drag term are hand-computed so that invariants 2, 3, 4, 5 and 6 all hold exactly.",
+  "series": {
+    "accel_lateral": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "accel_longitudinal": [
+      10.0,
+      10.0,
+      10.0,
+      10.0
+    ],
+    "aero_mode": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "brake_pressure": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "clutch_pct": [
+      100.0,
+      100.0,
+      100.0,
+      100.0
+    ],
+    "downforce_n": [
+      6546.5625,
+      6546.5625,
+      6546.5625,
+      6546.5625
+    ],
+    "fuel_flow_kg_h": [
+      98.0,
+      98.0,
+      98.0,
+      98.0
+    ],
+    "fw_flap_deg": [
+      12.0,
+      12.0,
+      12.0,
+      12.0
+    ],
+    "gear": [
+      3.0,
+      3.0,
+      4.0,
+      4.0
+    ],
+    "ice_rpm": [
+      9103.6,
+      9203.0,
+      9302.5,
+      9401.9
+    ],
+    "ice_torque_nm": [
+      320.0,
+      320.0,
+      320.0,
+      320.0
+    ],
+    "mgu_k_power_kw": [
+      188.8368,
+      188.8368,
+      188.8368,
+      188.8368
+    ],
+    "pedal_travel": [
+      100.0,
+      100.0,
+      100.0,
+      100.0
+    ],
+    "pitch": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "roll": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rw_flap_deg": [
+      9.0,
+      9.0,
+      9.0,
+      9.0
+    ],
+    "speed": [
+      180.0,
+      180.36,
+      180.72000000000003,
+      181.07999999999998
+    ],
+    "steering_angle": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "throttle_pct": [
+      100.0,
+      100.0,
+      100.0,
+      100.0
+    ],
+    "tyre_temp_fl": [
+      88.0,
+      89.0,
+      90.0,
+      91.0
+    ],
+    "tyre_temp_fr": [
+      88.0,
+      89.0,
+      90.0,
+      91.0
+    ],
+    "tyre_temp_rl": [
+      88.0,
+      89.0,
+      90.0,
+      91.0
+    ],
+    "tyre_temp_rr": [
+      88.0,
+      89.0,
+      90.0,
+      91.0
+    ],
+    "vx": [
+      50.0,
+      50.1,
+      50.2,
+      50.3
+    ],
+    "vy": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "wheel_speed_fl": [
+      180.0,
+      180.4,
+      180.7,
+      181.1
+    ],
+    "wheel_speed_fr": [
+      180.0,
+      180.4,
+      180.7,
+      181.1
+    ],
+    "wheel_speed_rl": [
+      180.0,
+      180.4,
+      180.7,
+      181.1
+    ],
+    "wheel_speed_rr": [
+      180.0,
+      180.4,
+      180.7,
+      181.1
+    ],
+    "yaw_rate": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "steps": 4,
+  "thresholds": {
+    "accel_lateral": {
+      "abs_tol": 0.30000000000000004,
+      "channel": "accel_lateral",
+      "rel_tol": 1e-06
+    },
+    "accel_longitudinal": {
+      "abs_tol": 0.30000000000000004,
+      "channel": "accel_longitudinal",
+      "rel_tol": 1e-06
+    },
+    "aero_mode": {
+      "abs_tol": 1e-09,
+      "channel": "aero_mode",
+      "rel_tol": 1e-06
+    },
+    "brake_pressure": {
+      "abs_tol": 2.4000000000000004,
+      "channel": "brake_pressure",
+      "rel_tol": 1e-06
+    },
+    "clutch_pct": {
+      "abs_tol": 1.2000000000000002,
+      "channel": "clutch_pct",
+      "rel_tol": 1e-06
+    },
+    "downforce_n": {
+      "abs_tol": 30.0,
+      "channel": "downforce_n",
+      "rel_tol": 1e-06
+    },
+    "fuel_flow_kg_h": {
+      "abs_tol": 0.8999999999999999,
+      "channel": "fuel_flow_kg_h",
+      "rel_tol": 1e-06
+    },
+    "fw_flap_deg": {
+      "abs_tol": 0.30000000000000004,
+      "channel": "fw_flap_deg",
+      "rel_tol": 1e-06
+    },
+    "gear": {
+      "abs_tol": 1e-09,
+      "channel": "gear",
+      "rel_tol": 1e-06
+    },
+    "ice_rpm": {
+      "abs_tol": 48.0,
+      "channel": "ice_rpm",
+      "rel_tol": 1e-06
+    },
+    "ice_torque_nm": {
+      "abs_tol": 6.0,
+      "channel": "ice_torque_nm",
+      "rel_tol": 1e-06
+    },
+    "mgu_k_power_kw": {
+      "abs_tol": 6.0,
+      "channel": "mgu_k_power_kw",
+      "rel_tol": 1e-06
+    },
+    "pedal_travel": {
+      "abs_tol": 1.2000000000000002,
+      "channel": "pedal_travel",
+      "rel_tol": 1e-06
+    },
+    "pitch": {
+      "abs_tol": 0.12,
+      "channel": "pitch",
+      "rel_tol": 1e-06
+    },
+    "roll": {
+      "abs_tol": 0.12,
+      "channel": "roll",
+      "rel_tol": 1e-06
+    },
+    "rw_flap_deg": {
+      "abs_tol": 0.30000000000000004,
+      "channel": "rw_flap_deg",
+      "rel_tol": 1e-06
+    },
+    "speed": {
+      "abs_tol": 0.6000000000000001,
+      "channel": "speed",
+      "rel_tol": 1e-06
+    },
+    "steering_angle": {
+      "abs_tol": 0.6000000000000001,
+      "channel": "steering_angle",
+      "rel_tol": 1e-06
+    },
+    "throttle_pct": {
+      "abs_tol": 1.2000000000000002,
+      "channel": "throttle_pct",
+      "rel_tol": 1e-06
+    },
+    "tyre_temp_fl": {
+      "abs_tol": 3.0,
+      "channel": "tyre_temp_fl",
+      "rel_tol": 1e-06
+    },
+    "tyre_temp_fr": {
+      "abs_tol": 3.0,
+      "channel": "tyre_temp_fr",
+      "rel_tol": 1e-06
+    },
+    "tyre_temp_rl": {
+      "abs_tol": 3.0,
+      "channel": "tyre_temp_rl",
+      "rel_tol": 1e-06
+    },
+    "tyre_temp_rr": {
+      "abs_tol": 3.0,
+      "channel": "tyre_temp_rr",
+      "rel_tol": 1e-06
+    },
+    "vx": {
+      "abs_tol": 0.12,
+      "channel": "vx",
+      "rel_tol": 1e-06
+    },
+    "vy": {
+      "abs_tol": 0.12,
+      "channel": "vy",
+      "rel_tol": 1e-06
+    },
+    "wheel_speed_fl": {
+      "abs_tol": 3.5999999999999996,
+      "channel": "wheel_speed_fl",
+      "rel_tol": 1e-06
+    },
+    "wheel_speed_fr": {
+      "abs_tol": 3.5999999999999996,
+      "channel": "wheel_speed_fr",
+      "rel_tol": 1e-06
+    },
+    "wheel_speed_rl": {
+      "abs_tol": 3.5999999999999996,
+      "channel": "wheel_speed_rl",
+      "rel_tol": 1e-06
+    },
+    "wheel_speed_rr": {
+      "abs_tol": 3.5999999999999996,
+      "channel": "wheel_speed_rr",
+      "rel_tol": 1e-06
+    },
+    "yaw_rate": {
+      "abs_tol": 0.30000000000000004,
+      "channel": "yaw_rate",
+      "rel_tol": 1e-06
+    }
+  }
+}

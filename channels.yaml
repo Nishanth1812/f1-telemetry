@@ -1,0 +1,885 @@
+version: 1
+description: >-
+  THE contract. Every field's metadata - unit, rate, width, dtype, range, noise model,
+  sigma, quantisation, fault eligibility - is declared exactly once, here. Python
+  dataclasses, the Parquet schema and the TypeScript types are all code-generated
+  from this file by `uv run f1-codegen`; none of them is hand-maintained. Channel
+  inventory follows PLAN.md section 5.2 group by group;
+  per-corner signals are declared once with a `corners` list and expanded by the
+  generator, never written out four times. Sizing is computed from this file, not
+  estimated: at the rates below the dictionary carries 7160 channel-samples/s
+  (28.6 kB/s, 103 MB/h raw at float32), which supersedes the ~4600/s estimate in
+  PLAN.md section 5.2.
+
+conventions:
+  body_frame: x forward, y left, z up; right-handed
+  length_m: m
+  angle: deg unless the unit says otherwise
+  rate_hz: >-
+    samples per second; null means event-driven, in which case `event` is true
+  corner_order: [FL, FR, RL, RR]
+  event_channels: >-
+    Published on occurrence rather than on a clock, so they carry `event: true` and
+    `rate_hz: null`. Nothing downstream may schedule them on a fixed timer.
+  fault_types: >-
+    dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale - the
+    PLAN.md section 8.1 taxonomy. `swap` requires a non-empty `corners` list.
+  provenance: >-
+    Every channel carries one of two labels, and they mean different things. `fia_limit`
+    means the channel's `range` is a regulation *operating limit* read out of a named
+    clause of FIA 2026 Section C Issue 20 - a bound the car is required to stay inside,
+    not the span of a sensor. `illustrative` means the numbers are ours: a simulator
+    setting chosen to make the trace plausible, with no regulation behind it. Only `gear`
+    and `mgu_k_power_kw` are `fia_limit` today; every other `range`, `rate_hz`,
+    `noise_model`/`sigma` and `quantise` in this file is an illustrative simulator setting
+    and should be read as one. A `fia_limit` range is a limit, not a measurement span, so
+    it may be asymmetric about zero and is deliberately not widened to cover a fault-free
+    signal sitting at the ceiling. No number here is a team measurement, and
+    nothing in this file reproduces a real car's telemetry.
+
+
+channels:
+  - name: speed
+    group: chassis
+    unit: km/h
+    rate_hz: 200
+    dtype: float32
+    range: [0.0, 400.0]
+    noise_model: gaussian
+    sigma: 0.1
+    quantise: { bits: 16, full_scale: 400.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Ground-referenced vehicle speed, the driver-facing number.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: vx
+    group: chassis
+    unit: m/s
+    rate_hz: 200
+    dtype: float32
+    range: [-10.0, 105.0]
+    noise_model: gaussian
+    sigma: 0.02
+    quantise: { bits: 16, full_scale: 110.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Body-frame longitudinal velocity, from the chassis estimator.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: vy
+    group: chassis
+    unit: m/s
+    rate_hz: 200
+    dtype: float32
+    range: [-30.0, 30.0]
+    noise_model: gaussian
+    sigma: 0.02
+    quantise: { bits: 16, full_scale: 32.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Body-frame lateral velocity, from the chassis estimator.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: yaw_rate
+    group: chassis
+    unit: deg/s
+    rate_hz: 200
+    dtype: float32
+    range: [-300.0, 300.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 300.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Yaw rate about the vertical axis, chassis-filtered.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: accel_lateral
+    group: chassis
+    unit: m/s^2
+    rate_hz: 200
+    dtype: float32
+    range: [-60.0, 60.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 60.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Filtered lateral acceleration, the "lateral g" the dashboard shows.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: accel_longitudinal
+    group: chassis
+    unit: m/s^2
+    rate_hz: 200
+    dtype: float32
+    range: [-70.0, 30.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 70.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Filtered longitudinal acceleration, negative under braking.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: roll
+    group: chassis
+    unit: deg
+    rate_hz: 200
+    dtype: float32
+    range: [-6.0, 6.0]
+    noise_model: gaussian
+    sigma: 0.02
+    quantise: { bits: 14, full_scale: 6.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Body roll angle, positive rolling to the right.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: pitch
+    group: chassis
+    unit: deg
+    rate_hz: 200
+    dtype: float32
+    range: [-6.0, 6.0]
+    noise_model: gaussian
+    sigma: 0.02
+    quantise: { bits: 14, full_scale: 6.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Body pitch angle, positive nose-up under braking.
+    provenance: illustrative
+    source: PLAN.md section 5.2 chassis group
+    source_date: 2026-09-30
+
+  - name: imu_accel_x
+    group: imu
+    unit: m/s^2
+    rate_hz: 200
+    dtype: float32
+    range: [-80.0, 80.0]
+    noise_model: gaussian
+    sigma: 0.08
+    quantise: { bits: 16, full_scale: 80.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Raw IMU specific force, forward. Includes gravity on the other axes.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: imu_accel_y
+    group: imu
+    unit: m/s^2
+    rate_hz: 200
+    dtype: float32
+    range: [-80.0, 80.0]
+    noise_model: gaussian
+    sigma: 0.08
+    quantise: { bits: 16, full_scale: 80.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Raw IMU specific force, leftward positive.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: imu_accel_z
+    group: imu
+    unit: m/s^2
+    rate_hz: 200
+    dtype: float32
+    range: [-80.0, 80.0]
+    noise_model: gaussian
+    sigma: 0.08
+    quantise: { bits: 16, full_scale: 80.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Raw IMU specific force, upward positive, so the static value is +g and downforce
+      reads as an increase.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: imu_gyro_x
+    group: imu
+    unit: deg/s
+    rate_hz: 200
+    dtype: float32
+    range: [-1000.0, 1000.0]
+    noise_model: gaussian
+    sigma: 0.5
+    quantise: { bits: 14, full_scale: 1000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Raw IMU roll rate.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: imu_gyro_y
+    group: imu
+    unit: deg/s
+    rate_hz: 200
+    dtype: float32
+    range: [-1000.0, 1000.0]
+    noise_model: gaussian
+    sigma: 0.5
+    quantise: { bits: 14, full_scale: 1000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Raw IMU pitch rate.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: imu_gyro_z
+    group: imu
+    unit: deg/s
+    rate_hz: 200
+    dtype: float32
+    range: [-1000.0, 1000.0]
+    noise_model: gaussian
+    sigma: 0.5
+    quantise: { bits: 14, full_scale: 1000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Raw IMU yaw rate.
+    provenance: illustrative
+    source: PLAN.md section 5.2 imu group
+    source_date: 2026-09-30
+
+  - name: ice_rpm
+    group: powertrain
+    unit: rpm
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 13500.0]
+    noise_model: gaussian
+    sigma: 8.0
+    quantise: { bits: 16, full_scale: 13500.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Internal combustion engine shaft speed. A separate channel from mgu_k_rpm by
+      contract - a single "rpm" is a 2022 concept and produces nonsense on a 2026 car.
+      The range is illustrative: C5.14 gives a team per-car high-rev setting rather than a
+      fixed public threshold, so there is no published overall limit to quote and 13500 rpm
+      is our stand-in.
+    provenance: illustrative
+    source: PLAN.md section 5.2 powertrain group and naming correction
+    source_date: 2026-09-30
+
+  - name: mgu_k_rpm
+    group: powertrain
+    unit: rpm
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 35000.0]
+    noise_model: gaussian
+    sigma: 25.0
+    quantise: { bits: 16, full_scale: 35000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      MGU-K motor speed. Not on the ICE gear path, so it is free to spin far faster
+      than the engine and the two must never be reported as one channel.
+    provenance: illustrative
+    source: PLAN.md section 5.2 powertrain group and naming correction
+    source_date: 2026-09-30
+
+  - name: gear
+    group: powertrain
+    unit: enum
+    rate_hz: 100
+    dtype: int8
+    range: [-1, 8]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, freeze, step, spike, stale]
+    description: >-
+      ICE gearbox state: -1 reverse, 0 neutral, 1..8 forward. FIA sets eight forward
+      ratios and requires reverse; the integer encoding and neutral value are simulator
+      conventions. Discrete state, so no gaussian noise or analogue quantisation.
+    provenance: fia_limit
+    source: >-
+      FIA 2026 Formula One Regulations Section C Issue 20 (2026-08-05), C9.6.1 (eight
+      forward ratios) and C9.7 (reverse ratio),
+      https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf
+    source_date: 2026-09-30
+
+  - name: throttle_pct
+    group: powertrain
+    unit: "%"
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 100.0]
+    noise_model: gaussian
+    sigma: 0.2
+    quantise: { bits: 12, full_scale: 100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Driver throttle pedal travel as a percentage.
+    provenance: illustrative
+    source: PLAN.md section 5.2 powertrain group
+    source_date: 2026-09-30
+
+  - name: clutch_pct
+    group: powertrain
+    unit: "%"
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 100.0]
+    noise_model: gaussian
+    sigma: 0.2
+    quantise: { bits: 12, full_scale: 100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Clutch engagement. Launch, trailing throttle and the upshift boost-cut all route
+      through it, so a gearbox trace without it is not believable.
+    provenance: illustrative
+    source: PLAN.md section 6 clutch model
+    source_date: 2026-09-30
+
+  - name: ice_torque_nm
+    group: powertrain
+    unit: Nm
+    rate_hz: 100
+    dtype: float32
+    range: [-200.0, 400.0]
+    noise_model: gaussian
+    sigma: 1.0
+    quantise: { bits: 14, full_scale: 400.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: ICE shaft torque, including negative engine braking.
+    provenance: illustrative
+    source: PLAN.md section 6 powertrain
+    source_date: 2026-09-30
+
+  - name: mgu_k_power_kw
+    group: powertrain
+    unit: kW
+    rate_hz: 100
+    dtype: float32
+    range: [-350.0, 350.0]
+    noise_model: gaussian
+    sigma: 1.0
+    quantise: { bits: 14, full_scale: 350.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      MGU-K electrical power at the motor, positive motoring, negative recuperating. The
+      bounds are the rule's 350 kW in each direction - an operating limit, symmetric
+      because recuperation is capped at the same figure as motoring, not a sensor span.
+      C5.2.8 further constrains deployment by car speed and by mode; that is real
+      regulation and this generator does not implement it, because Phase 0 is a noise-only
+      signal generator with no energy model behind it.
+    provenance: fia_limit
+    source: >-
+      FIA 2026 Formula One Regulations Section C Issue 20 (2026-08-05), C5.2.7,
+      https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf
+    source_date: 2026-09-30
+
+  - name: boost_remaining_bar
+    group: powertrain
+    unit: bar
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 8.5]
+    noise_model: gaussian
+    sigma: 0.02
+    quantise: { bits: 14, full_scale: 8.5 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Pneumatic overpressure available to the ICE for turbo boost.
+    provenance: illustrative
+    source: PLAN.md section 6 powertrain
+    source_date: 2026-09-30
+
+  - name: eso_pct
+    group: powertrain
+    unit: "%"
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 100.0]
+    noise_model: gaussian
+    sigma: 0.1
+    quantise: { bits: 12, full_scale: 100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Energy state of charge on a synthetic 0-100% display scale. The FIA's 4 MJ maximum
+      state-of-charge swing is not the store capacity or an established mapping to this
+      percentage, so the range and scale remain illustrative.
+    provenance: illustrative
+    source: PLAN.md section 6 powertrain
+    source_date: 2026-09-30
+
+  - name: fuel_flow_kg_h
+    group: powertrain
+    unit: kg/h
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 110.0]
+    noise_model: gaussian
+    sigma: 0.15
+    quantise: { bits: 14, full_scale: 110.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Fuel mass flow. One half of the energy-balance invariant; the other half is
+      mgu_k_power_kw and the drag work. The range is illustrative because the regulation
+      limits fuel *energy* flow, not mass flow. Converting that limit to kg/h requires
+      the FIA-measured fuel energy density and lower heating value; this illustrative
+      range is not that conversion.
+    provenance: illustrative
+    source: PLAN.md section 6 energy invariant
+    source_date: 2026-09-30
+
+  - name: aero_mode
+    group: aero
+    unit: enum
+    rate_hz: 100
+    dtype: int8
+    range: [0, 1]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, freeze, step, spike, stale]
+    description: Active aero state machine - 0 = Z-mode closed high downforce, 1 = X-mode open low drag.
+    provenance: illustrative
+    source: PLAN.md section 5.1 active aero
+    source_date: 2026-09-30
+
+  - name: fw_flap_deg
+    group: aero
+    unit: deg
+    rate_hz: 100
+    dtype: float32
+    range: [-5.0, 25.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 25.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Front wing flap angle, moving through finite mechanical travel.
+    provenance: illustrative
+    source: PLAN.md section 5.1 active aero
+    source_date: 2026-09-30
+
+  - name: rw_flap_deg
+    group: aero
+    unit: deg
+    rate_hz: 100
+    dtype: float32
+    range: [-10.0, 30.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 30.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Rear wing flap angle, moving through finite mechanical travel.
+    provenance: illustrative
+    source: PLAN.md section 5.1 active aero
+    source_date: 2026-09-30
+
+  - name: zone_id
+    group: aero
+    unit: enum
+    rate_hz: 100
+    dtype: int16
+    range: [-1, 20]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, freeze, spike, stale]
+    description: >-
+      X-mode permission zone index, -1 where X-mode is not permitted. P4 supplies the
+      track geometry that resolves it.
+    provenance: illustrative
+    source: PLAN.md section 5.1 active aero
+    source_date: 2026-09-30
+
+  - name: downforce_n
+    group: aero
+    unit: N
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 30000.0]
+    noise_model: gaussian
+    sigma: 5.0
+    quantise: { bits: 16, full_scale: 30000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: >-
+      Total vertical aerodynamic load, in newtons, so the dashboard shows a force
+      rather than a dimensionless coefficient.
+    provenance: illustrative
+    source: PLAN.md section 5.1 derived channels
+    source_date: 2026-09-30
+
+  - name: cl_a
+    group: aero
+    unit: m^2
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 5.2]
+    noise_model: gaussian
+    sigma: 0.01
+    quantise: { bits: 14, full_scale: 5.2 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Lift coefficient times reference area, the quantity downforce is built from.
+    provenance: illustrative
+    source: PLAN.md section 5.1 derived channels
+    source_date: 2026-09-30
+
+  - name: cd_a
+    group: aero
+    unit: m^2
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 1.8]
+    noise_model: gaussian
+    sigma: 0.005
+    quantise: { bits: 14, full_scale: 1.8 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Drag coefficient times reference area, the quantity drag is built from.
+    provenance: illustrative
+    source: PLAN.md section 5.1 derived channels
+    source_date: 2026-09-30
+
+  - name: wheel_speed
+    group: wheel
+    unit: km/h
+    rate_hz: 100
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [0.0, 400.0]
+    noise_model: gaussian
+    sigma: 0.6
+    quantise: { bits: 12, full_scale: 400.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: Per-corner wheel speed from the wheel-speed sensor.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel group and worked example
+    source_date: 2026-09-30
+
+  - name: slip_ratio
+    group: wheel
+    unit: "%"
+    rate_hz: 100
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [-100.0, 100.0]
+    noise_model: gaussian
+    sigma: 0.3
+    quantise: { bits: 12, full_scale: 100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: >-
+      Longitudinal slip ratio, kappa, as a percentage. Positive under drive, negative
+      under braking.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel group
+    source_date: 2026-09-30
+
+  - name: slip_angle
+    group: wheel
+    unit: deg
+    rate_hz: 100
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [-30.0, 30.0]
+    noise_model: gaussian
+    sigma: 0.1
+    quantise: { bits: 12, full_scale: 30.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: Slip angle at the contact patch, positive generating +y force.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel group
+    source_date: 2026-09-30
+
+  - name: vertical_load
+    group: wheel
+    unit: N
+    rate_hz: 100
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [0.0, 12000.0]
+    noise_model: gaussian
+    sigma: 20.0
+    quantise: { bits: 16, full_scale: 12000.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: >-
+      Vertical load carried by the corner, static plus aerodynamic plus load transfer.
+      The four of these must sum to the invariant-3 total.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel group
+    source_date: 2026-09-30
+
+  - name: camber
+    group: wheel
+    unit: deg
+    rate_hz: 100
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [-5.0, 1.0]
+    noise_model: gaussian
+    sigma: 0.05
+    quantise: { bits: 14, full_scale: 5.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: Camber angle, negative at the top of the wheel.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel group
+    source_date: 2026-09-30
+
+  - name: suspension_travel
+    group: wheel_thermal
+    unit: mm
+    rate_hz: 20
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [-25.0, 25.0]
+    noise_model: gaussian
+    sigma: 0.1
+    quantise: { bits: 12, full_scale: 25.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: >-
+      Per-corner suspension travel, quasi-static (PLAN.md section 2). Rate is 20 Hz
+      because the ride-height sensor is a linear potentiometer, not because the
+      underlying quantity is slow.
+    provenance: illustrative
+    source: PLAN.md section 5.2 wheel thermal group
+    source_date: 2026-09-30
+
+  - name: tyre_pressure
+    group: wheel_thermal
+    unit: psi
+    rate_hz: 20
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [18.0, 45.0]
+    noise_model: gaussian
+    sigma: 0.3
+    quantise: { bits: 12, full_scale: 45.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: >-
+      Per-corner tyre pressure, driven by a gas-law node off carcass temperature, so
+      it responds to both tyre_temp and a leak fault.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: tyre_temp
+    group: wheel_thermal
+    unit: degC
+    rate_hz: 20
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [-5.0, 150.0]
+    noise_model: gaussian
+    sigma: 0.5
+    quantise: { bits: 12, full_scale: 150.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: Per-corner tyre carcass temperature.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: brake_temp
+    group: wheel_thermal
+    unit: degC
+    rate_hz: 20
+    width: 4
+    corners: [FL, FR, RL, RR]
+    dtype: float32
+    range: [0.0, 1100.0]
+    noise_model: gaussian
+    sigma: 1.5
+    quantise: { bits: 14, full_scale: 1100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
+    description: Per-corner brake disc temperature, heated by brake torque times wheel speed.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: engine_temp
+    group: thermal
+    unit: degC
+    rate_hz: 10
+    dtype: float32
+    range: [-20.0, 130.0]
+    noise_model: gaussian
+    sigma: 0.3
+    quantise: { bits: 12, full_scale: 130.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: ICE coolant-block lumped node temperature.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: gearbox_temp
+    group: thermal
+    unit: degC
+    rate_hz: 10
+    dtype: float32
+    range: [-20.0, 130.0]
+    noise_model: gaussian
+    sigma: 0.3
+    quantise: { bits: 12, full_scale: 130.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Gearbox oil lumped node temperature.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: coolant_temp
+    group: thermal
+    unit: degC
+    rate_hz: 10
+    dtype: float32
+    range: [-20.0, 120.0]
+    noise_model: gaussian
+    sigma: 0.2
+    quantise: { bits: 12, full_scale: 120.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Primary cooling loop lumped node temperature.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: brake_duct_air_temp
+    group: thermal
+    unit: degC
+    rate_hz: 10
+    dtype: float32
+    range: [-30.0, 90.0]
+    noise_model: gaussian
+    sigma: 0.4
+    quantise: { bits: 12, full_scale: 90.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Brake duct inlet air temperature, upstream of the disc.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 7
+    source_date: 2026-09-30
+
+  - name: lap_index
+    group: session
+    unit: count
+    event: true
+    rate_hz: null
+    dtype: int16
+    range: [-1, 5000]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, stale]
+    description: Zero-based lap counter, emitted at each lap boundary.
+    provenance: illustrative
+    source: PLAN.md section 5.2 session group
+    source_date: 2026-09-30
+
+  - name: sector_index
+    group: session
+    unit: count
+    event: true
+    rate_hz: null
+    dtype: int8
+    range: [-1, 3]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, stale]
+    description: Sector index 0..2, emitted at each sector boundary.
+    provenance: illustrative
+    source: PLAN.md section 5.2 session group
+    source_date: 2026-09-30
+
+  - name: lap_time
+    group: session
+    unit: s
+    event: true
+    rate_hz: null
+    dtype: float32
+    range: [0.0, 1200.0]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, stale]
+    description: >-
+      Completed lap time, emitted once per lap. sigma is 0 because the value is a
+      timestamp difference, not a measurement.
+    provenance: illustrative
+    source: PLAN.md section 5.2 session group
+    source_date: 2026-09-30
+
+  - name: sector_time
+    group: session
+    unit: s
+    event: true
+    rate_hz: null
+    dtype: float32
+    range: [0.0, 600.0]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, stale]
+    description: Completed sector time, emitted once per sector.
+    provenance: illustrative
+    source: PLAN.md section 5.2 session group
+    source_date: 2026-09-30
+
+  - name: delta
+    group: session
+    unit: s
+    event: true
+    rate_hz: null
+    dtype: float32
+    range: [-5.0, 5.0]
+    noise_model: none
+    sigma: 0.0
+    fault_eligible: [dropout, stale]
+    description: >-
+      Time delta against the reference lap at the current track position, emitted
+      when it is recomputed rather than on a clock.
+    provenance: illustrative
+    source: PLAN.md sections 5.2 and 8.5
+    source_date: 2026-09-30
+
+  - name: brake_pressure
+    group: driver
+    unit: bar
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 250.0]
+    noise_model: gaussian
+    sigma: 0.4
+    quantise: { bits: 14, full_scale: 250.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Master-cylinder brake pressure.
+    provenance: illustrative
+    source: PLAN.md section 5.2 driver group
+    source_date: 2026-09-30
+
+  - name: steering_angle
+    group: driver
+    unit: deg
+    rate_hz: 100
+    dtype: float32
+    range: [-450.0, 450.0]
+    noise_model: gaussian
+    sigma: 0.1
+    quantise: { bits: 14, full_scale: 450.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Steering wheel angle, positive left, before the steering limit.
+    provenance: illustrative
+    source: PLAN.md section 5.2 driver group
+    source_date: 2026-09-30
+
+  - name: pedal_travel
+    group: driver
+    unit: "%"
+    rate_hz: 100
+    dtype: float32
+    range: [0.0, 100.0]
+    noise_model: gaussian
+    sigma: 0.2
+    quantise: { bits: 12, full_scale: 100.0 }
+    fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, saturate, stale]
+    description: Combined driver pedal travel, whichever pedal is being worked.
+    provenance: illustrative
+    source: PLAN.md section 5.2 driver group
+    source_date: 2026-09-30
