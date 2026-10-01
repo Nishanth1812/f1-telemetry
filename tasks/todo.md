@@ -21,12 +21,14 @@
 
 ## Task 2: Add deterministic fixed-step straight-line kernel
 
+**Status:** Done. Commit: see the ledger entry in `.superpowers/sdd/phase-1/progress.md`. Kernel `src/f1telemetry/kernels/longitudinal.py`, focused tests `tests/test_longitudinal_kernel.py` (22 tests, `kernel` marker).
+
 **Description:** Add the P1 longitudinal state, caller-owned output buffers, and a flat 10 kHz semi-implicit integrator using the P0 Numba conventions.
 
 **Acceptance criteria:**
-- [ ] Kernel uses preallocated numeric arrays, fixed `dt = 100 µs`, `cache=True`, and `fastmath=False`.
-- [ ] Two runs with the same seed, configuration, and inputs produce byte-identical traces.
-- [ ] A representative run stays finite and the loop performs no Python-side allocation or wall-clock reads.
+- [x] Kernel uses preallocated numeric arrays, fixed `dt = 100 µs`, `cache=True`, and `fastmath=False`.
+- [x] Two runs with the same seed, configuration, and inputs produce byte-identical traces.
+- [x] A representative run stays finite and the loop performs no Python-side allocation or wall-clock reads.
 
 **Verification:** Focused kernel tests, including a byte comparison between repeated outputs; `uv run --frozen pytest <focused-test-file>`.
 
@@ -38,8 +40,8 @@
 
 ## Checkpoint: Kernel
 
-- [ ] Focused tests pass for determinism, fixed-step progression, and finite outputs.
-- [ ] Existing `just check` gates remain green.
+- [x] Focused tests pass for determinism, fixed-step progression, and finite outputs.
+- [x] Existing `just check` gates remain green.
 
 ## Task 3: Add aero and longitudinal tire forces
 

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from f1telemetry.contracts.channels import (
 )
 from f1telemetry.testing.fixtures import cornering_record, straight_line_record
 from f1telemetry.testing.records import SampleRecord
+
+# Numba's NRT allocation counters are the only thing that can see memory allocated inside
+# compiled code, and `tests/test_longitudinal_kernel.py` uses them to show that the step loop
+# allocates nothing. Numba reads the flag when its config module is first imported, so it has
+# to be set here, before any test module can import numba.
+os.environ["NUMBA_NRT_STATS"] = "1"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

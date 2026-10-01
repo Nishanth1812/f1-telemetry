@@ -163,3 +163,65 @@ collect against an untouched P0 checkout.
 Final verification: `pytest -q` (114 passed), `pytest -m invariant` (12 passed), `pytest -m
 golden` (7 passed), `ruff check` and `ruff format --check` clean, `basedpyright` 0 errors /
 0 warnings / 0 notes, `f1-codegen` 0 files changed, web production build passing.
+
+## Task 2 status
+
+Done. `src/f1telemetry/kernels/longitudinal.py` (new) and `tests/test_longitudinal_kernel.py`
+(new, 22 tests, `kernel` marker). Also touched: `src/f1telemetry/kernels/__init__.py` (the
+package docstring claimed P0 held the only kernel), `tests/conftest.py` (Numba NRT counters, see
+below), `pyproject.toml` (`kernel` marker, one more `TID251` carve-out).
+
+### What was built, and what was deliberately left out
+
+A straight-line point mass: state is `[distance_m, speed_m_s]` (`STATE_SIZE` 2,
+`X_INDEX`/`V_INDEX`), integrated by semi-implicit Euler at the configured `dt_s`. No force is
+modelled - **force is an input array**, one net longitudinal force per step. That is the whole
+boundary Task 3 and Task 4 work through: Task 3 computes aero and tyre force, Task 4 computes
+drive and brake force, and either way the integrator is unchanged.
+
+The kernel takes `dt_s` and `mass_kg` as scalars and nothing else. Nothing about aero, tyre or
+powertrain configuration reaches it yet, so the `KernelConfig` surface is minimal and grows when
+the force models do.
+
+### Interface frozen for Task 3
+
+- `longitudinal.simulate(config, steps, state, force_n, out) -> out` is the entry point. It reads
+  `config.dt_s` and `config.mass_kg` **once**, in Python, outside the loop, per the Task 1
+  handoff - it does not rebuild the config per step.
+- Buffer shapes, all caller-owned `float64`: `state` `(2,)`, `force_n` `(steps,)`,
+  `out` `(steps + 1, 2)` with row 0 seeded from `state` and row *n* the state after *n* steps.
+  Shape and dtype are checked in `simulate`, never inside the loop.
+- `longitudinal.allocate(steps)`, `initial_state(distance_m, speed_m_s)` and
+  `constant_longitudinal_force(steps, force_n)` allocate caller buffers. The last one is a
+  placeholder until Task 3/4 produce real forces; Task 5 should not use it.
+- Tests import the kernel only from `tests/test_longitudinal_kernel.py`, which carries the
+  `TID251` per-file ignore. Anything else that needs the kernel needs its own carve-out in
+  `pyproject.toml`, or the layer-isolation rule will refuse it.
+
+### Two things Task 3 inherits
+
+1. **The kernel's state layout is expected to grow.** Task 3 needs per-wheel slip and vertical
+   load. Whether that means widening `STATE_SIZE` or adding a second state array is undecided;
+   `STATE_SIZE` and the index constants are the thing that has to change when it does. `speed_m_s`
+   is the `vx` of `PLAN.md` section 4's state vector, so the columns line up with
+   `GroundTruthStep.vx_m_s` when a real record is built.
+2. **The ERS curve-length hazard from Task 1 still stands** and is untouched here: `CONFIG`'s
+   `ers_speed_km_h` (4 breakpoints) and `ers_overtake_speed_km_h` (2) need their own loop bounds.
+   Nothing in the Task 2 kernel reads either, which is why it could not trip over it.
+
+### Testing note for whoever runs this next
+
+`tests/conftest.py` sets `NUMBA_NRT_STATS=1` before numba is imported.
+`test_the_step_loop_performs_no_allocation` uses Numba's NRT counters to show the step loop
+allocates nothing, and it carries its own control - a kernel that does allocate in its loop, whose
+count must grow - so the measurement cannot pass vacuously if numba's internals move. Measured on
+this machine: 3 allocations per call for the kernel at both 1,000 and 100,000 steps, against
+1,000 and 100,000 for the control.
+
+TDD record: RED was a behavioural probe against the pre-Task-2 tree (the only compiled kernel was
+the oscillator probe, which has no force input, decelerates a forward-moving car, and knows
+nothing about the car's mass), plus a collection `ImportError` for the new module - the same
+two-part record Task 1 used, because a missing module cannot fail behaviourally. GREEN:
+`pytest tests/test_longitudinal_kernel.py` 22 passed; `pytest -q` 136 passed; `pytest -m invariant`
+12 passed; `pytest -m golden` 7 passed; `ruff check`, `ruff format --check`, `basedpyright`
+(0 errors / 0 warnings / 0 notes), `f1-check-contract`, `f1-codegen` and the web build all clean.
