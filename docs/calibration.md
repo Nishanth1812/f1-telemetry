@@ -24,9 +24,9 @@ Issue 2, dated 2026-08-05**, so a spec bump for 2027 is already available; this 
 2026 because that is the season the P1 model simulates.
 
 `PLAN.md` section 5 and `PHASES.md` P0-T3 both cited **Issue 16 (2026-02-27)**. That is
-recorded in `car_spec.yaml` under `spec.supersedes`. The clauses this task relies on had the
-same values in Issue 16, so the version bump did not move any coefficient - but the citation
-was stale and is now pinned.
+recorded in `car_spec.yaml` under `spec.supersedes`. Issue 16 lists the C4.1 values as 724 kg
+and 726 kg plus Nominal Tyre Mass. The coefficients in this file are pinned to Issue 20; no
+broader claim that every clause is unchanged between issues is needed here.
 
 ### Method
 
@@ -53,17 +53,38 @@ document). Verification for the clauses used:
 | C5.2.10 | 64 | Recharge no more than 8.5 MJ per lap (7 MJ reduced case) |
 | C5.2.11 | 65 | MGU-K mechanical torque magnitude no more than 500 Nm |
 | C5.2.12 | 65 | MGU-K only above 50 km/h from a standing start |
-| C5.12.2 / C5.12.3 | 74 | Torque-demand gradient and minimum-curve shapes |
+| C5.12.2 | 73 | Torque-demand gradient above 4000 rpm no flatter than -0.045 Nm/rpm |
+| C5.12.3 | 74 | Minimum-curve shape: `Torque (Nm) = -0.0027 * rpm - 30` |
 | C5.13.4 | 75 | Idle speed control target no more than 4000 rpm |
 | C5.14 | 76 | Rev limits inside a 750 rpm band; no absolute limiter stated |
-| C10.7.2 | 111 | 18 inch rims, 462.5/463 mm rim diameter, tyre mounting widths |
+| C10.7.2 | 111 | 462.5/463 mm rim diameter, tyre mounting widths per axle |
 | C10.10.1 | 115 | Front wheel origin not outboard of `Y=603`, rear not outboard of `Y=525` |
 
-**What is machine-checked, precisely.** The table above is the set of clauses that were *read*
-for this task. It is larger than the set that is *asserted*, and the difference is deliberate:
-some rows are there to record that a clause was checked and deliberately **not** recorded as a
-source - C5.14 (no absolute rev limiter stated), C5.2.5, C5.12.2/C5.12.3, C10.10.1, C4.7, C5.1.2,
-C5.1.18 - because none of them fixes a P1 kernel input.
+**Scope notes on the clauses read but not recorded.** Two things in that table are worth being
+explicit about, because reading a clause is not the same as using it:
+
+- **C5.2.5 has three arms and only one is relevant to P1.** The clause states
+  `EF(MJ/h) = 380` at or below -50 kW engine power, `EF(MJ/h) = 9.78*P(kW) + 869` above it,
+  and is bounded by C5.2.3. P1 models full-throttle running, so the -50 kW arm and the
+  partial-load arm are both out of scope for Task 5's scenarios; only the C5.2.3 and C5.2.4
+  limits are recorded. A future partial-load fuel model needs the 380 MJ/h arm added.
+- **C5.2.8 has four sub-clauses and only two are recorded.** `.i` (non-Overtake) and `.ii`
+  (Overtake) are the profiles in `car_spec.yaml`. `.iii` is a further, *lower* limit
+  (250 kW below 310 km/h, then the `.i` curve) that applies in a Race or Sprint Session on
+  specified circuit sectors during a power-limited period, subject to Article B7.2 — a
+  circuit-and-session-specific regime this project has no data for. `.iv` defers to
+  Low-Grip-condition curves in FIA-F1-DOC-111, a document not read here. Neither is recorded,
+  and P1 scenarios should not be judged against them.
+- **C10.7.2 does not say "18 inch".** The clause gives rim diameters in millimetres. 462.5 mm
+  is consistent with an 18 inch rim and `PLAN.md` §5 independently states 18 inch wheels are
+  retained, but that is an inference from this project, not an FIA statement, and
+  `car_spec.yaml` records it under `tyres.inference` rather than as a quoted value.
+
+**What is machine-checked, precisely.** The table above lists the **23 clauses** read for this
+task. That is a reading record, not a set of gates: it is larger than the set that is
+*asserted*, and the difference is deliberate. Some rows record a clause that was checked and
+deliberately **not** used as a source — C5.14 (states no absolute rev limiter), C5.2.5,
+C5.12.2, C5.12.3, C10.10.1, C4.7, C5.1.2, C5.1.18 — because none fixes a P1 kernel input.
 
 The assertions are:
 
@@ -71,11 +92,13 @@ The assertions are:
 |---|---|
 | `test_every_regulated_value_cites_the_clause_it_was_read_from` | The exact `path -> (clause, page)` map for all **23** cited entries, so a citation cannot be dropped, re-pointed, or invented |
 | `test_the_cited_clauses_still_say_what_the_values_claim` | The numeric content of those same **23** entries: the value in `car_spec.yaml` must equal the number the quoted clause states |
-| `test_a_curve_claim_declares_its_derived_breakpoints` | The one breakpoint in the deployment curve that C5.2.8 does **not** state, declared as derived |
+| `test_a_curve_claim_declares_its_derived_breakpoints` | The two breakpoints in the ERS curves that C5.2.8 does **not** state — 290 and 337.5 km/h — declared as derived |
+| `test_the_ers_curves_never_exceed_the_absolute_cap` | That neither curve exceeds C5.2.7's 350 kW at any interpolated speed |
+| `test_an_ers_curve_point_above_the_absolute_cap_is_rejected` | That a curve point above the cap is rejected at the boundary, for both curves |
 
-So the coverage is 23 cited values, not every row of the table above. The unchecked rows are a
-reading record, not a gate; a reviewer should not read the table as a claim that all 30 rows are
-asserted by a test.
+So the coverage is **23 cited values across 16 distinct clauses**, not every row of the table
+above. The other seven clauses read are a reading record, not a gate; a reviewer should not
+read the table as a claim that all 23 rows are asserted by a test.
 
 ## 2. What Issue 20 changed in this file
 
@@ -95,21 +118,19 @@ alternative ERS-K power profile, `P(kW) = 7100 - 20*v` below 355 km/h and zero a
 it. That profile is now `overtake_curve_kw`. The scalar is retained with a `not_regulated`
 note because Task 4 may still want the shorthand; it should not drive physics.
 
-**`powertrain.mgu_k.deployment_curve_kw` is new.** The non-Overtake deployment limit is
-piecewise linear in car speed: `1800 - 5*v` below 340 km/h, `6900 - 20*v` from 340 to
-345 km/h, zero at or above 345 km/h. It is stored as breakpoints at 0, 290, 340 and
-345 km/h. This matters for P1: a car at 300 km/h may deploy at most 300 kW, not 350 kW.
+**`powertrain.mgu_k.deployment_curve_kw` is new.** C5.2.8.i gives the non-Overtake propulsion
+limit as `1800 - 5*v` below 340 km/h, `6900 - 20*v` from 340 to 345 km/h, then zero. C5.2.7
+adds an absolute 350 kW cap, so the effective limit is the smaller value from the two clauses.
+The stored curve is clamped at 350 kW below the 290 km/h crossing; at 300 km/h it permits
+300 kW.
 
-**The 290 km/h breakpoint is derived, and that is now machine-visible.** It is not a breakpoint
-in C5.2.8: the clause gives two linear segments meeting at 340 km/h. The 290 km/h point exists
-because `1800 - 5*v` reaches the 350 kW absolute ERS-K cap of C5.2.7 at that speed, so the
-sampled curve has to turn there or the first segment would report more than the cap allows.
-The **limit value** at 290 km/h is C5.2.7's 350 kW; only the **speed** is derived. That is
-declared in the claim itself as `derived_points`, and `CarSpec.derived_points()` reports it
-alongside `citations()`, so a reader asking "which of these numbers are the regulation's?" gets
-a partial answer from the same API rather than having to read a `quote` string. The audit
-rejects a derived point naming a speed the curve does not contain, or one with an empty
-`basis`.
+**Both ERS curves apply the absolute cap, and both crossing speeds are derived.** C5.2.7 limits
+absolute ERS-K electrical DC power to 350 kW. C5.2.8.i's `1800 - 5*v` reaches that cap at
+290 km/h; C5.2.8.ii's Overtake formula `7100 - 20*v` reaches it at 337.5 km/h. Those speeds
+are not stated in C5.2.8, so each is declared as `derived_points` in its claim. The effective
+arrays in `KernelConfig` stay at or below 350 kW, and the shared builder rejects any curve knot
+above the C5.2.7 cap. `CarSpec.derived_points()` reports both crossings beside `citations()`;
+the audit rejects declared speeds absent from their curve and empty bases.
 
 **`powertrain.ice` gains the fuel-energy-flow limits (C5.2.3, C5.2.4, page 64).** The
 regulations do **not** state an ICE power in kW anywhere. They bound the ICE through fuel
@@ -119,9 +140,12 @@ actually constrains it. Task 4 should check its torque curve against the energy-
 rather than against 400 kW.
 
 **`tyres.nominal_width_mm: 305.0` → `front_width_mm: 315.0`, `rear_width_mm: 401.3`
-(C10.7.2, page 111).** 305 mm is a 2022-era front width. Issue 20 specifies a tyre mounting
-width of 315 +/- 0.5 mm front and 401.3 +/- 0.5 mm rear on a 462.5/463 mm rim - the 18 inch
-rims `PLAN.md` section 5 says were retained. `rim_diameter_mm` is recorded alongside.
+(C10.7.2, page 111).** 305 mm is a 2022-era front width. Issue 20 states one table row,
+`Tyre Mounting Width 315 ± 0.5 401.3 ± 0.5`, under the column headings "Front Wheel" and
+"Rear Wheel" — 315 is the front value and 401.3 the rear, and the clause does not print them
+separately. `rim_diameter_mm` (462.5, from `Rim Diameter 462.5 / 463 462.5 / 463`) is recorded
+alongside. The "18 inch" description of those rims is this project's inference, not the
+regulation's; see §1.
 
 **`chassis.floor_width_m` → `chassis.overall_width_m` (C2.3.1, page 10).** `PLAN.md`
 section 5's "1.9 m floor width" is really the overall-width limit; 950 mm either side of
@@ -136,25 +160,39 @@ Two values were left alone deliberately:
 * `chassis.front_weight_fraction: 0.46`. See below - C4.2 cannot be enforced against it, so it
   is a placeholder until P2-T2 rather than a synthesised value checked against the floors.
 
-### C4.2 cannot be enforced, and the file says so
+### C4.2 cannot be enforced yet, and the file says why
 
-C4.2 reads "the mass measured at the front axle must not be less than the Minimum Mass
-specified in Article C4.1 factored by 0.44" (and 0.54 for the rear). The denominator is the
-C4.1 **Minimum Mass**, which is `724 kg *plus* the Nominal Tyre Mass`. The Nominal Tyre Mass
-is published by the tyre supplier after the final tyre-testing camp (C4.7, page 60) - it is not
-a number in the regulations, and this project does not have it.
+C4.2 reads "At all times during the Qualifying and Sprint Qualifying Sessions, with the car
+resting on a horizontal plane: i. the mass measured at the front axle must not be less than the
+Minimum Mass specified in Article C4.1 factored by 0.44" (and 0.54 for the rear). Two things
+follow, and both matter:
+
+**It is a Qualifying-only check.** The scope is in the clause's own first sentence and is part
+of the quote in `car_spec.yaml`. It does not apply during a Race or Sprint Session, so it would
+not govern most P1 scenarios even with every input in hand. That is a scope fact about C4.2,
+not a reason to ignore it: the FIA checks it at Qualifying, and P2's static split work is where
+it becomes relevant.
+
+**The denominator is not `mass.total_kg`.** It is the C4.1 **Minimum Mass**, which is
+`724 kg *plus* the Nominal Tyre Mass`. C4.7 (page 60) says the tyre provider measures new
+production dry-weather tyres and publishes the mean mass of a 50-tyre-per-axle sample after the
+final day of TCC opportunity, prior to the start of the Championship. So the Nominal Tyre Mass
+is a **published figure this project simply has not looked up** — obtainable, not fundamentally
+unavailable, and not part of the regulations proper.
 
 So `minimum_front_axle_fraction: 0.44` and `minimum_rear_axle_fraction: 0.54` are fractions of
 `minimum_mass_kg + nominal_tyre_mass_kg`, **not** of `mass.total_kg`. Comparing 0.46 against
 0.44 as though both were fractions of the same quantity would enforce a rule that does not
-exist, and would silently pass or fail for the wrong reason depending on how far
-`total_kg` happens to sit above the floor.
+exist, and would pass or fail for the wrong reason depending on how far `total_kg` happens to sit
+above the floor.
 
 What the loader enforces instead is the part that needs no missing input:
 `front_weight_fraction` must be a finite value strictly between 0 and 1. `car_spec.yaml`
-records the whole reasoning in `chassis.c42_enforcement` (`status: not_enforced`, the reason,
-the two inputs that block it, and `becomes_checkable_at: P2-T2`), so the gap is a stated
-limitation rather than an oversight.
+records the whole reasoning in `chassis.c42_enforcement` (`status: not_enforced`, the scope, a
+`missing_input` block naming `nominal_tyre_mass_kg` and its C4.7 source, the inputs that block
+enforcement, and `becomes_checkable_at: P2-T2`), so the gap is a stated limitation rather than
+an oversight. A task that needs the real floor should obtain the supplier figure and add it to
+`mass` as a cited value.
 
 Neither floor reaches `KernelConfig`. A longitudinal kernel has no axle, so shipping them there
 would invite a P1 kernel to misuse a fraction of the wrong quantity; P2-T2, which owns the
@@ -199,7 +237,8 @@ curves with the published Limebeer and Tremlett F1 parameter set.
 1.02-1.05 x loaded radius for F1; 0.36 m is that midpoint and is the number that couples gear
 ratios to road speed, which is why it matters more than the tyre itself. C10.7.2 fixes the rim
 diameter (462.5 mm, recorded) but not the loaded rolling radius or the overall tyre diameter;
-the 18 inch rim to 0.72 m rolling diameter step is a tyre-supplier choice.
+the 462.5 mm rim to 0.72 m rolling diameter step is a tyre-supplier choice; "18 inch" is a
+project description, as section 1 explains.
 
 **MGU-K superclip (`powertrain.mgu_k.superclip_s: 3.0`) — synthesised, and the weakest value
 in the file.** `PLAN.md` section 6 estimates 2-4 s from the 2026-04-21 refinements.
@@ -209,8 +248,8 @@ energy management it must be treated as unverified, and the 2027 regulations may
 duration that this project has not read.
 
 **Power split and fuel LHV (`powertrain`) — plan figures.** 0.53 ICE / 0.47 ERS is
-`PLAN.md` section 6; the regulations cap ERS-K power by the explicit speed curve of C5.2.8
-and state no split. `fuel_lhv_kj_kg: 44000.0` is a standard F1 fuel value: C5.2.6 has the
+`PLAN.md` section 6; the regulations cap ERS-K power with both C5.2.7's absolute limit and
+C5.2.8's speed profiles, and state no ICE/ERS split. `fuel_lhv_kj_kg: 44000.0` is a standard F1 fuel value: C5.2.6 has the
 FIA measure the real LHV through the SECU per lap, so the constant is a stand-in for a
 measured quantity that is not published.
 
@@ -241,20 +280,29 @@ returns the `dotted.path -> speeds` map for curve breakpoints the clause does no
 `tests/test_car_spec.py` pins both.
 
 `CarSpec.kernel_config()` hands the kernel flat scalars and contiguous writable `float64`
-arrays, so the kernel receives numbers and never YAML - `PLAN.md` section 4.1 rules 1 and 3.
-It is built **once, at load**, by `CarSpec.build_kernel_config`, which is the single validation
-path over these numbers: every value `CarSpec` already holds as a typed field is read from that
-field rather than re-parsed out of the raw document, and only the P1 inputs added beyond the P0
-field set are parsed there. So there is one place a coefficient can be wrong, and
-`kernel_config()` itself just returns the stored result.
+arrays, so the kernel receives numbers and never YAML - `PLAN.md` section 4.1 rules 1 and 3. It
+calls `CarSpec.build_kernel_config` on every access, which is the single validation path over
+these numbers: every value `CarSpec` holds as a typed field is read from that field rather than
+re-parsed out of the raw document, and only the P1 inputs beyond the P0 field set are parsed
+there. So there is exactly one place a coefficient can be wrong.
+
+The config is rebuilt on access rather than cached, deliberately. An earlier version built it at
+load and stored it on the spec, which desynchronised under `dataclasses.replace` -
+`replace(spec, mass_kg=900)` returned a spec that reported 800 kg - and skipped validation
+entirely for a spec built or replaced outside the loader. Rebuilding costs a few array
+constructions per call, which is nothing beside a 10 kHz run, and removes a class of
+stale-config bug that no test of the loader would have caught.
 
 The checks are the ones a compiled kernel cannot make: a zero rolling radius, a non-positive
 torque multiplier, a power split outside (0, 1), a shift point above the rev limiter, a
-deployment curve with a negative limit, a `front_weight_fraction` outside (0, 1), and **mismatched
-`Cl` and `Cd` speed grids**. That last one matters because `KernelConfig` exposes a single
-`aero_speed_m_s` axis: a `Cd` curve on different breakpoints would produce a `cd` array of a
-different length to the axis indexing it, which is an out-of-bounds read inside compiled code
-rather than a load error. All of them raise `ContractError` at the boundary.
+deployment curve with a negative limit or a point above C5.2.7's 350 kW cap, a
+`front_weight_fraction` outside (0, 1), and **mismatched `Cl` and `Cd` speed grids**. That last
+one matters because `KernelConfig` exposes a single `aero_speed_m_s` axis: a `Cd` curve on
+different breakpoints would produce a `cd` array of a different length to the axis indexing it,
+which is an out-of-bounds read inside compiled code rather than a load error. The cap check
+likewise matters because C5.2.8's formulas permit far more than the absolute limit, so a curve
+restoring a raw C5.2.8 value would otherwise hand the kernel power the regulation forbids. All
+of them raise `ContractError` at the boundary.
 
 ## 5. Still outstanding for later tasks
 

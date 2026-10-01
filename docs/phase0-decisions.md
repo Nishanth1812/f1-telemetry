@@ -278,22 +278,32 @@ YAML. That is `PLAN.md` §4.1 rules 1 and 3 made concrete. A zero rolling radius
 deployment limit or mismatched `Cl`/`Cd` speed grids raise `ContractError` before any array
 reaches Numba.
 
-**The boundary is built once, at load.** `CarSpec.build_kernel_config()` is the only place these
-numbers are validated, and `load_car_spec` calls it so the `KernelConfig` is constructed during
-loading rather than on first access. An earlier version of this work validated lazily inside
-`kernel_config()`, reading most values back out of the raw document while reaching the typed
-fields for others - two routes to every coefficient, split line by line rather than by a rule,
-which is exactly the drift the cross-phase rules exist to prevent. Now a value the `CarSpec`
-already holds as a typed field is read from that field, and only the P1 inputs beyond the P0
-field set are parsed from raw.
+**The boundary is built on access, not cached.** `CarSpec.build_kernel_config()` is the only
+place these numbers are validated, and `kernel_config()` calls it every time. Two earlier
+versions failed here, and both are worth recording because they are the same mistake twice:
 
-**`chassis.c42_enforcement` records what cannot be enforced.** C4.2's 0.44 / 0.54 axle minima are
-fractions of the C4.1 Minimum Mass, which is 724 kg *plus* a Nominal Tyre Mass the tyre supplier
-publishes after the final testing camp (C4.7) and the regulations do not contain. So the floors
-cannot be compared against `mass.total_kg` without enforcing a rule that does not exist. The
-loader checks only that `front_weight_fraction` is in (0, 1); the floors stay in the file as
-cited data, out of `KernelConfig` because a longitudinal kernel has no axle, and the gap is
-recorded as `status: not_enforced` with `becomes_checkable_at: P2-T2`.
+*Validating lazily from the raw document.* `kernel_config()` used to read most values back out
+of `raw` while reaching the typed fields for others — two routes to every coefficient, split
+line by line rather than by a rule, which is exactly the drift the cross-phase rules exist to
+prevent. Now a value `CarSpec` already holds as a typed field is read from that field, and only
+the P1 inputs beyond the P0 field set are parsed from raw.
+
+*Caching the result at load.* `load_car_spec` then built the `KernelConfig` eagerly and stored
+it on the spec. That desynchronised under `dataclasses.replace`: `replace(spec, mass_kg=900)`
+returned a spec reporting 800 kg, because the cached config survived the replacement. A spec
+built by hand or replaced by a caller also skipped validation entirely, since the checks only
+ran inside the loader. Building on access costs a few array constructions per call — trivial
+next to a 10 kHz run — and removes a whole class of stale-config bug.
+
+**`chassis.c42_enforcement` records what cannot yet be enforced.** C4.2's 0.44 / 0.54 axle
+minima are fractions of the C4.1 Minimum Mass, which is 724 kg *plus* a Nominal Tyre Mass the
+tyre provider measures and publishes before the Championship (C4.7) — a published figure this
+project has not looked up, not something the regulations withhold. The clause is also
+Qualifying-only. So the floors cannot be compared against `mass.total_kg` without enforcing a
+rule that does not exist, and would not govern most P1 scenarios in any case. The loader checks
+only that `front_weight_fraction` is in (0, 1); the floors stay in the file as cited data, out
+of `KernelConfig` because a longitudinal kernel has no axle, and the gap is recorded as
+`status: not_enforced` with the missing input named and `becomes_checkable_at: P2-T2`.
 
 **Generated type aliases use `TypeAlias`, not the PEP 695 `type` statement.** ruff's
 `UP040` prefers the new form, but ruff mis-analyses `type X = 'a' | 'b'` and reports every
