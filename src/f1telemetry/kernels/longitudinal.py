@@ -105,6 +105,7 @@ def _integrate(
     mass_kg: float,
     weight_n: float,
     drive_torque_nm: np.ndarray,
+    brake_torque_nm: np.ndarray,
     state: np.ndarray,
     out: np.ndarray,
     air_density_kg_m3: float,
@@ -183,7 +184,8 @@ def _integrate(
             net_force_n += tyre_fx_n
             drive_nm = forces.wheel_drive_torque_nm(wheel, drivetrain_torque_nm)
             alpha_rad_s2 = forces.wheel_angular_acceleration_rad_s2(
-                drive_nm, tyre_fx_n, rolling_radius_m, wheel_inertia_kg_m2
+                drive_nm, tyre_fx_n, rolling_radius_m, wheel_inertia_kg_m2,
+                brake_torque_nm[index, wheel],
             )
             out[index + 1, column] = out[index, column] + alpha_rad_s2 * dt_s
         acceleration_m_s2 = net_force_n / mass_kg
@@ -238,8 +240,9 @@ def simulate(
     state: np.ndarray,
     drive_torque_nm: np.ndarray,
     out: np.ndarray,
+    brake_torque_nm: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Run a straight-line launch from a validated :class:`KernelConfig`, in fixed steps.
+    """Run a straight-line scenario from a validated :class:`KernelConfig`, in fixed steps.
 
     The one entry point a scenario uses, and the only thing in this module that touches the
     compiled loop. It reads every coefficient it needs out of the config once, here in Python, and
@@ -266,6 +269,9 @@ def simulate(
     wheel but a wheel that has already left the model.
 
     Returns ``out``, so a caller can write ``out = simulate(...)`` without giving up the buffer.
+    ``brake_torque_nm`` is an optional caller-owned signed per-wheel torque history with shape
+    ``(steps, 4)``. Negative values brake forward rotation; it has no ABS or force transfer.
+    Omitted input means zero brake torque.
     """
     count = _checked_steps(steps)
     for name, value in (
@@ -289,6 +295,11 @@ def simulate(
 
     _check_buffer("state", state, (STATE_SIZE,), writable=False)
     _check_buffer("drive_torque_nm", drive_torque_nm, (count,), writable=False)
+    if brake_torque_nm is None:
+        brake_torque_nm = np.zeros((count, forces.WHEEL_COUNT), dtype=np.float64)
+    _check_buffer("brake_torque_nm", brake_torque_nm, (count, forces.WHEEL_COUNT), writable=False)
+    if not np.isfinite(brake_torque_nm).all():
+        raise ValueError("simulate: brake_torque_nm must be finite")
     _check_buffer("out", out, (count + 1, STATE_SIZE), writable=True)
     if not np.isfinite(state).all():
         raise ValueError(
@@ -301,6 +312,7 @@ def simulate(
         config.mass_kg,
         config.mass_kg * config.gravity_m_s2,
         drive_torque_nm,
+        brake_torque_nm,
         state,
         out,
         values["air_density_kg_m3"],

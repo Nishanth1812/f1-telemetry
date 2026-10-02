@@ -552,10 +552,10 @@ be wrong. All of them raise at the boundary.
 * **Wheel inertia.** `tyres.wheel_inertia_kg_m2: 0.9` is a placeholder inside `PLAN.md` section 4's
   0.5-1.2 kg·m² band (section 3). No public F1 figure has been read into this project, so it is
   labelled rather than cited.
-* **Brakes.** Slice 4 closed the wheel loop with **drive** torque only. A wheel slows because the
-  road pushes back on it, so a car decelerates — but there is no brake torque, no C11.1.1 2 500 Nm
-  per-wheel check, and no brake bias. C11.4.1 is satisfied trivially because nothing acts on the
-  wheels at all beyond the tyre.
+* **Brakes.** The caller can supply signed per-wheel brake torque to the longitudinal kernel.
+  Equal four-wheel torque is used only by the synthetic scenario below; brake capacity, bias,
+  hydraulic response, ABS and brake-force transfer remain unmodelled. No braking calibration
+  target is available in the repo.
 * **A differential.** Equal left/right drive and equal left/right load are both synthetic symmetry
   assumptions (section 3). C9.9.1 is satisfied by not modelling a transfer at all, which is not the
   same as modelling a real one.
@@ -571,3 +571,14 @@ be wrong. All of them raise at the boundary.
   and the clause table in section 1 of this document. Re-verifying against a new issue means
   updating all four in one commit; the tests fail loudly if the first two disagree, but nothing
   links the third and fourth automatically.
+
+## Phase 1 deterministic scenarios
+
+The kernel scenarios use caller-owned torque histories and fixed `car_spec.yaml` coefficients.
+Launch, requested shifts, neutral/coast, MGU-K deployment/recharge and braking are checked through
+state direction, transition caps and deterministic replay. These are model invariants, not car
+performance calibration: no public, configuration-matched 2026 launch-time, 0–100 km/h, braking
+distance or top-speed target and tolerance are present in this repository. No coefficients are
+tuned to such a target. The brake scenario applies the same synthetic signed torque to all four
+wheels and checks that the forward wheel speed and chassis speed fall; it does not establish an
+F1 brake capacity or stopping distance.

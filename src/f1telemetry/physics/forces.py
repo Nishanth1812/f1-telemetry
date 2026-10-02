@@ -398,8 +398,9 @@ def wheel_angular_acceleration_rad_s2(
     tyre_fx_n: float,
     rolling_radius_m: float,
     wheel_inertia_kg_m2: float,
+    brake_torque_nm: float = 0.0,
 ) -> float:
-    """``d(omega)/dt = (T_drive - Fx r) / I_w``, in rad/s^2.
+    """``d(omega)/dt = (T_drive + T_brake - Fx r) / I_w``, in rad/s^2.
 
     **The ``- Fx r`` term is the whole reason the wheel is a state.** The tyre that pushed the car
     forward by ``Fx`` pushes back on the wheel by ``Fx r``, and a wheel integrated on drive torque
@@ -408,16 +409,14 @@ def wheel_angular_acceleration_rad_s2(
     inert: with ``T_drive = 0`` this reduces to the road spinning an undriven wheel up or down,
     and a wheel rolling at ``omega r = v`` feels exactly nothing because its force is exactly zero.
 
-    No brake term, no traction control, no ABS feedback, and no differential coupling between
-    wheels: C9.1.2 and C11.4.1 forbid the last two, and a brake model is not in this slice. What
-    brakes a wheel here is a caller applying a negative ``drive_torque_nm``, which is the same
-    sign convention the drivetrain's reverse torque already uses.
+    The caller supplies signed brake torque separately; it acts on that wheel only. There is no
+    ABS feedback or differential coupling, so this term never changes another wheel's torque.
 
     ``wheel_inertia_kg_m2`` is the divisor and is ``car_spec.yaml`` data: no clause fixes a
     rotational inertia, so the value is a labelled synthetic placeholder inside ``PLAN.md``
     section 4's band, and :func:`validated_config_scalars` refuses zero, negative and nonfinite.
     """
-    return (drive_torque_nm - tyre_fx_n * rolling_radius_m) / wheel_inertia_kg_m2
+    return (drive_torque_nm + brake_torque_nm - tyre_fx_n * rolling_radius_m) / wheel_inertia_kg_m2
 
 
 def validated_config_scalars(config: KernelConfig, prefix: str) -> dict[str, float]:
@@ -550,6 +549,7 @@ def step_wheel(
     speed_m_s: float,
     wheel_omega_rad_s: float,
     load_n: float,
+    brake_torque_nm: float = 0.0,
 ) -> tuple[float, float, float]:
     """``(drive_torque_nm, tyre_fx_n, angular_acceleration_rad_s2)`` for one wheel, one step.
 
@@ -561,7 +561,8 @@ def step_wheel(
     ``gearbox.step_gearbox`` returns exactly that - and ``wheel_omega_rad_s`` is the wheel's own
     state, which is what turns the torque into slip and therefore into force. ``load_n`` is the
     vertical load the patch carries, from :func:`static_wheel_load_n` plus the caller's share of
-    downforce.
+    downforce. ``brake_torque_nm`` is a separate signed wheel torque, normally negative while the
+    car rolls forward.
 
     **The returned angular acceleration is explicit**: the caller advances
     ``omega += alpha * dt_s``. That is the same scheme the speed uses, and the reason the wheel
@@ -581,6 +582,7 @@ def step_wheel(
     speed = _checked_float("speed_m_s", speed_m_s, prefix="step_wheel")
     omega = _checked_float("wheel_omega_rad_s", wheel_omega_rad_s, prefix="step_wheel")
     load = _checked_float("load_n", load_n, prefix="step_wheel")
+    brake = _checked_float("brake_torque_nm", brake_torque_nm, prefix="step_wheel")
     values = validated_config_scalars(config, "step_wheel")
 
     drive_torque_nm = wheel_drive_torque_nm(index, drivetrain_torque)
@@ -600,6 +602,7 @@ def step_wheel(
         tyre_fx_n,
         values["rolling_radius_m"],
         values["wheel_inertia_kg_m2"],
+        brake,
     )
     return float(drive_torque_nm), float(tyre_fx_n), float(alpha_rad_s2)
 

@@ -169,6 +169,21 @@ def _coasting(config: KernelConfig, steps: int, speed_m_s: float) -> np.ndarray:
     return _run(config, steps, np.zeros(steps, dtype=np.float64), state)
 
 
+def test_caller_brake_torque_slows_car_and_applies_to_front_wheels(config: KernelConfig) -> None:
+    steps = 100
+    speed = 30.0
+    state = longitudinal.initial_state(
+        speed_m_s=speed, wheel_omega_rad_s=_rolling_wheels(config, speed)
+    )
+    brake = np.full((steps, forces.WHEEL_COUNT), -500.0, dtype=np.float64)
+    trace = longitudinal.simulate(
+        config, steps, state, np.zeros(steps, dtype=np.float64),
+        longitudinal.allocate(steps), brake_torque_nm=brake,
+    )
+    assert trace[-1, longitudinal.V_INDEX] < speed
+    assert trace[-1, longitudinal.FL_WHEEL_INDEX] < state[longitudinal.FL_WHEEL_INDEX]
+
+
 def _reference(
     config: KernelConfig,
     steps: int,
