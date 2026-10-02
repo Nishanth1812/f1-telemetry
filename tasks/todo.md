@@ -95,16 +95,17 @@
 
 ## Task 5: Add P1 scenarios and calibrate performance
 
-**Progress:** Deterministic `accelerate_to_speed`, `full_throttle`, `full_throttle_shifts`, coast/neutral, braking, standing-start MGU-K block and deployment/regen scenarios now run through the real drivetrain/kernel and produce records. The measured 0–100 km/h time is 6.8998 s and terminal speed is 307.4189 km/h; both miss `PLAN.md`'s sanity bands. No source-backed, configuration-matched 2026 target and tolerance has been found, so coefficients have not been tuned. See `docs/calibration.md` § Phase 1 deterministic scenarios.
+**Progress:** Deterministic `accelerate_to_speed`, `full_throttle`, `full_throttle_shifts`, coast/neutral, braking, standing-start MGU-K block and deployment/regen scenarios now run through the real drivetrain/kernel and produce records. The measured 0–100 km/h time is 6.8998 s and terminal speed is 307.4189 km/h. Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `docs/calibration.md` §6 — a 0–100 median of 2.32 s from 2026 Belgian GP race OpenF1 `car_data`, and a 325.8 km/h transient reachability floor from the FIA 2026 Australian GP race speed table — fixed before any parameter edit, so measurement has a mark it did not choose. Both are coarse observations, not published figures, and neither validates configuration-matched performance. No coefficient has been tuned and no code or config was changed to record the references. See `docs/calibration.md` § Phase 1 deterministic scenarios.
 
-**Description:** Implement `accelerate_to_speed` and `full_throttle` with deterministic traces; tune only documented car-spec coefficients to source-backed acceleration and top-speed targets.
+**Description:** Implement `accelerate_to_speed` and `full_throttle` with deterministic traces; tune only documented car-spec coefficients toward source-backed acceleration and top-speed references.
 
 **Acceptance criteria:**
 - [x] Each implemented scenario runs from fixed initial conditions and emits traces through the existing testing/record pattern.
-- [ ] 0–100 km/h and top-speed targets and tolerances are chosen from cited sources before tuning and recorded in `docs/calibration.md`. **Open:** the historical 2022 start time and event-specific 2026 speed trap are not targets for this 2026 configuration; no coefficients were tuned against them. Current outputs are recorded and miss both plan sanity bands.
-- [x] Calibration parameters remain data-driven and the torque curve is labeled as synthesized. **Performance calibration is not complete** until Task 5 has a comparable target.
+- [x] 0–100 km/h and top-speed reference points are chosen from cited sources before tuning and recorded in `docs/calibration.md`. **Done** — `PLAN.md` §11.1 and `docs/calibration.md` §6 record both with sources, derivation, and the limits of the evidence. **This revises the earlier ruling** that the 2022 Emilia Romagna start figures and event-specific 2026 speed-trap observations were not targets: the Australian GP speed-table figure is now used, but explicitly only as a reachability floor, since a speed trap mid-straight is not comparable to a terminal or asymptotic speed. **Changed since this item was first written**: the 0–100 figure is a coarse ~3.7 Hz telemetry-derived median whose ±0.30 s is feed quantisation rather than a confidence interval, not a precise acceptance target, and the first-motion window includes the physical launch and excludes only the pre-motion delay.
+- [ ] 0–100 km/h within the uncertainty of the 2.32 s reference, and a high-speed scenario transiently reaching ≥325.8 km/h. **Open:** measured 6.8998 s and 307.4189 km/h fail both, and the cause is unidentified; this is the remaining calibration work.
+- [x] Calibration parameters remain data-driven and the torque curve is labeled as synthesized. **Performance calibration is not complete** until the open item above passes against the recorded reference points.
 
-**Verification:** Scenario tests plus golden traces for straight-line acceleration; record measured 0–100 km/h and top speed against chosen targets.
+**Verification:** Scenario tests plus golden traces for straight-line acceleration; record measured 0–100 km/h and top speed against the reference points in `docs/calibration.md` §6, with the caveat that neither is a published figure.
 
 **Dependencies:** Tasks 1–4.
 
@@ -133,6 +134,6 @@
 
 ## Checkpoint: Phase 1 exit
 
-- [ ] P1 performance exit gate passes. **Open:** measured 0–100 is 6.8998 s and terminal speed is 307.4189 km/h, outside the plan bands; no matched 2026 target/tolerance exists. This is an evidence-based reason to keep P1 open, not a passed performance gate.
+- [ ] P1 performance exit gate passes. **Open:** measured 0–100 is 6.8998 s against a 2.32 s reference, and terminal speed is 307.4189 km/h against a 325.8 km/h reachability floor (`PLAN.md` §11.1). Both references are now cited and fixed, so the gate can fail on a number instead of on a missing number — it does fail, and no coefficient has been tuned. Neither reference is a published figure, so reaching them would not by itself establish configuration-matched performance. This is an evidence-based reason to keep P1 open, not a passed performance gate.
 - [ ] `just check` passes.
 - [x] Calibration inputs, available historical/event-specific references, and the optional solver comparison are recorded for review.

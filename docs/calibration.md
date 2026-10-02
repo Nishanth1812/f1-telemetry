@@ -228,7 +228,10 @@ at which C5.12.2 starts applying and because it is a conventional F1 spool thres
 
 **Gearbox (`gearbox`) — synthesised.** A geometric 8-speed chosen so 8th gear at the
 13 000 rpm limiter lands in the `PLAN.md` section 11 band of 350-370 km/h given the 0.36 m
-rolling radius, and so 1st gear works for a launch. Shift points and the 40 ms shift are
+rolling radius, and so 1st gear works for a launch. (That band is the old sanity band, since
+retired; the current straight-line criterion is the 325.8 km/h reachability floor in section 6,
+which is a floor rather than a landing speed. The ratios are still synthetic and are not derived
+from any current reference point.) Shift points and the 40 ms shift are
 synthetic. `PLAN.md` section 6's "approximately 1.6 apart, geometric" cannot hold across eight
 gears - 1.6^7 is a 27x span and cannot reach a 350+ km/h top speed from a sane first gear -
 see `docs/phase0-decisions.md` section 6.
@@ -530,13 +533,17 @@ be wrong. All of them raise at the boundary.
 
 ## 5. Still outstanding for later tasks
 
-* **Performance calibration remains open.** `PLAN.md` section 11 gives 2.5-3.0 s and
-  350-370 km/h as broad sanity bounds, not published targets for this configuration. The 2026
-  FIA Australian GP race maximum-speed sheet reports 325.8 km/h at Intermediate 2 for Ocon; it is
-  an event- and track-specific observation, not a terminal-speed target. Formula 1 reported
-  3.55 s and 3.69 s 0-100 km/h race-start times for Russell and Hamilton at the 2022 Emilia
-  Romagna GP; those are useful historical context but are not 2026-car calibration targets.
-  Therefore no coefficient was tuned to either number.
+* **Performance calibration remains open.** The straight-line reference points are now recorded in
+  section 6 and `PLAN.md` §11.1, which supersedes the first half of the original note; the bullet
+  below keeps what was rejected and why. The measured outputs still miss both, so nothing here is
+  a passed gate.
+* **Rejected as calibration targets, for the record.** Formula 1 reported 3.55 s and 3.69 s
+  0-100 km/h race-start times for Russell and Hamilton at the 2022 Emilia Romagna GP: useful
+  historical context, but not a 2026-car measurement, and no coefficient was tuned to them. Any
+  event speed-trap figure is rejected as a **terminal-speed** target for the general reason
+  recorded in section 6: a trap sits mid-straight with the car still accelerating, so it is not
+  the same physical quantity as a drag-limited asymptote. The 2026 Australian GP observation is
+  therefore used only as a reachability floor, and no other event's speed table is used at all.
 * **ICE torque curve.** Task 4 owns it, and it should be validated against the C5.2.3/5.2.4
   energy-flow limits rather than the 400 kW shorthand. **Slice 3 now applies that check**
   (`ice_fuel_energy_flow_limit_mj_h` and `step_ice_torque`), and the committed curve survives it
@@ -592,16 +599,132 @@ and motor rotor inertia.
 Current uncalibrated outputs from the committed coefficients are: the standing-launch scenario
 ends at 25.68 km/h after 2.0 s; the seven-second `accelerate_to_speed` scenario first crosses
 100 km/h at 6.8998 s; the six-second full-throttle shift scenario starts at 12 m/s and ends at
-179.48 km/h. A separate 59-second `full_throttle` run reaches eighth gear and 307.4189 km/h; its
-speed changes by 0.1448 km/h over the final five seconds. The 0-100 time misses `PLAN.md`'s
-2.5-3.0 s sanity band and terminal speed misses its 350-370 km/h band. No values were tuned to
-make them fit. Performance calibration remains open pending configuration-matched source targets
-and an identified cause for these misses.
+179.48 km/h. A separate 59-second `full_throttle` run reaches eighth gear and a maximum of
+307.4189 km/h; its speed changes by 0.1448 km/h over the final five seconds, so on that run the
+maximum and the terminal speed are the same number to the digits recorded. The 0-100 time misses
+the 2.32 s reference, and the 59-second run's maximum speed is below the 325.8 km/h reachability
+floor (both in section 6). No values were tuned to make them fit, and the cause of both misses is
+still unidentified. Performance calibration remains open against those two reference points. The
+run's terminal speed has no event-trap target and is recorded here only as a modelled result.
 
-The external references are [FIA 2026 Australian GP race maximum speeds](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification),
-[Formula 1's 2022 Emilia Romagna GP start analysis](https://www.formula1.com/en/latest/article/tremayne-has-the-advantage-swung-towards-red-bull-after-the-emilia-romagna.pRu5QK7PC2BYp7fT1ohts),
+The external references are [FIA 2026 Australian GP race maximum speeds](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification) — the source of the 325.8 km/h reachability floor in section 6,
+[OpenF1 documentation](https://openf1.org/docs/) and the [`car_data` endpoint for
+`session_key=11334`](https://api.openf1.org/v1/car_data?session_key=11334) — the source of the 0-100 reference in section 6,
+[Formula 1's 2022 Emilia Romagna GP start analysis](https://www.formula1.com/en/latest/article/tremayne-has-the-advantage-swung-towards-red-bull-after-the-emilia-romagna.pRu5QK7PC2BYp7fT1ohts) — recorded in section 5 as rejected, not used,
 [Fastest-lap v0.5 Windows installation](https://fastest-lap.readthedocs.io/en/latest/getting_started/installation.html), and its [Catalunya quickstart](https://fastest-lap.readthedocs.io/en/latest/getting_started/quickstart.html).
 
 The brake scenario applies synthetic signed torque to all four wheels and checks deceleration; it
 does not establish an F1 brake capacity or stopping distance. The 2014 solver comparison is
 recorded above with its model mismatch, so it does not validate the 2026 coefficients.
+
+## 6. Straight-line reference points
+
+Recorded here, and in `PLAN.md` §11.1, **before** any parameter edit. Fixing a reference before
+tuning is what stops tuning from choosing its own pass mark, so the order matters: these two were
+fixed while the model still misses both, and no coefficient has been tuned toward either.
+
+**Both are coarse observations, not published performance figures, and neither validates
+configuration-matched performance.** A run that reaches one of them has matched a number this
+project measured off a decimated feed or a single event's speed table — not the real car. That
+distinction is the substance of this section, not a disclaimer on it.
+
+### 0–100 km/h — reference 2.32 s, uncertainty of order ±0.30 s
+
+**Derivation.** The **median of the six quickest clean first-motion-to-100 km/h crossings** in the
+2026 Belgian Grand Prix Race, computed from OpenF1 `car_data` for `session_key=11334`:
+
+| driver | 1 | 16 | 3 | 12 | 44 | 6 |
+|---|---|---|---|---|---|---|
+| crossing (s) | 2.12 | 2.12 | 2.32 | 2.32 | 2.32 | 2.60 |
+
+The median of `2.12, 2.12, 2.32, 2.32, 2.32, 2.60` is **2.32 s**. The quoted **±0.30 s is the
+size of the measurement's uncertainty, not a tolerance on the car and not a confidence interval.**
+
+**What this evidence is.** A measurement this project made from a public feed. No organisation
+states a 0–100 time for the 2026 car, so there is no published figure behind this number and none
+is claimed.
+
+**What limits it, stated so the number is not over-read:**
+
+- **Sampling rate ~3.7 Hz, which dominates the uncertainty.** The OpenF1 documentation gives the
+  `car_data` sample rate as "about 3.7 Hz". This is a decimated feed, not the car's own
+  telemetry, so the sample interval is ~0.27 s. Both endpoints of the window - first motion and the
+  100 km/h crossing - are resolved only to the samples bracketing them, so an individual crossing
+  carries up to ~0.27 s of quantisation uncertainty before anything else is counted. Six
+  crossings suppress an outlier; they do not reduce quantisation error. A model agreeing with
+  2.32 s to inside ±0.30 s has therefore been shown to fall **within the resolution of the feed**,
+  which is a coarse check, and this number is a reference rather than a precise acceptance target.
+- **Window definition: first motion to 100 km/h *includes* the launch.** The window opens at motion
+  onset, so it contains the whole physical launch - clutch take-up, gear engagement, whatever
+  wheelspin the driven rear axle does - and excludes **only** the pre-motion delay before the car
+  starts moving, that is driver reaction and lights out. It is a launch-and-acceleration figure,
+  not a rolling-acceleration one, and it should not be compared against a model that starts already
+  moving.
+- **Throttle is a power percentage, not a pedal position.** The OpenF1 documentation defines the
+  `car_data` `throttle` field as the "percentage of maximum engine power being used", and defines
+  `brake` as whether the brake pedal is pressed. So a throttle trace from this feed is **not** a
+  pedal trace, and setting it against a model's commanded throttle compares two differently-defined
+  channels. The feed reports nothing about what any driver aid was doing, and this document infers
+  no mechanism from it: the figure is what one car did on one afternoon.
+
+**Citation.** [OpenF1 documentation](https://openf1.org/docs/) —
+<https://api.openf1.org/v1/car_data?session_key=11334>
+
+### Top speed — 325.8 km/h, a transient reachability floor, not a terminal target
+
+The 2026 Australian Grand Prix Race speed table published by the FIA records **325.8 km/h for Ocon
+at Intermediate 2**.
+
+**Citation.** [FIA 2026 Australian Grand Prix, Race/Qualifying results](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification)
+
+**What this figure is.** One car, at one point on one circuit, in one session, used as a
+**reachability floor and nothing more**: a high-speed scenario that never approaches 325.8 km/h
+cannot have reproduced something a real 2026 car demonstrably did. A scenario that does reach it
+has shown reachability and nothing beyond it.
+
+**What it is not, and why the distinction governs the whole section:**
+
+- **Not a terminal or asymptotic speed, and an event speed trap is not comparable to one.** The trap
+  sits part-way down a straight where the car is still accelerating, so the trap value and the
+  drag-limited asymptote are different physical quantities. Matching the first is not a validation
+  of the second. Any attempt to give this figure a tolerance and treat terminal speed as the thing
+  to hit would be comparing across that gap, which is why no tolerance is quoted.
+- **Not a target for an exact match.** The observation's own uncertainty - fuel load, track and air
+  temperature, wind, track evolution - is not quantified here, so there is nothing to hang a band
+  on.
+- **Not a season-wide figure.** Other events' speed tables report other numbers; this one is cited
+  because it is the reference this project recorded, not because it is representative.
+- **The comparable model output is the scenario's maximum speed, not its terminal speed.** This is
+  a transient maximum-speed / reachability check. The model output to set against 325.8 km/h is the
+  **maximum** speed reached by the high-speed `full_throttle` scenario, including any MGU-K
+  deployment inside that scenario. The same run's **terminal/asymptotic** speed is a separate
+  result, and it has **no direct event-trap target**: a trap is a mid-straight reading with the car
+  still accelerating, so this project holds no published figure that an asymptote should be matched
+  against. The terminal speed is still worth reporting — it is a different and interesting number —
+  but reporting it is not this check, and it must not be the thing quoted against 325.8 km/h.
+- **This checks the combined propulsion/aero scenario, not the drag-limited solve alone.** The speed
+  a finite run reaches is set by the whole path together: ICE and MGU-K power through the gearbox,
+  the tyre model's traction limit, and the `Cl`/`Cd` curves, all in series. A shortfall against the
+  floor is therefore a statement about that combination and does not localise to drag, to power, or
+  to grip on its own — a later task has to separate them. `PLAN.md` section 6 still derives an
+  asymptotic speed from the drag-limited solve in `car_spec.yaml`; that remains a modelled result
+  with no event-trap target attached to it.
+
+### What this changes, and what it does not
+
+**Changed.** The P1 exit gate now has two cited numbers to measure against, fixed before tuning,
+and section 5's first bullet is revised: the 2022 Emilia Romagna start figures remain rejected, and
+the 2026 Australian GP speed-table entry moves from "not a terminal-speed target" to "used, but
+only as a reachability floor" - a different and weaker role than being a target, not a stronger one.
+
+**Not changed.**
+
+- No parameter was edited. `car_spec.yaml` is untouched and no coefficient has been tuned toward
+  either reference.
+- The measured 0–100 km/h time (6.8998 s) is far from 2.32 s, and the measured terminal speed
+  (307.4189 km/h) is below the 325.8 km/h reachability floor. The P1 performance exit gate is
+  therefore still open and the cause of both misses is still unidentified.
+- Neither reference is precise enough to certify configuration-matched performance. If a later
+  task finds the 0–100 window too tight to separate a real coefficient error from feed
+  quantisation, the correct response is to say so and re-derive the reference - not to widen the
+  band until the current output fits.

@@ -71,12 +71,12 @@ drive a real dashboard, every later phase is built on sand.
 | P1-T6 | Wheel rotational state + longitudinal Pacejka | `κ = (ωr − v)/max(v, ε)` — guard the divide-by-zero at low speed |
 | P1-T7 | Force assembly: drive/brake torque → Fx, load = static + aero | First appearance of the vertical load term |
 | P1-T8 | Scenarios: `accelerate_to_speed`, `full_throttle` | Uses the P0 scenario schema stub |
-| P1-T9 | Calibration: tune aero + torque to hit 0–100 km/h and top speed | Record each coefficient and its source in `calibration.md` as you go |
+| P1-T9 | Calibration: tune aero + torque to hit 0–100 km/h and top speed | Measure against the reference points in `PLAN.md` §11.1, not the old §11 sanity bands. Record each coefficient and its source in `calibration.md` as you go |
 | P1-T10 | `fastest-lap` cross-check harness | Run the same `car_spec` through it, diff lap times. Fails gracefully if the dependency won't build — note it, don't block |
 | P1-T11 | **Energy-balance invariant** in CI | `d(KE)/dt` = fuel power − drag work, residual <1%. Catches most powertrain bugs |
 
 **Exit gate**
-- [ ] 0–100 km/h and top speed within the agreed tolerance of `PLAN.md` §11
+- [ ] 0–100 km/h within the uncertainty of the **2.32 s** reference, and a high-speed scenario transiently **reaching ≥325.8 km/h** — the two straight-line reference points in `PLAN.md` §11.1. Neither is a published figure or a tolerance-bounded acceptance target: the first is a ~3.7 Hz telemetry-derived median whose ±0.30 s is feed quantisation rather than a confidence interval, the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap on a straight is not comparable to a terminal or asymptotic speed
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
@@ -90,11 +90,16 @@ explanation of which coefficient is wrong.
 assembly, caller-supplied brake torque, deterministic acceleration scenarios and all eight
 invariants on real runs. Invariant 6 balances the modeled chassis/wheel boundary and passes its
 <1% gate. The optional `fastest-lap` comparison is recorded, with the bundled 2014 car mismatch.
-The P1 exit gate remains open: the measured 0–100 km/h time is 6.8998 s, outside the plan's
-2.5–3.0 s sanity band; the measured terminal speed is 307.4189 km/h, outside the plan's 350–370
-km/h band; and no configuration-matched published 2026 target and tolerance exists. Synthetic
-aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
-fidelity or regulatory compliance.
+Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `docs/calibration.md` §6,
+fixed before any parameter edit, so the gate has something to measure against. Both are deliberately
+coarse and neither validates configuration-matched performance: a ~3.7 Hz telemetry-derived 0–100
+median, and a single-event FIA speed-table figure used as a reachability floor rather than a terminal
+speed. The P1 exit gate remains open: the measured 0–100 km/h time is 6.8998 s, far outside the
+2.32 s reference, and the measured terminal speed is 307.4189 km/h, below the 325.8 km/h the model
+has never been shown to reach. No coefficient has been tuned toward either observation and the cause
+of both misses is still unidentified. Recording a reference is not a passed gate, and P1 is not
+complete. Synthetic aero, tyres, brakes and powertrain assumptions remain. This work does not
+establish full F1-car fidelity or regulatory compliance.
 
 ---
 
