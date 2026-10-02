@@ -6,11 +6,11 @@ module is that path, and it is deliberately thin: the drivetrain comes from
 :func:`~f1telemetry.physics.gearbox.step_gearbox` and
 :func:`~f1telemetry.physics.powertrain.step_mgu_k`, the four-wheel loop from
 :func:`~f1telemetry.kernels.longitudinal.simulate`, and every coefficient from the loaded
-``car_spec.yaml``. It tunes nothing and defines no target - there is no published,
-configuration-matched 2026 acceleration, braking or top-speed figure in this repository to
-assert against, so what these scenarios demonstrate is model behaviour, not car performance.
+``car_spec.yaml``. It tunes nothing and defines no configuration-matched target. The one event
+speed-trap observation is only a transient reachability floor, so these scenarios demonstrate
+model behaviour rather than validated car performance.
 
-**Six decisions are worth naming.**
+**Seven decisions are worth naming.**
 
 * **The drivetrain is sampled once per control interval and held across it.**
   ``simulate`` takes a caller-owned torque history for the whole run, while the torque for step
@@ -28,6 +28,16 @@ assert against, so what these scenarios demonstrate is model behaviour, not car 
   driver pulled the paddle once" - without it a single ``UP`` in a one-second segment walks the
   box to top gear as fast as the shift timer allows, which is a scenario bug the gearbox is
   right to refuse to model away.
+
+* **A launch declares the engine speed its driver is holding.** ``ScenarioSegment.ice_rpm_override``
+  exists because a wheel-derived rpm is pinned at idle while a clutch slips, and the two grid-start
+  scenarios here use it so they model the near-12 000 rpm the 2026 start telemetry already reports
+  for that interval instead of an engine idling inside a stationary car. It is the one engine state
+  a scenario may declare, and it is bounded to the launch - :data:`LAUNCH_ICE_RPM` and the wheel-
+  derived speed either side of it are two different numbers, so the step out of the launch is a
+  declared discontinuity rather than a run-up, and it is a scenario assumption about driver engine
+  management, not a coefficient. Nothing in ``car_spec.yaml`` states a launch speed and none is
+  invented.
 
 * **Per-corner inputs are unit-signed bias *magnitudes*.** A throttle bias of ``1.0`` and a brake
   bias of ``1.0`` mean "the pedal as given, on every wheel", which is how a straight-line driver
@@ -54,7 +64,10 @@ assert against, so what these scenarios demonstrate is model behaviour, not car 
   the speed range and nowhere else, so the ladder scenario upshifts before it gets there and the
   MGU-K scenario runs from a declared rolling state in the top gear - where a full C5.2.11
   deployment is transmissible at all. Both are properties of the synthetic ratios, tyres and
-  torque curve rather than of a real car, and neither is a performance figure.
+  torque curve rather than of a real car, and neither is a performance figure. Declaring
+  :data:`LAUNCH_ICE_RPM` raises the demand through that same first-gear window by construction, and
+  whether the grid launch still clears the tyre peak on the uncalibrated curves has not been
+  re-measured since it was declared - `tasks/todo.md` Task 5 keeps that open.
 
 Every drivetrain column is reported **for the step that starts at the recorded trace row**, next to
 the torque that step produced, so a recorded row is internally consistent and a segment's window
@@ -89,6 +102,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONTROL_STEPS",
+    "LAUNCH_ICE_RPM",
     "PHASE_ONE_INVARIANTS",
     "DrivetrainTrace",
     "Scenario",
@@ -108,6 +122,20 @@ CONTROL_STEPS: Final[int] = 100
 # rad/s per rpm, the one conversion a runner needs to report engine speed from a wheel speed.
 _RPM_PER_RAD_S: Final[float] = 60.0 / math.tau
 
+# The crank speed the built grid-start launch scenarios declare for their launch segments, from the
+# 2026 start telemetry already cited on :attr:`ScenarioSegment.ice_rpm_override`: the engine is held
+# near 12 000 rpm through the launch, which a wheel-derived speed cannot report while the clutch
+# slips. It is a scenario assumption about what the driver is doing with the engine, not a car
+# coefficient - ``car_spec.yaml`` states no launch speed and none is invented here - and it is only
+# legal because the runner bounds a declared speed to the configured idle..rev-limit window.
+LAUNCH_ICE_RPM: Final[float] = 12_000.0
+
+# J per MJ. C5.2.9's usable window and the MGU-K's state of charge are both held in MJ, while the
+# store-side power is reported in watts because C5.2.7 caps the motor in kW. The delta of that
+# buffer over one step is therefore an MJ/s rate, and it has to be converted before it can be
+# compared with anything the regulation states.
+_J_PER_MJ: Final[float] = 1.0e6
+
 # All eight checks run against each produced Phase 1 scenario record.
 PHASE_ONE_INVARIANTS: Final[tuple[int, ...]] = (1, 2, 3, 4, 5, 6, 7, 8)
 
@@ -124,6 +152,17 @@ class ScenarioSegment:
     which is why the MGU-K request is its own actuator command - shaft Nm, positive for
     deployment - instead of a share of ``throttle``: the motor has a pedal of its own and the ICE
     does not have it.
+
+    ``ice_rpm_override`` is the crankshaft speed for the segment when the driver is holding one the
+    wheels cannot report. It is the engine state rather than a pedal, so it is declared separately:
+    while a clutch slips the crank is not geared to the wheels, and the derived speed is then pinned
+    at the configured idle however fast the driver has the engine revving - which is what a
+    stationary launch would otherwise report. 2026 start telemetry has the engine near 12 000 rpm
+    through that interval, so a segment that means to model one says so. ``None``, the default,
+    leaves the speed derived from the wheels, which is what every other segment wants.
+
+    It is the last field because the ones above it are positional in existing callers: inserted
+    earlier it would silently move ``request`` and every argument after it.
     """
 
     duration_s: float
@@ -134,6 +173,7 @@ class ScenarioSegment:
     brake_torque_nm: float = 0.0
     grid_standing_start: bool = False
     overtake: bool = False
+    ice_rpm_override: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +256,8 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
     is the rear-wheel share of this car's own first-gear full-engagement launch torque, and the
     MGU-K request is C5.2.11's crank-referenced limit expressed at the motor shaft. Both are
     synthetic *selections* of configured values rather than new coefficients, and neither is a
-    claim about how fast the car stops or how hard it deploys.
+    claim about how fast the car stops or how hard it deploys. The third, :data:`LAUNCH_ICE_RPM`,
+    is not from the car file at all and says so where it is defined.
     """
     brake_nm = -_rear_wheel_torque_nm(config)
     mgu_k_nm = config.mgu_k_torque_limit_nm / config.mgu_k_crankshaft_ratio
@@ -227,11 +268,24 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
             initial_speed_m_s=0.0,
             description=(
                 "Grid standing start: clutch released on a partial pedal, then applied, then a "
-                "partial-throttle settle. First gear throughout, no request, no MGU-K."
+                "partial-throttle settle, with the initial slipping segment declaring the near-"
+                "12 000 rpm reported by start telemetry (LAUNCH_ICE_RPM) rather than idling. "
+                "First gear throughout, no request, no MGU-K."
             ),
             segments=(
-                ScenarioSegment(0.5, throttle=0.25, clutch=0.75, grid_standing_start=True),
-                ScenarioSegment(1.0, throttle=1.0, clutch=1.0, grid_standing_start=True),
+                ScenarioSegment(
+                    0.5,
+                    throttle=0.25,
+                    clutch=0.75,
+                    grid_standing_start=True,
+                    ice_rpm_override=LAUNCH_ICE_RPM,
+                ),
+                ScenarioSegment(
+                    1.0,
+                    throttle=1.0,
+                    clutch=1.0,
+                    grid_standing_start=True,
+                ),
                 ScenarioSegment(0.5, throttle=0.2, clutch=1.0),
             ),
         ),
@@ -239,12 +293,25 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
             name="accelerate_to_speed",
             initial_speed_m_s=0.0,
             description=(
-                "Standing start followed by four driver-requested upshifts and sustained full "
-                "throttle; the trace is long enough to measure its first 100 km/h crossing."
+                "Standing start with LAUNCH_ICE_RPM declared during the initial clutch-slip "
+                "segment, then four "
+                "driver-requested upshifts and sustained full throttle; the trace is long enough "
+                "to measure its first 100 km/h crossing. Past the launch every segment takes its "
+                "engine speed from the wheels again."
             ),
             segments=(
-                ScenarioSegment(0.5, throttle=0.25, clutch=0.75, grid_standing_start=True),
-                ScenarioSegment(1.0, throttle=1.0, grid_standing_start=True),
+                ScenarioSegment(
+                    0.5,
+                    throttle=0.25,
+                    clutch=0.75,
+                    grid_standing_start=True,
+                    ice_rpm_override=LAUNCH_ICE_RPM,
+                ),
+                ScenarioSegment(
+                    1.0,
+                    throttle=1.0,
+                    grid_standing_start=True,
+                ),
                 ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
                 ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
                 ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
@@ -274,7 +341,11 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
             initial_speed_m_s=12.0,
             description=(
                 "Rolling full-throttle run with one driver request for each upshift through "
-                "eighth gear, followed by a sustained top-gear pull for a terminal-speed check."
+                "eighth gear, a brief bounded MGU-K deployment during the top-gear acceleration, "
+                "then a sustained ICE-only top-gear tail for the terminal-speed check. The "
+                "deployment and the tail are separate segments on purpose: the maximum speed the "
+                "run reaches and the speed it settles at are different quantities measured over "
+                "different stretches, so neither is substituted for the other."
             ),
             segments=(
                 ScenarioSegment(0.6, throttle=1.0),
@@ -282,7 +353,9 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     ScenarioSegment(1.2, throttle=1.0, request=gearbox.GearRequest.UP)
                     for _ in range(7)
                 ),
-                ScenarioSegment(50.0, throttle=1.0),
+                ScenarioSegment(6.0, throttle=1.0),
+                ScenarioSegment(3.0, throttle=1.0, mgu_k_request_nm=mgu_k_nm),
+                ScenarioSegment(41.0, throttle=1.0),
             ),
         ),
         Scenario(
@@ -401,6 +474,7 @@ def run_scenario(
     trace[0] = state
 
     row = 0
+    mgu_k_cap_w = config.mgu_k_peak_power_kw * 1_000.0
     for segment, count in zip(plan.segments, counts, strict=True):
         gear_state[gearbox.CLUTCH_INDEX] = segment.clutch
         brake = _brake_history(segment, plan.brake_bias, count)
@@ -408,7 +482,7 @@ def run_scenario(
         for interval in range(0, count, control_steps):
             interval_start = row + interval
             sample = state
-            sampled_rpm = _ice_rpm(config, sample, gear_state)
+            sampled_rpm = _ice_rpm(config, sample, gear_state, segment.ice_rpm_override)
             sampled_torque = powertrain.step_ice_torque(config, sampled_rpm, segment.throttle)
             sample_speed = float(sample[longitudinal.V_INDEX])
             torque = np.zeros(control_steps, dtype=np.float64)
@@ -436,9 +510,13 @@ def run_scenario(
                 drive[position] = torque[offset]
                 rpm[position] = sampled_rpm
                 ice[position] = sampled_torque
-                mgu_k_w[position] = (
-                    charge_before - float(mgu_k_state[powertrain.SOC_INDEX])
-                ) / config.dt_s
+                reported_power_w = (
+                    (charge_before - float(mgu_k_state[powertrain.SOC_INDEX]))
+                    * _J_PER_MJ
+                    / config.dt_s
+                )
+                # Finite differencing accumulated SOC can exceed the enforced cap by roundoff.
+                mgu_k_w[position] = min(mgu_k_cap_w, max(-mgu_k_cap_w, reported_power_w))
                 gear[position] = int(gear_state[gearbox.GEAR_INDEX])
                 clutch[position] = float(gear_state[gearbox.CLUTCH_INDEX])
                 soc[position] = float(mgu_k_state[powertrain.SOC_INDEX])
@@ -499,14 +577,30 @@ def _held(values: np.ndarray, control_steps: int, total: int) -> np.ndarray:
     return np.concatenate((values[:total:control_steps], values[-1:]))
 
 
-def _ice_rpm(config: KernelConfig, row: np.ndarray, gear_state: np.ndarray) -> float:
+def _ice_rpm(
+    config: KernelConfig,
+    row: np.ndarray,
+    gear_state: np.ndarray,
+    override: float | None = None,
+) -> float:
     """Crankshaft speed the drivetrain is at while the car is in ``row``'s state.
 
-    The mean of the two rear wheels, geared by the gear the box is *in* - C5.18.2 puts the MGU-K's
-    speed on the same number, so this is also what the motor's part speed and the fuel-energy-flow
-    limits are evaluated at. A driven axle has no differential model (C9.9.1), so the two rear
-    speeds agree to the last bit and the mean is only a way of not caring which one it was.
+    ``override``, when the segment declares one, *is* the answer and is returned as given: a caller
+    stating the engine speed knows something the wheels do not, and the derivation below cannot
+    recover it while a clutch slips. :func:`_checked_segment` has already bounded it to the
+    configured idle..rev limit band before the run starts, so it needs no clamp here - and clamping
+    would defeat the point, since a declared speed the runner quietly adjusted is the same
+    disagreement with telemetry that declaring it avoids.
+
+    Otherwise the mean of the two rear wheels, geared by the gear the box is *in* - C5.18.2 puts the
+    MGU-K's speed on the same number, so this is also what the motor's part speed and the
+    fuel-energy-flow limits are evaluated at. A driven axle has no differential model (C9.9.1), so
+    the two rear speeds agree to the last bit and the mean is only a way of not caring which one it
+    was. The derived result is clamped to the engine's own band, because a wheel speed that implies
+    an engine speed outside it is a gear-ratio artefact rather than a speed the engine turns at.
     """
+    if override is not None:
+        return float(override)
     wheel_omega = 0.5 * (row[longitudinal.RL_WHEEL_INDEX] + row[longitudinal.RR_WHEEL_INDEX])
     gear = int(gear_state[gearbox.GEAR_INDEX])
     ratio = (
@@ -885,6 +979,24 @@ def _checked_segment(
             f"got {int(segment.request)!r}"
         )
         raise ValueError(msg)
+    override = segment.ice_rpm_override
+    if override is not None:
+        if (
+            isinstance(override, bool)
+            or not isinstance(override, (int, float))
+            or not math.isfinite(override)
+        ):
+            msg = f"{label}: ice_rpm_override must be finite, got {override!r}"
+            raise ValueError(msg)
+        if not config.idle_rpm <= float(override) <= config.rev_limit_rpm:
+            msg = (
+                f"{label}: ice_rpm_override must be within the configured idle..rev limit of "
+                f"{config.idle_rpm!r}..{config.rev_limit_rpm!r} rpm, got {override!r}. The engine "
+                "cannot be turning outside its own band, and quietly clamping a declared speed "
+                "would report a different engine speed than the caller asked for - the same lie "
+                "the override exists to remove"
+            )
+            raise ValueError(msg)
     for quantity, value in (
         ("mgu_k_request_nm", segment.mgu_k_request_nm),
         ("brake_torque_nm", segment.brake_torque_nm),
