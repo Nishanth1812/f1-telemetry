@@ -67,7 +67,7 @@ mass:
   minimum_mass_qualifying_kg: 726.0
   driver_reference_mass_kg: 82.0
   provenance: mixed
-  source_date: 2026-10-01
+  source_date: 2026-10-02
   includes: [car, driver, fuel_at_start]
   tolerance_pct: 5.0
   regulation:
@@ -83,7 +83,7 @@ mass:
         During the Sprint Qualifying and Qualifying sessions, The Minimum Mass is 726kg plus
         the Nominal Tyre Mass.
     driver_reference_mass_kg:
-      clause: C4.5
+      clause: C4.5.2
       page: 60
       quote: >-
         The reference Mass of the Driver plus the mass of any Driver Ballast must not be less
@@ -98,10 +98,14 @@ mass:
       An engineering tolerance on `total_kg`, not a regulation limit. C4.1 sets one mass and
       no tolerance band.
   note: >-
-    `includes` and `tolerance_pct` are metadata, not coefficients, and carry no claim. The
-    Nominal Tyre Mass added to the C4.1 floor is published by the tyre supplier after the
-    final tyre-testing camp (C4.7, page 60) and is not a fixed number in the regulations, so
-    it is not asserted here.
+    `includes` and `tolerance_pct` are metadata, not coefficients, and carry no claim. The two
+    C4.1 numbers are the *floor* and not the mass: each is stated as a figure plus the Nominal
+    Tyre Mass, which the tyre provider publishes after the final tyre-testing camp (C4.7,
+    page 60) and which is not a fixed number in the regulations. The floor is also a function
+    of the session - 724 kg in "all other sessions", 726 kg in Sprint Qualifying and
+    Qualifying - so neither value is a single car-wide constant and neither is asserted here as
+    a figure the car is checked against. `chassis.c42_enforcement` records the same missing
+    input for the axle floors, and `mass.total_kg` is a running mass well above both.
 
 aero:
   reference_area_m2: 1.5
@@ -164,6 +168,10 @@ powertrain:
     fuel_energy_flow_low_rpm_limit_rpm: 10500.0
     fuel_energy_flow_low_rpm_gain_mj_h_per_rpm: 0.27
     fuel_energy_flow_low_rpm_offset_mj_h: 165.0
+    fuel_energy_flow_partial_load_threshold_kw: -50.0
+    fuel_energy_flow_partial_load_gain_mj_h_per_kw: 9.78
+    fuel_energy_flow_partial_load_offset_mj_h: 869.0
+    fuel_energy_flow_partial_load_min_mj_h: 380.0
     torque_curve_nm:
       - { rpm: 2000.0, torque_nm: 60.0 }
       - { rpm: 4000.0, torque_nm: 150.0 }
@@ -177,7 +185,7 @@ powertrain:
       collapse_below_rpm: 4000.0
       multiplier_at_collapse: 0.35
     provenance: mixed
-    source_date: 2026-10-01
+    source_date: 2026-10-02
     calibrated: false
     regulation:
       idle_rpm:
@@ -206,6 +214,28 @@ powertrain:
         clause: C5.2.4
         page: 64
         quote: EF(MJ/h)=0.27*N(rpm)+ 165
+      fuel_energy_flow_partial_load_threshold_kw:
+        clause: C5.2.5
+        page: 64
+        basis: >-
+          The threshold for the constant-flow arm of C5.2.5, in engine power. The regulation
+          allows 380 MJ/h at or below -50 kW.
+      fuel_energy_flow_partial_load_gain_mj_h_per_kw:
+        clause: C5.2.5
+        page: 64
+        basis: >-
+          The slope in C5.2.5's partial-load arm, EF(MJ/h) = 9.78*P(kW) + 869 above the
+          threshold.
+      fuel_energy_flow_partial_load_offset_mj_h:
+        clause: C5.2.5
+        page: 64
+        basis: >-
+          The intercept in C5.2.5's partial-load arm. At -50 kW, both arms give 380 MJ/h.
+      fuel_energy_flow_partial_load_min_mj_h:
+        clause: C5.2.5
+        page: 64
+        basis: >-
+          The constant energy flow C5.2.5 allows at or below the threshold.
     not_regulated:
       peak_power_kw: >-
         Published industry figure (PLAN.md section 6), NOT a regulation number. Issue 20 does
@@ -226,11 +256,24 @@ powertrain:
     source: >-
       PLAN.md section 6 for the power and torque table; FIA 2026 Section C Issue 20 for the
       idle ceiling and the fuel-energy-flow limits.
+    note: >-
+      C5.2.5 adds the partial-load fuel-energy-flow limit, which bounds the ICE by engine
+      power rather than by rpm. The four values describe one two-arm limit: a constant
+      `fuel_energy_flow_partial_load_min_mj_h` at or below
+      `fuel_energy_flow_partial_load_threshold_kw`, and
+      `fuel_energy_flow_partial_load_gain_mj_h_per_kw * P + fuel_energy_flow_partial_load_offset_mj_h`
+      above it. The arms meet at the threshold: `9.78 * -50 + 869 = 380`.
   mgu_k:
     peak_power_kw: 350.0
     torque_limit_nm: 500.0
     store_energy_mj: 4.0
     recharge_limit_mj_per_lap: 8.5
+    recharge_limit_reduced_mj_per_lap: 7.0
+    recharge_limit_qualifying_floor_mj_per_lap: 4.0
+    recharge_allowance_mj_per_lap: 0.5
+    relative_speed_limit_rpm: 60000.0
+    transient_torque_limiter_threshold_nm: 520.0
+    crankshaft_ratio: 3.0
     superclip_s: 3.0
     launch_speed_kmh: 50.0
     overtake_mode_extra_kw: 150.0
@@ -302,21 +345,73 @@ powertrain:
         quote: >-
           Recharge, as measured at the CU-K HV DC Bus, must not exceed a limit of 8.5MJ in each
           lap, subject to the following additional conditions:
+        scope: >-
+          The 8.5 MJ/lap baseline in C5.2.10 is subject to event-conditioned reductions,
+          including 7 MJ and a 4 MJ qualifying floor, with a conditional 0.5 MJ allowance.
+          These values are recorded separately. The baseline applies when no reduction does.
+      recharge_limit_reduced_mj_per_lap:
+        clause: C5.2.10
+        page: 64
+        basis: >-
+          The event-conditioned reduced per-lap recharge limit in C5.2.10. It applies only
+          under the conditions stated in that article.
+      recharge_limit_qualifying_floor_mj_per_lap:
+        clause: C5.2.10
+        page: 64
+        quote: "no less than 5 4MJ"
         quote_note: >-
-          Quoted with its trailing comma, as printed. Sub-item ii of the same article reads
-          "no less than 5 4MJ", a typographical error in the source document for 4MJ; the
-          typo is the FIA's and is not corrected here.
+          The PDF strikes through the earlier 5 MJ value and gives 4 MJ as the qualifying
+          floor. The extracted text displays both as "5 4MJ".
+      recharge_allowance_mj_per_lap:
+        clause: C5.2.10
+        page: 64
+        basis: >-
+          The conditional 0.5 MJ allowance in C5.2.10, recorded separately from the
+          event-conditioned limits.
       torque_limit_nm:
         clause: C5.2.11
         page: 65
-        quote: The MGU-K mechanical torque magnitude may not exceed 500Nm.
+        quote: >-
+          The MGU-K mechanical torque magnitude, referenced to the crankshaft speed, may not
+          exceed 500Nm.
+        quote_note: The limit is referenced to crankshaft speed, as stated in the same sentence.
       launch_speed_kmh:
         clause: C5.2.12
         page: 65
         quote: >-
           During a standing start from the grid the MGU-K may only be used once the car has
           reached 50 km/h.
+        quote_note: >-
+          The first sentence of the article. It has an exception - positive MGU-K torque below
+          50 km/h is permitted where the FIA Standard ECU mandates a minimum acceleration - and
+          that exception is deliberately not a number here: whether it applies is a fact about
+          the mandated launch, not a constant a car file can carry. Enforcing the limit without
+          the exception would be wrong in the same way as enforcing a universal 8.5 MJ recharge
+          cap.
+      transient_torque_limiter_threshold_nm:
+        clause: C5.18.4
+        page: 78
+        basis: >-
+          C5.18.4 permits an optional torque-limiting device to engage above this
+          crankshaft-referenced threshold. It is not an MGU-K torque cap; the limit is 500 Nm
+          under C5.2.11.
+      relative_speed_limit_rpm:
+        clause: C5.18.5
+        page: 78
+        basis: >-
+          The ceiling on MGU-K part speed relative to the crankshaft - 60 000 rpm - which is the
+          other half of the fixed coupling in C5.18.2: the MGU-K spins at
+          `crankshaft_ratio * ice_rpm`, so this is the speed at which that product is capped.
     not_regulated:
+      crankshaft_ratio: >-
+        Synthesised. C5.18.2 requires the MGU-K's rotating parts to be permanently geared to the
+        ICE at a fixed ratio to the crankshaft, and that fixed ratio is the model's coupling
+        boundary: it is where the MGU-K's torque joins, upstream of the clutch and gearbox. The
+        clause fixes the ratio's *property* and states no value, so 3.0 is this project's choice.
+        It is consistent with the one MGU-K number the regulations do give - at 3.0 the MGU-K
+        passes C5.18.5's 60 000 rpm relative-speed ceiling at 20 000 rpm of crankshaft speed,
+        well above the 13 000 rpm limiter the powertrain currently carries. No public F1 figure
+        is cited for it, and calibration may change it.
       superclip_s: >-
         PLAN.md section 6 estimate of the superclip duration (2-4s). Issue 20 contains no
         superclip duration article; searching the document text for "clip" returns nothing.
@@ -330,37 +425,106 @@ powertrain:
       `store_energy_mj` changed from PLAN.md's 7 MJ to the 4 MJ of C5.2.9. The 7 MJ figure is
       the C5.2.10 per-lap recharge reduction threshold (8.5 MJ reduced to 7 MJ), not the
       usable store size, so the two were conflated in the P0 file.
+      `recharge_limit_reduced_mj_per_lap` is that 7 MJ, recorded separately from the baseline
+      rather than being the baseline, and with the 4 MJ qualifying floor and the conditional
+      0.5 MJ allowance alongside it.
 
 gearbox:
   ratios: [3.883, 3.437, 3.041, 2.691, 2.381, 2.107, 1.865, 1.634]
   final_drive: 3.0
+  reverse_ratio: 3.883
   shift_up_rpm: 12500.0
   shift_down_rpm: 8000.0
   shift_time_s: 0.04
+  shift_time_max_up_s: 0.2
+  shift_time_max_down_s: 0.3
+  shift_disengage_max_s: 0.08
   clutch_torque_capacity_nm: 3000.0
-  provenance: synthesised
-  source_date: 2026-09-30
+  clutch_demand_torque_nm: 5200.0
+  clutch_demand_travel_fraction: 0.9
+  clutch_control_error_max_nm: 150.0
+  clutch_launch_exception_s: 0.085
+  provenance: mixed
+  source_date: 2026-10-02
+  regulation:
+    clutch_demand_torque_nm:
+      clause: C9.2.5
+      page: 101
+      basis: >-
+          The gain C9.2.5 applies to express a driver's clutch demand as torque at the rear axle:
+          5200 Nm over the engagement range. It is a *demand*, produced from the paddle by the
+          control system, and not a mechanical capacity the clutch can hold - which is the whole
+          distinction from `clutch_torque_capacity_nm` below.
+    clutch_demand_travel_fraction:
+      clause: C9.2.5
+      page: 101
+      basis: >-
+          The 90 % of engagement travel the 5200 Nm gain spans, because the demand is mapped from
+          5 % to 95 % engagement rather than across the paddle's whole stroke. Fully disengaged
+          transmits nothing and full travel asks for the whole gain.
+    clutch_control_error_max_nm:
+      clause: C9.2.5
+      page: 101
+      basis: >-
+          The +/-150 Nm band the control system must hold at the rear axle between the demand and
+          what the clutch actually transmits. It is a verification tolerance rather than a
+          coefficient.
+    clutch_launch_exception_s:
+      clause: C9.2.5
+      page: 101
+      basis: >-
+          The first 85 ms of a launch step, during which that band does not apply.
+    shift_time_max_up_s:
+      clause: C9.8.4
+      page: 104
+      basis: >-
+        C9.8.4 allows at most 200 ms for a gear change up. `shift_time_s` is the project's
+        duration and is validated against this limit.
+    shift_time_max_down_s:
+      clause: C9.8.4
+      page: 104
+      basis: >-
+        C9.8.4 allows at most 300 ms for a gear change down. `shift_time_s` is the project's
+        duration and is validated against this limit.
+    shift_disengage_max_s:
+      clause: C9.8.4
+      page: 104
+      basis: >-
+        The 80 ms from a shift request to the original gear being disengaged, the second
+        quantity the same article bounds. It is a timing a request has to meet, not a duration
+        the gearbox may take, so it is recorded separately from the two change limits.
   not_regulated:
     ratios: >-
       Synthetic geometric 8-speed set. Section C Issue 20 prescribes no gear ratios and no
-      final drive; P1-T4 replaces these during calibration.
+      final drive; P1-T4 replaces these during calibration. C9.6.1 fixes the *count* at eight
+      forward ratios and forbids a CVT, and C9.6.2 makes the ratios team-nominated, so the
+      eight entries are a regulatory shape and their values are not the FIA's.
     final_drive: Synthetic, as for `ratios`.
+    reverse_ratio: >-
+      Synthetic, and chosen equal to the first forward ratio because that is the conventional
+      reverse layout for a car with this gearbox. C9.7 (page 104) requires that all cars be
+      drivable in reverse by the driver at any time; it requires the capability, not a ratio,
+      and states no ratio, so the number above is a project assumption that calibration may
+      change. It is a magnitude like `ratios`, so it negates the transmitted torque rather than
+      indexing the forward table, which stays `1..8` and must never be indexed by 0 or -1.
     shift_up_rpm: >-
       Synthetic shift point, chosen below the 13000rpm limiter. C5.14 bounds rev-limit
-      variation but says nothing about shift strategy.
+      variation but says nothing about shift strategy. Under C9.8.1 an automatic gear change is
+      a driver aid and is not permitted, so these two numbers are the *driver's* shift-point
+      schedule: the driver requests a change and this is the schedule the request is judged
+      against. They are not a trigger. The drivetrain task changes the gearbox to consume an
+      explicit request for exactly that reason.
     shift_down_rpm: Synthetic, as for `shift_up_rpm`.
     shift_time_s: >-
-      Synthetic 40ms gearshift. No FIA article sets a gearshift duration.
+      Synthetic 40ms gearshift. No FIA article sets a gearshift duration, but C9.8.4 (page 104)
+      bounds one from above at 200 ms up and 300 ms down, so 40 ms is legal against both and the
+      loader refuses a `shift_time_s` above the smaller. A shared duration for both directions
+      is the deliberate simplification: the difference between the two limits is not something
+      P1 needs to model, and the committed value is a factor of five inside the tighter one.
     clutch_torque_capacity_nm: >-
-      Synthetic clutch capacity, measured at the differential. No FIA article states one, and no
-      public F1 figure is cited here. PLAN.md section 6 draws the chain torque_curve ->
-      gearbox -> clutch -> differential -> wheels, so this number is compared against the torque
-      AFTER the gear reduction and it is sized accordingly. At the 330 Nm engine peak the committed
-      box offers 3844 Nm in first gear and 1618 Nm in eighth, so 3000 Nm sits inside that range:
-      it clamps gears 1-3 at full engagement and passes gears 4-8 through unmodulated. The low gears
-      are where a launch happens and where clutch-limited traction belongs, and leaving the top half
-      unclamped keeps the ratio table observable. A capacity above 3844 Nm would be a ceiling no
-      gear reaches and a capacity below 1618 Nm would flatten every gear to the same number.
+      Synthetic output clamp from the existing drivetrain model, not a physical clutch capacity
+      and not the C9.2.5 rear-axle demand. No FIA mechanical-capacity value is cited. The
+      driver-demand drivetrain slice removes this clamp; do not treat 3000 Nm as an F1 limit.
   derivation: >-
     Geometric 8-speed, chosen so that 8th gear at the 13000 rpm limiter lands on the
     PLAN.md section 11 top-speed band of 350-370 km/h given the 0.36 m rolling radius, and
@@ -369,13 +533,11 @@ gearbox:
     geometric across all eight gears - 1.6^7 is a 27x span and cannot reach a 350+ km/h top
     speed from a sane 1st gear. See docs/phase0-decisions.md.
   note: >-
-    Still wrong until the P1 drag-limited top-speed solve. PLAN.md section 11 gives
-    350-370 km/h as an order-of-magnitude bound to be confirmed, not a target hit.
-    `clutch_torque_capacity_nm` is a launch-side number with no measured counterpart and is
-    the first of these to move when Task 5 runs a standing start. It is a DIFFERENTIAL-side
-    figure because the clutch sits after the gearbox in PLAN.md section 6's chain; an
-    engine-side capacity would be a different physical quantity, and quoting one where the
-    other belongs makes the clamp unreachable rather than wrong.
+    The gear ratios and top speed remain uncalibrated synthetic values. PLAN.md section 11's
+    350-370 km/h band is an order-of-magnitude bound, not a validated target.
+    This section is mixed because it carries two kinds of number: C9.2.5's driver clutch-demand
+    model and C9.8.4's shifting timings are regulated; the ratios, reverse ratio, shift points,
+    shift duration and clutch capacity are project assumptions.
 
 tyres:
   rolling_radius_m: 0.36

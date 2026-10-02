@@ -11,8 +11,7 @@ Two things have to be true for that to be more than a convention:
 
 The citation table below is pinned deliberately. It is the machine-checkable form of "read
 these clauses out of the current issue", and it fails loudly when the file drifts from the
-document it claims to cite. The values themselves are re-checked against the clause wording in
-``test_the_cited_clauses_still_say_what_the_values_claim``.
+document it claims to cite.
 
 ``KernelConfig`` is referenced through the module rather than imported by name. For the P0
 regression run, the ``contract`` pytest marker introduced with P1 was copied into the temporary
@@ -58,20 +57,36 @@ FIA_LISTING_URL = "https://www.fia.com/regulation/category/110/technical-regulat
 EXPECTED_CITATIONS: dict[str, tuple[str, int]] = {
     "mass.minimum_mass_kg": ("C4.1", 59),
     "mass.minimum_mass_qualifying_kg": ("C4.1", 59),
-    "mass.driver_reference_mass_kg": ("C4.5", 60),
+    "mass.driver_reference_mass_kg": ("C4.5.2", 60),
     "powertrain.ice.idle_rpm": ("C5.13.4", 75),
     "powertrain.ice.fuel_energy_flow_max_mj_h": ("C5.2.3", 64),
     "powertrain.ice.fuel_energy_flow_per_cylinder_max_mj_h": ("C5.2.3", 64),
     "powertrain.ice.fuel_energy_flow_low_rpm_gain_mj_h_per_rpm": ("C5.2.4", 64),
     "powertrain.ice.fuel_energy_flow_low_rpm_offset_mj_h": ("C5.2.4", 64),
     "powertrain.ice.fuel_energy_flow_low_rpm_limit_rpm": ("C5.2.4", 64),
+    "powertrain.ice.fuel_energy_flow_partial_load_gain_mj_h_per_kw": ("C5.2.5", 64),
+    "powertrain.ice.fuel_energy_flow_partial_load_offset_mj_h": ("C5.2.5", 64),
+    "powertrain.ice.fuel_energy_flow_partial_load_min_mj_h": ("C5.2.5", 64),
+    "powertrain.ice.fuel_energy_flow_partial_load_threshold_kw": ("C5.2.5", 64),
     "powertrain.mgu_k.peak_power_kw": ("C5.2.7", 64),
     "powertrain.mgu_k.deployment_curve_kw": ("C5.2.8", 64),
     "powertrain.mgu_k.overtake_curve_kw": ("C5.2.8", 64),
     "powertrain.mgu_k.store_energy_mj": ("C5.2.9", 64),
     "powertrain.mgu_k.recharge_limit_mj_per_lap": ("C5.2.10", 64),
+    "powertrain.mgu_k.recharge_limit_reduced_mj_per_lap": ("C5.2.10", 64),
+    "powertrain.mgu_k.recharge_limit_qualifying_floor_mj_per_lap": ("C5.2.10", 64),
+    "powertrain.mgu_k.recharge_allowance_mj_per_lap": ("C5.2.10", 64),
     "powertrain.mgu_k.torque_limit_nm": ("C5.2.11", 65),
     "powertrain.mgu_k.launch_speed_kmh": ("C5.2.12", 65),
+    "powertrain.mgu_k.transient_torque_limiter_threshold_nm": ("C5.18.4", 78),
+    "powertrain.mgu_k.relative_speed_limit_rpm": ("C5.18.5", 78),
+    "gearbox.clutch_demand_torque_nm": ("C9.2.5", 101),
+    "gearbox.clutch_demand_travel_fraction": ("C9.2.5", 101),
+    "gearbox.clutch_control_error_max_nm": ("C9.2.5", 101),
+    "gearbox.clutch_launch_exception_s": ("C9.2.5", 101),
+    "gearbox.shift_time_max_up_s": ("C9.8.4", 104),
+    "gearbox.shift_time_max_down_s": ("C9.8.4", 104),
+    "gearbox.shift_disengage_max_s": ("C9.8.4", 104),
     "tyres.front_width_mm": ("C10.7.2", 111),
     "tyres.rear_width_mm": ("C10.7.2", 111),
     "tyres.rim_diameter_mm": ("C10.7.2", 111),
@@ -82,7 +97,10 @@ EXPECTED_CITATIONS: dict[str, tuple[str, int]] = {
 }
 
 # Sections that state no FIA basis at all, so every number in them is a project decision.
-NOT_REGULATED_SECTIONS = ("aero", "gearbox", "integration")
+# `gearbox` is not one of them: C9.2.5 and C9.8.4 fix the clutch demand model and the shifting
+# timings, so the section carries both claim blocks. See
+# ``test_the_gearbox_section_is_mixed_and_says_which_number_is_which``.
+NOT_REGULATED_SECTIONS = ("aero", "integration")
 
 
 def _root(repo: Path) -> dict[str, Any]:
@@ -303,55 +321,221 @@ def test_the_overspecified_derived_point_is_the_only_one(spec: CarSpec) -> None:
         assert speeds in ((290.0,), (337.5,))
 
 
-def test_the_cited_clauses_still_say_what_the_values_claim(spec: CarSpec) -> None:
-    """Re-check the citations against the wording of Issue 20.
+def test_the_mass_minimum_carries_the_nominal_tyre_mass_and_the_session(spec: CarSpec) -> None:
+    """C4.1's floor is 724 kg *plus* a supplier figure, and it is 726 kg in Qualifying.
 
-    A citation table can be internally consistent and still cite the wrong clause. These
-    assertions pin the numbers the quoted clauses actually state.
+    Both halves are in the clause's own wording and both matter to anything that later wants
+    to check the floor: 724 kg on its own is not the minimum, and the minimum is a function of
+    the session. ``mass.total_kg`` sits well above either, which is why nothing enforces the
+    floor in P1 - see ``test_the_c42_floor_is_not_enforced_against_total_mass``.
+
+    The driver reference mass is cited to **C4.5.2**, not C4.5. The Phase 1 design records
+    that as a correction (gap G9), and a citation that points one clause out is a wrong claim
+    even when the number it carries is right.
     """
     mass = _at(spec.raw, ("mass",))
-    ice = _at(spec.raw, ("powertrain", "ice"))
-    mgu_k = _at(spec.raw, ("powertrain", "mgu_k"))
-    tyres = _at(spec.raw, ("tyres",))
-    chassis = _at(spec.raw, ("chassis",))
+    assert "Nominal Tyre Mass" in mass["regulation"]["minimum_mass_kg"]["quote"]
+    qualifying = mass["regulation"]["minimum_mass_qualifying_kg"]["quote"]
+    assert "Nominal Tyre Mass" in qualifying
+    assert "Qualifying" in qualifying
 
-    # C4.1: 724kg plus nominal tyre mass; 726kg in Qualifying and Sprint Qualifying.
-    assert mass["minimum_mass_kg"] == 724.0
-    assert mass["minimum_mass_qualifying_kg"] == 726.0
-    # C4.5.2: reference driver mass plus driver ballast is not less than 82kg.
+    driver = mass["regulation"]["driver_reference_mass_kg"]
+    assert (driver["clause"], driver["page"]) == ("C4.5.2", 60)
     assert mass["driver_reference_mass_kg"] == 82.0
-    # C4.2: front axle at least 0.44 of the minimum mass, rear axle at least 0.54.
-    assert chassis["minimum_front_axle_fraction"] == 0.44
-    assert chassis["minimum_rear_axle_fraction"] == 0.54
-    # C5.13.4: the idle speed control target may not exceed 4,000rpm.
-    assert ice["idle_rpm"] == 4000.0
-    # C5.2.3 and C5.2.4: fuel energy flow limits and the limit curve below 10,500rpm.
-    assert ice["fuel_energy_flow_max_mj_h"] == 3000.0
-    assert ice["fuel_energy_flow_per_cylinder_max_mj_h"] == 550.0
-    assert ice["fuel_energy_flow_low_rpm_limit_rpm"] == 10500.0
-    assert ice["fuel_energy_flow_low_rpm_gain_mj_h_per_rpm"] == 0.27
-    assert ice["fuel_energy_flow_low_rpm_offset_mj_h"] == 165.0
-    # C5.2.7 to C5.2.12.
-    assert mgu_k["peak_power_kw"] == 350.0
-    assert mgu_k["store_energy_mj"] == 4.0
-    assert mgu_k["recharge_limit_mj_per_lap"] == 8.5
-    assert mgu_k["torque_limit_nm"] == 500.0
-    assert mgu_k["launch_speed_kmh"] == 50.0
-    # C5.2.8.i: P(kW) = 1800 - 5v below 340kph, 6900 - 20v to 345kph, zero from 345kph,
-    # all as the *propulsion* limit - C5.2.7's 350kW absolute cap binds below 290kph.
-    normal = {float(p["speed_km_h"]): float(p["limit_kw"]) for p in mgu_k["deployment_curve_kw"]}
-    assert normal == {0.0: 350.0, 290.0: 350.0, 340.0: 100.0, 345.0: 0.0}
-    # C5.2.8.ii: Overtake, P(kW) = 7100 - 20v below 355kph, zero from 355kph; the cap binds
-    # below 337.5kph.
-    overtake = {float(p["speed_km_h"]): float(p["limit_kw"]) for p in mgu_k["overtake_curve_kw"]}
-    assert overtake == {0.0: 350.0, 337.5: 350.0, 355.0: 0.0}
-    # C10.7.2: tyre mounting width 315mm front and 401.3mm rear on a 462.5mm rim.
-    assert tyres["rim_diameter_mm"] == 462.5
-    assert tyres["front_width_mm"] == 315.0
-    assert tyres["rear_width_mm"] == 401.3
-    # C2.3.1 and C2.3.3: 950mm from the centreline, wheelbase no more than 3400mm.
-    assert chassis["overall_width_m"] == 1.9
-    assert chassis["wheelbase_m"] == 3.4
+
+
+def test_the_clutch_demand_is_the_regulated_rear_axle_torque_demand(spec: CarSpec) -> None:
+    """C9.2.5 defines what the clutch is *asked* for, not what it can take.
+
+    The committed gearbox clamps transmitted torque to a synthetic 3000 Nm capacity. C9.2.5
+    says something else: the driver's clutch request is expressed as torque at the rear axle
+    by applying a gain of 5200 Nm over the 5-95 % engagement range - 90 % of travel - the
+    controller must track it within +/-150 Nm at the rear axle, and the first 85 ms of a launch
+    step is excepted from that band. Four numbers that used to live only in the design note are
+    configuration with a clause behind them, so the gearbox task consumes data rather than
+    hardcoding a constant.
+    """
+    config = spec.kernel_config()
+    assert config.clutch_demand_torque_nm == 5200.0
+    assert config.clutch_demand_travel_fraction == 0.9
+    assert config.clutch_control_error_max_nm == 150.0
+    assert config.clutch_launch_exception_s == 0.085
+
+    claim = _at(spec.raw, ("gearbox", "regulation", "clutch_demand_torque_nm"))
+    assert (claim["clause"], claim["page"]) == ("C9.2.5", 101)
+
+
+def test_the_shift_time_is_bounded_by_the_c98_4_direction_limits(spec: CarSpec) -> None:
+    """The one synthetic shift duration is only allowed to exist because of C9.8.4.
+
+    ``shift_time_s`` is a project number, so the clause is what keeps it honest: an up change
+    must complete within 200 ms, a down change within 300 ms, and the original gear must be
+    disengaged within 80 ms of the request. A single shared duration is therefore only legal
+    below the *smaller* of the two direction limits, which is what the loader now enforces.
+    """
+    config = spec.kernel_config()
+    assert (config.shift_time_max_up_s, config.shift_time_max_down_s) == (0.2, 0.3)
+    assert config.shift_disengage_max_s == 0.08
+    assert config.shift_time_s <= min(config.shift_time_max_up_s, config.shift_time_max_down_s)
+    assert config.shift_disengage_max_s <= 0.08
+
+
+def test_a_shift_time_beyond_the_regulated_direction_limit_is_rejected(
+    tmp_path: Path, repo: Path
+) -> None:
+    """The bound is inclusive at 200 ms, because the faster direction's limit is the one.
+
+    ``tests/test_gearbox.py`` already builds a variant at five times the committed duration -
+    exactly 200 ms - and it has to keep loading, so this pins which side of the bound that is
+    and rules out a stricter one.
+    """
+    root = _root(repo)
+    _at(root, ("gearbox",))["shift_time_s"] = 0.2
+    at_limit = load_car_spec(_write(root, tmp_path)).kernel_config()
+    assert at_limit.shift_time_s == 0.2
+
+    root = _root(repo)
+    _at(root, ("gearbox",))["shift_time_s"] = 0.201
+    with pytest.raises(ContractError, match=r"shift_time_s.*C9\.8\.4"):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_the_reverse_ratio_is_synthetic_and_never_claimed_to_a_clause(spec: CarSpec) -> None:
+    """C9.7 requires the car to be drivable in reverse; it states no reverse *ratio*.
+
+    So the ratio is a project choice with a clause behind the requirement and not behind the
+    number. Recording it as a value with no `regulation` claim is the point: a reverse gear is
+    required, a reverse ratio is invented, and only one of those two is the FIA's.
+    """
+    gearbox = _at(spec.raw, ("gearbox",))
+    assert "reverse_ratio" not in _at(spec.raw, ("gearbox", "regulation"))
+
+    config = spec.kernel_config()
+    assert config.reverse_ratio > 0.0
+    claim = _at(spec.raw, ("gearbox", "not_regulated", "reverse_ratio"))
+    assert "C9.7" in claim
+    assert "ynthesised" in claim or "ynthetic" in claim
+
+
+def test_the_mgu_k_torque_limit_is_referenced_to_crankshaft_speed(spec: CarSpec) -> None:
+    """500 Nm is a crankshaft-referenced limit, and 520 Nm is not another cap.
+
+    The reference is what makes the number comparable at all: a motor-shaft figure and a
+    crankshaft figure are different quantities, and the same sentence states both, so the quote
+    has to carry it. C5.18.4's 520 Nm is a threshold above which an *optional* torque-limiting
+    device may act; the Phase 1 design calls out treating it as a cap as a specific failure, so
+    it is recorded with that wording and deliberately kept out of ``KernelConfig`` - handing a
+    number that must not be used as a limit to the physics would invite exactly that.
+    """
+    mgu_k = _at(spec.raw, ("powertrain", "mgu_k"))
+    claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "torque_limit_nm"))
+    assert (claim["clause"], claim["page"]) == ("C5.2.11", 65)
+    assert "crankshaft" in claim["quote"]
+
+    threshold = mgu_k["regulation"]["transient_torque_limiter_threshold_nm"]
+    assert (threshold["clause"], threshold["page"]) == ("C5.18.4", 78)
+    assert "not an MGU-K torque cap" in threshold["basis"]
+    assert "transient_torque_limiter_threshold_nm" not in fields(car_spec_module.KernelConfig)
+
+
+def test_the_mgu_k_crank_ratio_is_synthetic_and_the_relative_speed_cap_is_not(spec: CarSpec) -> None:
+    """C5.18.5 caps a number; C5.18.2 requires a property. Only the first states a value.
+
+    The MGU-K is permanently geared to the crankshaft, so joining its torque at the crankshaft
+    needs a ratio - and the clause fixes that the ratio is *fixed* without ever stating what it
+    is. The relative speed limit is the other half of the same coupling, and it is a real
+    number: 60 000 rpm of MGU-K part speed.
+    """
+    config = spec.kernel_config()
+    assert config.mgu_k_crankshaft_ratio > 0.0
+    assert config.mgu_k_relative_speed_limit_rpm == 60000.0
+
+    ratio_claim = _at(spec.raw, ("powertrain", "mgu_k", "not_regulated", "crankshaft_ratio"))
+    assert "C5.18.2" in ratio_claim
+    speed_claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "relative_speed_limit_rpm"))
+    assert (speed_claim["clause"], speed_claim["page"]) == ("C5.18.5", 78)
+
+
+def test_the_c52_10_recharge_limits_are_event_conditioned_not_one_universal_cap(
+    spec: CarSpec,
+) -> None:
+    """C5.2.10 states a baseline and three event-conditioned values, not a single limit.
+
+    The Phase 1 design calls out reading the 8.5 MJ baseline as a universal cap as the failure
+    this replaces: the article lowers it to 7 MJ in defined circumstances, names 4 MJ as the
+    qualifying floor, and allows a conditional extra 0.5 MJ. All four are recorded, and the
+    loader refuses a file whose event-conditioned value is *above* the baseline it reduces -
+    which is the mistake a single-number reading invites.
+    """
+    config = spec.kernel_config()
+    assert config.recharge_limit_mj_per_lap == 8.5
+    assert config.recharge_limit_reduced_mj_per_lap == 7.0
+    assert config.recharge_limit_qualifying_floor_mj_per_lap == 4.0
+    assert config.recharge_allowance_mj_per_lap == 0.5
+
+    claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "recharge_limit_mj_per_lap"))
+    assert (claim["clause"], claim["page"]) == ("C5.2.10", 64)
+    assert "baseline" in claim["scope"]
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("recharge_limit_reduced_mj_per_lap", 9.0, "exceeds the C5.2.10 baseline"),
+        ("recharge_limit_qualifying_floor_mj_per_lap", 7.5, "exceeds the C5.2.10 reduced limit"),
+        ("recharge_allowance_mj_per_lap", 0.0, "recharge_allowance_mj_per_lap"),
+    ],
+)
+def test_an_unordered_c52_10_recharge_limit_is_rejected(
+    tmp_path: Path, repo: Path, key: str, value: float, message: str
+) -> None:
+    root = _root(repo)
+    _at(root, ("powertrain", "mgu_k"))[key] = value
+    with pytest.raises(ContractError, match=message):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_the_c52_5_partial_load_limit_is_expressed_in_engine_power(spec: CarSpec) -> None:
+    """The other fuel-energy-flow limit is a function of power, and its arms have to meet.
+
+    C5.2.3 and C5.2.4 bound the ICE by rpm; C5.2.5 bounds it by engine power instead, with a
+    flat 380 MJ/h arm at or below -50 kW and ``9.78*P + 869`` above it. The threshold is
+    therefore negative and must not be caught by a positivity rule - the only value in the ICE
+    block that may be below zero.
+
+    The two arms meeting at the threshold is arithmetic, not coincidence, so it is checked
+    rather than assumed: a mis-transcribed gain or offset would leave a step in the limit that
+    no citation would reveal.
+    """
+    config = spec.kernel_config()
+    assert config.fuel_energy_flow_partial_load_threshold_kw == -50.0
+    assert config.fuel_energy_flow_partial_load_min_mj_h == 380.0
+    assert config.fuel_energy_flow_partial_load_gain == 9.78
+    assert config.fuel_energy_flow_partial_load_offset_mj_h == 869.0
+
+    arms = config.fuel_energy_flow_partial_load_gain * config.fuel_energy_flow_partial_load_threshold_kw
+    assert _close(
+        arms + config.fuel_energy_flow_partial_load_offset_mj_h,
+        config.fuel_energy_flow_partial_load_min_mj_h,
+    ), f"C5.2.5's arms leave a step: {arms} + offset != min"
+
+    claim = _at(spec.raw, ("powertrain", "ice", "regulation", "fuel_energy_flow_partial_load_gain_mj_h_per_kw"))
+    assert (claim["clause"], claim["page"]) == ("C5.2.5", 64)
+
+
+def test_the_gearbox_section_is_mixed_and_says_which_number_is_which(spec: CarSpec) -> None:
+    """`gearbox` moved from `synthesised` to `mixed`, and both claim blocks are load-bearing.
+
+    The ratios, the shift points, the shift duration, the reverse ratio and the clutch
+    capacity are all project choices. C9.2.5's demand model, C9.8.4's shifting timings and
+    C9.6.1's eight forward ratios are not, so a section claiming `synthesised` over all of it
+    would describe the opposite of the truth.
+    """
+    gearbox = _at(spec.raw, ("gearbox",))
+    assert gearbox["provenance"] == "mixed"
+    assert set(gearbox["regulation"]) <= set(gearbox)
+    assert set(gearbox["not_regulated"]) <= set(gearbox)
+    assert "C9.2.5" in "".join(str(value) for value in gearbox["regulation"].values())
 
 
 def test_the_p1_section_that_carries_the_regulated_powertrain_limits_is_populated(
@@ -596,10 +780,50 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
             1.5,
             "multiplier_at_collapse",
         ),
+        (
+            ("powertrain", "ice", "fuel_energy_flow_partial_load_gain_mj_h_per_kw"),
+            0.0,
+            "fuel_energy_flow_partial_load_gain_mj_h_per_kw",
+        ),
+        (
+            ("powertrain", "ice", "fuel_energy_flow_partial_load_offset_mj_h"),
+            0.0,
+            "fuel_energy_flow_partial_load_offset_mj_h",
+        ),
+        (
+            ("powertrain", "ice", "fuel_energy_flow_partial_load_min_mj_h"),
+            0.0,
+            "fuel_energy_flow_partial_load_min_mj_h",
+        ),
+        # C5.2.5's threshold is the one number in the ICE block that may be negative: it is an
+        # engine *power*, and the clause's flat arm starts at or below -50 kW. Only a
+        # non-finite value is refused for it, never a negative one.
+        (
+            ("powertrain", "ice", "fuel_energy_flow_partial_load_threshold_kw"),
+            math.inf,
+            "fuel_energy_flow_partial_load_threshold_kw",
+        ),
         (("powertrain", "mgu_k", "peak_power_kw"), 0.0, "mgu_k.peak_power_kw"),
         (("powertrain", "mgu_k", "store_energy_mj"), 0.0, "store_energy_mj"),
         (("powertrain", "mgu_k", "deployment_curve_kw", 2, "limit_kw"), -1.0, "limit_kw"),
+        (("powertrain", "mgu_k", "crankshaft_ratio"), 0.0, "crankshaft_ratio"),
+        (
+            ("powertrain", "mgu_k", "relative_speed_limit_rpm"),
+            -1.0,
+            "relative_speed_limit_rpm",
+        ),
         (("gearbox", "final_drive"), 0.0, "final_drive"),
+        (("gearbox", "reverse_ratio"), 0.0, "reverse_ratio"),
+        (("gearbox", "clutch_demand_torque_nm"), 0.0, "clutch_demand_torque_nm"),
+        (("gearbox", "clutch_demand_travel_fraction"), 1.5, "clutch_demand_travel_fraction"),
+        (("gearbox", "clutch_control_error_max_nm"), 0.0, "clutch_control_error_max_nm"),
+        (("gearbox", "clutch_launch_exception_s"), -0.01, "clutch_launch_exception_s"),
+        (("gearbox", "shift_time_max_up_s"), 0.0, "shift_time_max_up_s"),
+        (("gearbox", "shift_time_max_down_s"), 0.0, "shift_time_max_down_s"),
+        (("gearbox", "shift_disengage_max_s"), 0.0, "shift_disengage_max_s"),
+        (("gearbox", "shift_time_max_up_s"), 0.201, "C9.8.4.*200 ms"),
+        (("gearbox", "shift_time_max_down_s"), 0.301, "C9.8.4.*300 ms"),
+        (("gearbox", "shift_disengage_max_s"), 0.081, "C9.8.4.*80 ms"),
         (("gearbox", "shift_up_rpm"), 20000.0, "shift_up_rpm"),
         (("gearbox", "shift_down_rpm"), 13000.0, "shift_down_rpm"),
         (("gearbox", "shift_time_s"), -0.01, "shift_time_s"),

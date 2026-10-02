@@ -372,8 +372,8 @@ export const CHANNELS: { readonly [K in ChannelName]: ChannelSpec } = {
       faultEligible: ['dropout', 'freeze', 'spike', 'step', 'stale'],
       corners: [],
       corner: null,
-      description: 'ICE gearbox state: -1 reverse, 0 neutral, 1..8 forward. FIA sets eight forward ratios and requires reverse; the integer encoding and neutral value are simulator conventions. Discrete state, so no gaussian noise or analogue quantisation.',
-      source: 'FIA 2026 Formula One Regulations Section C Issue 20 (2026-08-05), C9.6.1 (eight forward ratios) and C9.7 (reverse ratio), https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf',
+      description: 'ICE gearbox state: -1 reverse, 0 neutral, 1..8 forward. C9.6.1 fixes eight forward ratios and C9.7 requires the car to be drivable in reverse, so the gear *count* and the existence of reverse are the regulation\'s; the integer encoding is a simulator convention, as is the neutral value - no clause requires the car to select neutral in ordinary operation, and none of them writes -1 anywhere. Discrete state, so no gaussian noise or analogue quantisation.',
+      source: 'FIA 2026 Formula One Regulations Section C Issue 20 (2026-08-05), C9.6.1 (eight forward ratios) and C9.7 (reverse drivability), https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf',
     },
   throttle_pct: {
       name: 'throttle_pct',

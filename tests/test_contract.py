@@ -135,6 +135,23 @@ def _write_contract(tmp_path: Path, channels: list[dict[str, object]]) -> Path:
     return path
 
 
+def _channel_entries(repo: Path) -> dict[str, dict[str, object]]:
+    """The raw ``channels`` list, keyed by channel name.
+
+    ``load_channel_contract`` deliberately does not surface every declared key, so a claim about
+    a channel's own metadata - its `provenance` label above all - has to be read from the
+    document. Reading the YAML rather than trusting a second copy of it is what keeps the
+    assertions below about this file and not about a test's idea of it.
+    """
+    document = yaml.safe_load((repo / "channels.yaml").read_text(encoding="utf-8"))
+    return {str(entry["name"]): entry for entry in document["channels"]}
+
+
+def _conventions(repo: Path) -> dict[str, str]:
+    document = yaml.safe_load((repo / "channels.yaml").read_text(encoding="utf-8"))
+    return document["conventions"]
+
+
 def test_every_plan_section_5_2_group_is_present(contract: ChannelContract) -> None:
     assert contract.groups == PLAN_GROUPS
     for group, expected in PLAN_CHANNELS.items():
@@ -299,6 +316,52 @@ def test_check_gate_reports_a_stale_artifact(tmp_path: Path) -> None:
 
     target.unlink()
     assert check(root) == [f"missing: {target}"]
+
+
+def test_the_gear_channel_range_is_a_simulator_convention_not_a_fia_limit(repo: Path) -> None:
+    """``gear``'s ``range`` was labelled `fia_limit`, and it is not one.
+
+    C9.6.1 fixes eight forward ratios and C9.7 requires the car to be drivable in reverse. What
+    neither clause states is the encoding: ``-1`` for reverse, ``0`` for neutral, ``1..8``
+    forward. Those are this project's integers, and a range whose two lowest values have no
+    clause behind them is not a regulation operating limit - which is exactly what the
+    `conventions.provenance` block says `fia_limit` means. A reader who trusted the label
+    would think the FIA named -1.
+
+    Neutral is the sharper half of the problem: it is an existing model state that appears in
+    regulatory provisions, but no clause requires the car to select it in ordinary operation.
+    So the encoding is recorded as ours even though the gear *count* is regulated.
+    """
+    entries = _channel_entries(repo)
+    gear = entries["gear"]
+    assert gear["provenance"] != "fia_limit"
+    assert gear["range"] == [-1, 8]
+    assert "simulator convention" in gear["description"]
+
+    # The generated artifacts carry the same corrected text, so the label cannot drift from
+    # the contract the dashboard and the parquet writer actually read.
+    assert CHANNELS["gear"].description == gear["description"]
+    ts = (repo / "web" / "src" / "generated" / "channels.ts").read_text(encoding="utf-8")
+    assert "simulator convention" in ts.split("name: 'gear'")[1][:2000]
+
+
+def test_only_the_mgu_k_power_range_is_an_fia_limit(repo: Path) -> None:
+    """One channel keeps `fia_limit`, because one channel's range really is the clause's.
+
+    C5.2.7 caps absolute ERS-K electrical DC power at 350 kW, so a +/-350 kW range is the
+    regulation's operating limit and not a sensor span. Every other channel in the file is a
+    simulator setting, and the third label is for the case where the quantity is regulated
+    while the numbers on the wire are not.
+    """
+    entries = _channel_entries(repo)
+    labels = {name: entry["provenance"] for name, entry in entries.items()}
+    assert {name for name, label in labels.items() if label == "fia_limit"} == {"mgu_k_power_kw"}
+    assert labels["gear"] == "simulator_convention"
+    assert set(labels.values()) <= {"fia_limit", "illustrative", "simulator_convention"}
+
+    conventions = _conventions(repo)
+    assert "simulator_convention" in conventions["provenance"]
+    assert "Only `mgu_k_power_kw` is `fia_limit`" in conventions["provenance"]
 
 
 def test_car_spec_provenance_is_complete(spec: CarSpec) -> None:

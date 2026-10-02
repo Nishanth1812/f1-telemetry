@@ -129,24 +129,41 @@ class KernelConfig:
     fuel_energy_flow_low_rpm_limit_rpm: float
     fuel_energy_flow_low_rpm_gain: float
     fuel_energy_flow_low_rpm_offset_mj_h: float
+    fuel_energy_flow_partial_load_threshold_kw: float
+    fuel_energy_flow_partial_load_gain: float
+    fuel_energy_flow_partial_load_offset_mj_h: float
+    fuel_energy_flow_partial_load_min_mj_h: float
     mgu_k_peak_power_kw: float
     mgu_k_torque_limit_nm: float
+    mgu_k_crankshaft_ratio: float
+    mgu_k_relative_speed_limit_rpm: float
     ers_speed_km_h: np.ndarray
     ers_limit_kw: np.ndarray
     ers_overtake_speed_km_h: np.ndarray
     ers_overtake_limit_kw: np.ndarray
     store_energy_mj: float
     recharge_limit_mj_per_lap: float
+    recharge_limit_reduced_mj_per_lap: float
+    recharge_limit_qualifying_floor_mj_per_lap: float
+    recharge_allowance_mj_per_lap: float
     superclip_s: float
     launch_speed_kmh: float
     power_split_ice: float
     fuel_lhv_kj_kg: float
     gear_ratios: np.ndarray
     final_drive: float
+    reverse_ratio: float
     shift_up_rpm: float
     shift_down_rpm: float
     shift_time_s: float
+    shift_time_max_up_s: float
+    shift_time_max_down_s: float
+    shift_disengage_max_s: float
     clutch_torque_capacity_nm: float
+    clutch_demand_torque_nm: float
+    clutch_demand_travel_fraction: float
+    clutch_control_error_max_nm: float
+    clutch_launch_exception_s: float
     rolling_radius_m: float
     wheel_diameter_m: float
     front_width_mm: float
@@ -314,6 +331,30 @@ class CarSpec:
                 f"got {turbo_multiplier}"
             )
 
+        # C5.2.5 (page 64) bounds the ICE's fuel energy flow as a function of *engine power*
+        # rather than of rpm, with a flat arm at or below -50 kW. The threshold is therefore the
+        # one number in this block that is allowed to be negative - it is a power, and the
+        # clause's constant arm starts at or below it - so it is checked for finiteness and the
+        # other three for sign. The arms are recorded as four numbers because the clause states
+        # two formulas; that they meet at the threshold is a property of the data, asserted where
+        # the physics is tested rather than enforced here.
+        partial_load_threshold = _number(
+            ice.get("fuel_energy_flow_partial_load_threshold_kw"),
+            "car_spec: powertrain.ice.fuel_energy_flow_partial_load_threshold_kw",
+        )
+        partial_load_gain = _positive(
+            ice.get("fuel_energy_flow_partial_load_gain_mj_h_per_kw"),
+            "car_spec: powertrain.ice.fuel_energy_flow_partial_load_gain_mj_h_per_kw",
+        )
+        partial_load_offset = _positive(
+            ice.get("fuel_energy_flow_partial_load_offset_mj_h"),
+            "car_spec: powertrain.ice.fuel_energy_flow_partial_load_offset_mj_h",
+        )
+        partial_load_min = _positive(
+            ice.get("fuel_energy_flow_partial_load_min_mj_h"),
+            "car_spec: powertrain.ice.fuel_energy_flow_partial_load_min_mj_h",
+        )
+
         mgu_k_power = _positive(
             self.mgu_k_peak_power_kw, "car_spec: powertrain.mgu_k.peak_power_kw"
         )
@@ -328,6 +369,51 @@ class CarSpec:
         store_energy = _positive(
             mgu_k.get("store_energy_mj"), "car_spec: powertrain.mgu_k.store_energy_mj"
         )
+        # C5.18.2 permanently gears the MGU-K to the crankshaft at a *fixed* ratio and states no
+        # value for it, so the number is this project's. It is still a magnitude: a zero ratio
+        # would leave the MGU-K with no coupling to join at, and a negative one would drive the
+        # crankshaft backwards. C5.18.5's 60 000 rpm ceiling is on the *relative* speed, i.e. the
+        # product of this ratio and the engine speed, so the two are read together.
+        crankshaft_ratio = _positive(
+            mgu_k.get("crankshaft_ratio"), "car_spec: powertrain.mgu_k.crankshaft_ratio"
+        )
+        relative_speed_limit = _positive(
+            mgu_k.get("relative_speed_limit_rpm"),
+            "car_spec: powertrain.mgu_k.relative_speed_limit_rpm",
+        )
+        # C5.2.10 (page 64) states a per-lap recharge *baseline* and then reduces it under
+        # conditions it lists: 7 MJ, a 4 MJ qualifying floor, and a conditional 0.5 MJ
+        # allowance. Reading the 8.5 MJ as a standing cap is the mistake this ordering exists to
+        # catch, so an event-conditioned value above the baseline it modifies is refused rather
+        # than accepted as a stricter or looser limit.
+        recharge_baseline = _positive(
+            mgu_k.get("recharge_limit_mj_per_lap"),
+            "car_spec: powertrain.mgu_k.recharge_limit_mj_per_lap",
+        )
+        recharge_reduced = _positive(
+            mgu_k.get("recharge_limit_reduced_mj_per_lap"),
+            "car_spec: powertrain.mgu_k.recharge_limit_reduced_mj_per_lap",
+        )
+        recharge_qualifying = _positive(
+            mgu_k.get("recharge_limit_qualifying_floor_mj_per_lap"),
+            "car_spec: powertrain.mgu_k.recharge_limit_qualifying_floor_mj_per_lap",
+        )
+        recharge_allowance = _positive(
+            mgu_k.get("recharge_allowance_mj_per_lap"),
+            "car_spec: powertrain.mgu_k.recharge_allowance_mj_per_lap",
+        )
+        if recharge_reduced > recharge_baseline:
+            raise ContractError(
+                f"car_spec: powertrain.mgu_k.recharge_limit_reduced_mj_per_lap "
+                f"({recharge_reduced}) exceeds the C5.2.10 baseline of {recharge_baseline} MJ/lap. "
+                "C5.2.10's reduced figure is a reduction of the baseline, not a second one."
+            )
+        if recharge_qualifying > recharge_reduced:
+            raise ContractError(
+                "car_spec: powertrain.mgu_k.recharge_limit_qualifying_floor_mj_per_lap "
+                f"({recharge_qualifying}) exceeds the C5.2.10 reduced limit of {recharge_reduced} "
+                "MJ/lap. The qualifying floor is the lowest of the article's three figures."
+            )
         power_split = _number(self.power_split_ice, "car_spec: powertrain.power_split_ice")
         if not 0.0 < power_split < 1.0:
             raise ContractError(
@@ -346,6 +432,13 @@ class CarSpec:
                 "would drive it the wrong way."
             )
         final_drive = _positive(self.final_drive, "car_spec: gearbox.final_drive")
+        # C9.7 (page 104) requires the car to be drivable in reverse at any time, but states no
+        # reverse ratio, so the number is synthesised. It is a magnitude like `ratios`: a negative
+        # reverse ratio would be the same ratio counted twice, and a zero one would transmit
+        # nothing however hard the driver asked. What makes reverse work is that it negates the
+        # transmitted torque, never that it indexes the forward table - which stays 1..8 and
+        # must not be indexed by 0 or -1.
+        reverse_ratio = _positive(gearbox.get("reverse_ratio"), "car_spec: gearbox.reverse_ratio")
         shift_up = _positive(gearbox.get("shift_up_rpm"), "car_spec: gearbox.shift_up_rpm")
         shift_down = _positive(gearbox.get("shift_down_rpm"), "car_spec: gearbox.shift_down_rpm")
         # P1-T5: strictly positive, not merely non-negative. The shift timer is the only thing that
@@ -354,12 +447,68 @@ class CarSpec:
         # step. The loader and the step have to agree, or the file could hold a value the model
         # will not take.
         shift_time = _positive(gearbox.get("shift_time_s"), "car_spec: gearbox.shift_time_s")
+        # C9.8.4 (page 104) bounds a gear change from above - 200 ms up, 300 ms down - and bounds
+        # the request-to-disengage time separately at 80 ms. `shift_time_s` is a project number,
+        # so the clause is the only thing that keeps it honest: the loader checks the duration
+        # against both direction limits rather than trusting the committed 40 ms. The bound is
+        # inclusive, because the up limit is itself a legal value for a shared duration.
+        shift_time_max_up = _positive(
+            gearbox.get("shift_time_max_up_s"), "car_spec: gearbox.shift_time_max_up_s"
+        )
+        shift_time_max_down = _positive(
+            gearbox.get("shift_time_max_down_s"), "car_spec: gearbox.shift_time_max_down_s"
+        )
+        shift_disengage = _positive(
+            gearbox.get("shift_disengage_max_s"), "car_spec: gearbox.shift_disengage_max_s"
+        )
+        if shift_time_max_up > 0.2:
+            raise ContractError(
+                f"car_spec: gearbox.shift_time_max_up_s ({shift_time_max_up}) exceeds the "
+                "C9.8.4 200 ms maximum"
+            )
+        if shift_time_max_down > 0.3:
+            raise ContractError(
+                f"car_spec: gearbox.shift_time_max_down_s ({shift_time_max_down}) exceeds the "
+                "C9.8.4 300 ms maximum"
+            )
+        if shift_disengage > 0.08:
+            raise ContractError(
+                f"car_spec: gearbox.shift_disengage_max_s ({shift_disengage}) exceeds the "
+                "C9.8.4 80 ms maximum"
+            )
+        fastest_change = min(shift_time_max_up, shift_time_max_down)
+        if shift_time > fastest_change:
+            raise ContractError(
+                f"car_spec: gearbox.shift_time_s ({shift_time}) exceeds the C9.8.4 gear-change "
+                f"limit of {fastest_change} s. C9.8.4 allows 200 ms up and 300 ms down; one "
+                "shared duration is only legal below the smaller of the two."
+            )
         # P1-T5: the clutch capacity is the ceiling every transmitted torque is measured against, so
         # it has to be positive. Zero would let the model apply it at all; a negative one would put
         # the sign of the capacity on the wrong side of the engine's.
         clutch_capacity = _positive(
             gearbox.get("clutch_torque_capacity_nm"),
             "car_spec: gearbox.clutch_torque_capacity_nm",
+        )
+        # C9.2.5 (page 101) states the driver's clutch *demand* as rear-axle torque: a 5200 Nm gain
+        # over 90% of engagement travel, tracked to within +/-150 Nm, with the first 85 ms of a
+        # launch step excepted from that band. None of these is the capacity above, and none of
+        # them is a gain on engine torque either - they are rear-axle quantities.
+        clutch_demand_torque = _positive(
+            gearbox.get("clutch_demand_torque_nm"),
+            "car_spec: gearbox.clutch_demand_torque_nm",
+        )
+        clutch_demand_travel = _fraction(
+            gearbox.get("clutch_demand_travel_fraction"),
+            "car_spec: gearbox.clutch_demand_travel_fraction",
+        )
+        clutch_error = _positive(
+            gearbox.get("clutch_control_error_max_nm"),
+            "car_spec: gearbox.clutch_control_error_max_nm",
+        )
+        clutch_launch_exception = _non_negative(
+            gearbox.get("clutch_launch_exception_s"),
+            "car_spec: gearbox.clutch_launch_exception_s",
         )
         if shift_up > rev_limit:
             raise ContractError(
@@ -441,19 +590,25 @@ class CarSpec:
                 ice.get("fuel_energy_flow_low_rpm_offset_mj_h"),
                 "car_spec: powertrain.ice.fuel_energy_flow_low_rpm_offset_mj_h",
             ),
+            fuel_energy_flow_partial_load_threshold_kw=partial_load_threshold,
+            fuel_energy_flow_partial_load_gain=partial_load_gain,
+            fuel_energy_flow_partial_load_offset_mj_h=partial_load_offset,
+            fuel_energy_flow_partial_load_min_mj_h=partial_load_min,
             mgu_k_peak_power_kw=mgu_k_power,
             mgu_k_torque_limit_nm=_positive(
                 mgu_k.get("torque_limit_nm"), "car_spec: powertrain.mgu_k.torque_limit_nm"
             ),
+            mgu_k_crankshaft_ratio=crankshaft_ratio,
+            mgu_k_relative_speed_limit_rpm=relative_speed_limit,
             ers_speed_km_h=np.array(deployment.speed_km_h, dtype=np.float64),
             ers_limit_kw=ers_limits,
             ers_overtake_speed_km_h=np.array(overtake.speed_km_h, dtype=np.float64),
             ers_overtake_limit_kw=ers_overtake_limits,
             store_energy_mj=store_energy,
-            recharge_limit_mj_per_lap=_positive(
-                mgu_k.get("recharge_limit_mj_per_lap"),
-                "car_spec: powertrain.mgu_k.recharge_limit_mj_per_lap",
-            ),
+            recharge_limit_mj_per_lap=recharge_baseline,
+            recharge_limit_reduced_mj_per_lap=recharge_reduced,
+            recharge_limit_qualifying_floor_mj_per_lap=recharge_qualifying,
+            recharge_allowance_mj_per_lap=recharge_allowance,
             superclip_s=_positive(
                 mgu_k.get("superclip_s"), "car_spec: powertrain.mgu_k.superclip_s"
             ),
@@ -466,10 +621,18 @@ class CarSpec:
             ),
             gear_ratios=ratios,
             final_drive=final_drive,
+            reverse_ratio=reverse_ratio,
             shift_up_rpm=shift_up,
             shift_down_rpm=shift_down,
             shift_time_s=shift_time,
+            shift_time_max_up_s=shift_time_max_up,
+            shift_time_max_down_s=shift_time_max_down,
+            shift_disengage_max_s=shift_disengage,
             clutch_torque_capacity_nm=clutch_capacity,
+            clutch_demand_torque_nm=clutch_demand_torque,
+            clutch_demand_travel_fraction=clutch_demand_travel,
+            clutch_control_error_max_nm=clutch_error,
+            clutch_launch_exception_s=clutch_launch_exception,
             rolling_radius_m=rolling_radius,
             wheel_diameter_m=wheel_diameter,
             front_width_mm=_positive(tyres.get("front_width_mm"), "car_spec: tyres.front_width_mm"),
@@ -502,6 +665,19 @@ def _non_negative(node: Any, where: str) -> float:
     value = _number(node, where)
     if value < 0.0:
         raise ContractError(f"{where}: expected a number >= 0, got {node!r}")
+    return value
+
+
+def _fraction(node: Any, where: str) -> float:
+    """A value strictly inside ``(0, 1]`` - a share of something, not a magnitude.
+
+    Distinct from ``_positive`` because the interesting boundary is the top: C9.2.5's 90 %
+    engagement-travel span is legal, 0 % is not, and a rule that accepted zero would let the
+    model divide by it.
+    """
+    value = _number(node, where)
+    if not 0.0 < value <= 1.0:
+        raise ContractError(f"{where}: expected a number in (0, 1], got {node!r}")
     return value
 
 

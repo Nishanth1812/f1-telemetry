@@ -25,12 +25,15 @@ conventions:
     dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale - the
     PLAN.md section 8.1 taxonomy. `swap` requires a non-empty `corners` list.
   provenance: >-
-    Every channel carries one of two labels, and they mean different things. `fia_limit`
+    Every channel carries one of three labels, and they mean different things. `fia_limit`
     means the channel's `range` is a regulation *operating limit* read out of a named
     clause of FIA 2026 Section C Issue 20 - a bound the car is required to stay inside,
-    not the span of a sensor. `illustrative` means the numbers are ours: a simulator
-    setting chosen to make the trace plausible, with no regulation behind it. Only `gear`
-    and `mgu_k_power_kw` are `fia_limit` today; every other `range`, `rate_hz`,
+    not the span of a sensor. `simulator_convention` means the underlying quantity is
+    regulated but the values on the wire are this project's: the FIA requires eight forward
+    ratios and a reverse gear, and does not say that reverse is the integer -1. `illustrative`
+    means the numbers are ours outright: a simulator setting chosen to make the trace
+    plausible, with no regulation behind it. Only `mgu_k_power_kw` is `fia_limit` today and
+    only `gear` is `simulator_convention`; every other `range`, `rate_hz`,
     `noise_model`/`sigma` and `quantise` in this file is an illustrative simulator setting
     and should be read as one. A `fia_limit` range is a limit, not a measurement span, so
     it may be asymmetric about zero and is deliberately not widened to cover a fault-free
@@ -298,15 +301,18 @@ channels:
     sigma: 0.0
     fault_eligible: [dropout, freeze, step, spike, stale]
     description: >-
-      ICE gearbox state: -1 reverse, 0 neutral, 1..8 forward. FIA sets eight forward
-      ratios and requires reverse; the integer encoding and neutral value are simulator
-      conventions. Discrete state, so no gaussian noise or analogue quantisation.
-    provenance: fia_limit
+      ICE gearbox state: -1 reverse, 0 neutral, 1..8 forward. C9.6.1 fixes eight forward
+      ratios and C9.7 requires the car to be drivable in reverse, so the gear *count* and the
+      existence of reverse are the regulation's; the integer encoding is a simulator
+      convention, as is the neutral value - no clause requires the car to select neutral in
+      ordinary operation, and none of them writes -1 anywhere. Discrete state, so no
+      gaussian noise or analogue quantisation.
+    provenance: simulator_convention
     source: >-
       FIA 2026 Formula One Regulations Section C Issue 20 (2026-08-05), C9.6.1 (eight
-      forward ratios) and C9.7 (reverse ratio),
+      forward ratios) and C9.7 (reverse drivability),
       https://www.fia.com/system/files/documents/fia_2026_f1_regulations_-_section_c_technical_-_iss_20_-_2026-08-05.pdf
-    source_date: 2026-09-30
+    source_date: 2026-10-02
 
   - name: throttle_pct
     group: powertrain
