@@ -116,19 +116,25 @@ and runs `npm run build --prefix web`.
 
 ## 6. Provisional `car_spec` provenance
 
-`car_spec.yaml` is versioned to FIA 2026 Section C Issue 16 (2026-02-27) as
-`PHASES.md` P0-T3 requires, and every value in it is a **placeholder**. It ships with:
+`car_spec.yaml` is now versioned to FIA 2026 Section C **Issue 20 (2026-08-05)**, the current
+issue of the official listing. P0 shipped it against Issue 16 (2026-02-27) as
+`PHASES.md` P0-T3 requires; P1-T1 re-verified it against Issue 20 and moved the pin. Values
+that were `plan`, `synthesised` or `provisional` in P0 remain so in spirit, but the claim
+mechanism is stronger - see section 8.
 
 * `spec.provenance: provisional`
 * `spec.calibration_status: uncalibrated`
-* `spec.source_date: 2026-09-30` - the date the placeholder was written, not a measurement
-  date, and stated as such in the file
-* `spec.confirmed_against_regulation_text: false`, `spec.confirmed_by: null`
+* `spec.source_date: 2026-09-30` - the date the P0 placeholder was written, not a
+  measurement date, and stated as such in the file
+* `spec.verified_against_document: true` and `spec.verified_on` - the P0 flag
+  `confirmed_against_regulation_text` was replaced by these in P1-T1, because "confirmed"
+  was ambiguous: P1-T1 confirmed the *regulation claims*, and said nothing about the
+  uncalibrated numbers. The new pair names one document, one date and one scope.
 
 `source_date` on every section records the same thing, and a section whose provenance is
-`plan`, `provisional` or `synthesised` without a `source_date` is an audit failure that
-`provenance_audit()` reports and a test asserts. That is the machine-checkable form of the
-cross-phase rule "every coefficient gets a provenance line". A nested block that declares
+`plan`, `provisional`, `synthesised` or `mixed` without a `source_date` is an audit failure
+that `provenance_audit()` reports and a test asserts. That is the machine-checkable form of
+the cross-phase rule "every coefficient gets a provenance line". A nested block that declares
 its own provenance line - `powertrain.ice` and `powertrain.mgu_k` - is audited the same way
 and reported at its dotted path, because a block making its own claim owes the same dating.
 
@@ -222,6 +228,82 @@ the spec. The result is `0 errors, 0 warnings`; a rule that is silenced without 
 here is how a type checker stops being a gate.
 
 **`polars` is not a dependency yet.** See the first entry above; it arrives with P5.
+
+## 8. Phase 1: every value is claimed, not just labelled (P1-T1)
+
+P0's rule was one `provenance` line per section, which is too coarse once a section holds both
+regulation limits and synthesised placeholders. `powertrain.ice` is the case that forced the
+change: C5.13.4 fixes the idle ceiling at 4000 rpm, while the torque curve in the same block
+is a synthesis and 400 kW is nowhere in the regulations. One section-level label cannot say
+that honestly.
+
+So each section now claims its numbers one at a time, in one of exactly two blocks:
+
+* `regulation: {value: {clause, page, quote}}` - read out of Issue 20, with the wording quoted
+  so a reviewer can check it without opening the PDF;
+* `not_regulated: {value: "why"}` - not a regulation number, with the reason and the source it
+  actually came from.
+
+A value claimed by both is an audit failure, not a warning: a number has one basis, and two
+claims mean one of them has gone stale. `provenance_audit()` enforces it, and
+`CarSpec.citations()` exposes the resulting `path -> (clause, page)` map so a test can pin it.
+`docs/calibration.md` carries the method, the corrections against Issue 20, and the synthesis
+assumptions.
+
+`provenance: mixed` is the new section-level value meaning "some values regulated, some not",
+and it requires a `source_date` like the other dated ones.
+
+**A cited curve may need a breakpoint the clause does not state.** `derived_points` inside a
+`regulation` claim names the curve speeds that are *not* in the quoted text, each with the
+reason. The deployment curve needs one: C5.2.8 gives two linear segments meeting at 340 km/h,
+but `1800 - 5v` reaches C5.2.7's 350 kW cap at 290 km/h, so the sampled curve turns there. The
+**limit** at that point is the regulation's; only the **speed** is derived. Without this the
+curve reads as four regulated points, and the disclosure lives only in `quote` prose that no
+check can see. `CarSpec.derived_points()` reports it beside `citations()`.
+
+**Two P0 keys were renamed rather than re-cited.** `tyres.nominal_width_mm: 305.0` became
+`front_width_mm: 315.0` and `rear_width_mm: 401.3` (C10.7.2 is a per-axle mounting width, and
+305 mm is a 2022-era number), and `chassis.floor_width_m: 1.9` became `chassis.overall_width_m`
+because `PLAN.md` §5's "floor width" is actually the C2.3.1 overall-width limit. Citing a
+clause whose wording does not match the key name is exactly the error this mechanism exists to
+prevent, so the keys were corrected rather than left with a plausible-looking citation.
+
+**`integration.dt_s` is new.** The fixed 100 us step moved from being a kernel constant to a
+data value, so changing it is a YAML edit. Nothing in Section C sets a simulation step, so it
+is claimed `not_regulated` with `PLAN.md` §4 as the reason.
+
+**`CarSpec.kernel_config()` is the one-way boundary.** It returns flat scalars and contiguous
+writable `float64` arrays, range-checked in Python, so the kernel receives numbers and never
+YAML. That is `PLAN.md` §4.1 rules 1 and 3 made concrete. A zero rolling radius, a negative
+deployment limit or mismatched `Cl`/`Cd` speed grids raise `ContractError` before any array
+reaches Numba.
+
+**The boundary is built on access, not cached.** `CarSpec.build_kernel_config()` is the only
+place these numbers are validated, and `kernel_config()` calls it every time. Two earlier
+versions failed here, and both are worth recording because they are the same mistake twice:
+
+*Validating lazily from the raw document.* `kernel_config()` used to read most values back out
+of `raw` while reaching the typed fields for others — two routes to every coefficient, split
+line by line rather than by a rule, which is exactly the drift the cross-phase rules exist to
+prevent. Now a value `CarSpec` already holds as a typed field is read from that field, and only
+the P1 inputs beyond the P0 field set are parsed from raw.
+
+*Caching the result at load.* `load_car_spec` then built the `KernelConfig` eagerly and stored
+it on the spec. That desynchronised under `dataclasses.replace`: `replace(spec, mass_kg=900)`
+returned a spec reporting 800 kg, because the cached config survived the replacement. A spec
+built by hand or replaced by a caller also skipped validation entirely, since the checks only
+ran inside the loader. Building on access costs a few array constructions per call — trivial
+next to a 10 kHz run — and removes a whole class of stale-config bug.
+
+**`chassis.c42_enforcement` records what cannot yet be enforced.** C4.2's 0.44 / 0.54 axle
+minima are fractions of the C4.1 Minimum Mass, which is 724 kg *plus* a Nominal Tyre Mass the
+tyre provider measures and publishes before the Championship (C4.7) — a published figure this
+project has not looked up, not something the regulations withhold. The clause is also
+Qualifying-only. So the floors cannot be compared against `mass.total_kg` without enforcing a
+rule that does not exist, and would not govern most P1 scenarios in any case. The loader checks
+only that `front_weight_fraction` is in (0, 1); the floors stay in the file as cited data, out
+of `KernelConfig` because a longitudinal kernel has no axle, and the gap is recorded as
+`status: not_enforced` with the missing input named and `becomes_checkable_at: P2-T2`.
 
 **Generated type aliases use `TypeAlias`, not the PEP 695 `type` statement.** ruff's
 `UP040` prefers the new form, but ruff mis-analyses `type X = 'a' | 'b'` and reports every

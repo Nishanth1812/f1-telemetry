@@ -1,0 +1,764 @@
+"""Phase 1 straight-line scenarios run over the existing physics APIs.
+
+`PHASES.md` P1-T8 asks for scenarios, and `tasks/todo.md` Task 5 asks that each one run from
+fixed initial conditions and emit traces through the existing testing/record pattern. This
+file covers that path and nothing wider:
+
+* **The behaviour each scenario exists to show.** A standing launch starts from rest in first
+  gear and moves on a **declared** engine speed rather than a wheel-derived one; the gearbox moves
+  *only* where the scenario asks, and each request cuts the driveline for the configured shift
+  time; a neutral selection transmits exactly nothing and selecting first gear again restores it;
+  a coasting car decelerates against drag alone and drag grows with speed; caller brake torque
+  decelerates the car and its wheels; the MGU-K is blocked below 50 km/h in a declared standing
+  start, drains the store when it deploys, refills it when it regenerates, without exceeding
+  C5.2.7's 350 kW, and in the high-speed run it deploys only inside its one declared window and is
+  absent from the ICE-only terminal tail.
+* **The contracts the runner has to honour.** Caller-owned state, no clock and no random
+  source, byte-identical repeat runs, and refusals for a duration that is not a whole number of
+  kernel steps and for pedals, requests or brake torque it could not use.
+* **The produced records.** Only contract channels are published, every published value stays
+  inside the range `channels.yaml` declares for it, and `PLAN.md` section 11's invariants,
+  including the discrete chassis and wheel energy balance, run against the real traces.
+* **Straight-line references are used according to their evidence.** The coarse 0-100 km/h time
+  and terminal speed are printed for review, but neither is assigned an unsupported tolerance.
+  The high-speed run's transient maximum is checked against the cited 325.8 km/h reachability floor;
+  it is kept separate from terminal speed.
+
+No coefficient is tuned here. The coarse 0–100 result is reported without a performance band, and
+the transient top-speed check uses the cited FIA reachability floor; all other physical inputs come
+from `car_spec.yaml` or regulation limits enforced by the physics.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Final
+
+import numpy as np
+import pytest
+
+from f1telemetry.generated.channels import CHANNELS, DTYPES
+from f1telemetry.physics import gearbox  # noqa: TID251 -- the scenarios drive this API
+from f1telemetry.testing import scenarios
+from f1telemetry.testing.invariants import (
+    check_energy_balance,
+    check_gearbox_progression,
+    run_all,
+)
+from f1telemetry.testing.records import CORNERS
+
+if TYPE_CHECKING:
+    from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
+    from f1telemetry.testing.scenarios import Scenario, ScenarioRun
+
+pytestmark = [pytest.mark.kernel, pytest.mark.invariant]
+
+# The two straight-line references in `PLAN.md` §11.1 and `docs/calibration.md` §6. The 0–100
+# median is reported without a pass/fail band because its ±0.30 s is feed quantisation; 325.8 km/h
+# is an event speed-trap reachability floor checked against transient maximum, never terminal speed.
+ZERO_TO_HUNDRED_REFERENCE_S: Final[float] = 2.32
+TOP_SPEED_REACHABILITY_KMH: Final[float] = 325.8
+
+
+@pytest.fixture(scope="module")
+def config(spec: CarSpec) -> KernelConfig:
+    """The validated, flat configuration the scenarios run on."""
+    return spec.kernel_config()
+
+
+@pytest.fixture(scope="module")
+def suite(config: KernelConfig) -> Mapping[str, Scenario]:
+    """The named scenario set, every input of which is read from `config`."""
+    return scenarios.build_scenarios(config)
+
+
+@pytest.fixture(scope="module")
+def runs(config: KernelConfig, suite: Mapping[str, Scenario]) -> Mapping[str, ScenarioRun]:
+    """Every scenario run once. A run is the expensive thing here, so it is not repeated."""
+    return {name: scenarios.run_scenario(config, scenario) for name, scenario in suite.items()}
+
+
+def _windows(run: ScenarioRun, scenario: Scenario) -> tuple[slice, ...]:
+    """One recorded-step slice per segment, in scenario order.
+
+    ``run_scenario`` requires every segment to be a whole number of control intervals, so the
+    recorded windows line up with the segments exactly and a test can say "during this segment"
+    without recomputing a time base.
+    """
+    windows: list[slice] = []
+    first = 0
+    for segment in scenario.segments:
+        recorded = round(segment.duration_s / run.dt_s) // run.control_steps
+        windows.append(slice(first, first + recorded))
+        first += recorded
+    return tuple(windows)
+
+
+# ------------------------------------------------------------------ behaviour: launch
+
+
+def test_a_standing_launch_starts_from_rest_in_first_gear(runs: Mapping[str, ScenarioRun]) -> None:
+    run = runs["standing_launch"]
+    steps = run.record.ground_truth
+    assert steps[0].vx_m_s == 0.0
+    assert steps[0].gear == 1
+    assert run.gears == (1,) * len(run.gears), "rpm alone must not move the gearbox (C9.8.1)"
+    assert run.record.ground_truth[-1].vx_m_s > 0.0
+    assert float(run.drivetrain.ice_power_w.max()) > 0.0, (
+        "the ICE delivers shaft power from the declared launch speed"
+    )
+    assert float(run.drivetrain.accel_m_s2.max()) > 0.0
+
+
+def test_each_segment_applies_its_caller_supplied_clutch_state(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    run = runs["standing_launch"]
+    for window, segment in zip(
+        _windows(run, suite[run.name]), suite[run.name].segments, strict=True
+    ):
+        assert np.all(run.drivetrain.clutch[window] == segment.clutch)
+
+
+def test_a_caller_supplied_engine_speed_is_what_a_clutch_slipping_launch_samples(
+    config: KernelConfig,
+) -> None:
+    """A declared crank speed has to reach the trace, or a launch interval lies about the engine.
+
+    While the clutch is slipping the crank is not geared to the wheels, so deriving rpm from wheel
+    speed pins a stationary launch at idle - and 2026 start telemetry reports the engine held near
+    12 000 rpm through exactly that interval. The segment therefore declares the speed itself, and
+    the trace has to report the declared number rather than the one the wheels imply.
+    """
+    declared = 12_000.0
+
+    def _run(override: float | None) -> ScenarioRun:
+        segment = scenarios.ScenarioSegment(
+            duration_s=0.5,
+            throttle=0.5,
+            clutch=0.5,
+            grid_standing_start=True,
+            ice_rpm_override=override,
+        )
+        plan = scenarios.Scenario("slipping_launch", 0.0, (segment,), "declared launch rpm")
+        return scenarios.run_scenario(config, plan)
+
+    with_override = _run(declared)
+    without = _run(None)
+
+    assert np.all(with_override.drivetrain.ice_rpm == declared)
+    assert without.drivetrain.ice_rpm[0] == config.idle_rpm, (
+        "without a declared speed the runner still derives one from the wheels, which pins a "
+        "stationary launch at idle - that is the behaviour the override exists to replace"
+    )
+    assert max(with_override.gears) == 1, "a declared 12 000 rpm is below the upshift point"
+    assert float(with_override.drivetrain.ice_power_w.max()) > float(
+        without.drivetrain.ice_power_w.max()
+    ), "a faster engine at the same pedal delivers more shaft power"
+    record_rpm = np.array([frame.values["ice_rpm"] for frame in with_override.record.frames])
+    assert np.all(record_rpm == declared), "the published channel carries the declared speed too"
+    assert all(step.mgu_k_power_w == 0.0 for step in with_override.record.ground_truth), (
+        "no motor was asked for anything, so no store energy moved"
+    )
+
+
+def test_the_built_launch_scenarios_declare_the_start_telemetry_engine_speed(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    """Both real launches have to use the override, or they report an idling engine.
+
+    ``ScenarioSegment.ice_rpm_override`` already has a mechanism test above, on a scenario built
+    for it. What that cannot see is whether a shipped scenario uses it, which is the failure this
+    covers: a launch whose rpm is derived from the wheels while the clutch slips is pinned at the
+    configured idle, and the run then measures a car that never revs. The declared interval is the
+    grid-start one and nothing else, so the override cannot creep out and quietly become the
+    whole run's engine speed.
+    """
+    assert scenarios.LAUNCH_ICE_RPM == 12_000.0
+    assert config.idle_rpm < scenarios.LAUNCH_ICE_RPM <= config.rev_limit_rpm, (
+        "the declared launch speed has to be a speed this car's engine is configured to reach"
+    )
+    for name in ("standing_launch", "accelerate_to_speed"):
+        run = runs[name]
+        scenario = suite[name]
+        assert any(segment.ice_rpm_override is None for segment in scenario.segments), (
+            f"{name} declares the engine speed for the whole run, not for its launch"
+        )
+        published = np.array([frame.values["ice_rpm"] for frame in run.record.frames])
+        for window, segment in zip(_windows(run, scenario), scenario.segments, strict=True):
+            if segment.ice_rpm_override is None:
+                continue
+            assert segment.grid_standing_start, "only a grid-start segment may declare launch rpm"
+            assert segment.clutch < 1.0, (
+                "the override is only valid while the clutch slips and decouples engine speed "
+                "from the wheels"
+            )
+            assert segment.ice_rpm_override == scenarios.LAUNCH_ICE_RPM
+            assert np.all(run.drivetrain.ice_rpm[window] == scenarios.LAUNCH_ICE_RPM), (
+                "the trace reports the declared engine speed, not the wheel-derived one"
+            )
+            assert np.all(published[window] == scenarios.LAUNCH_ICE_RPM), (
+                "and the published channel carries the declared speed with it"
+            )
+
+
+def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    """The crossing is measured and reported against the reference in ``docs/calibration.md`` §6.
+
+    That reference is a median of six ~3.7 Hz telemetry crossings: a coarse observation with no
+    published figure behind it, whose ±0.30 s is the feed's quantisation rather than a tolerance
+    on this car. So this test **reports** the gap instead of asserting a pass, and there is no
+    band here to widen - the P1 performance gate stays open in `tasks/todo.md` until someone
+    measures both numbers deliberately and records the result.
+    """
+    run = runs["accelerate_to_speed"]
+    crossing = np.flatnonzero(run.trace[:, 1] >= 100.0 / 3.6)
+    assert run.trace[0, 1] == 0.0, "the run starts from rest, so the window includes the launch"
+    assert crossing.size, "the scenario must reach 100 km/h for the crossing to be measured"
+    measured_s = float(crossing[0] * run.dt_s)
+    gap_s = measured_s - ZERO_TO_HUNDRED_REFERENCE_S
+    print(
+        f"0-100 km/h measured {measured_s:.4f} s from rest against the cited "
+        f"{ZERO_TO_HUNDRED_REFERENCE_S} s reference (PLAN.md section 11.1): "
+        f"{gap_s:+.4f} s. Reported, not asserted - the reference carries no tolerance."
+    )
+
+
+def test_full_throttle_reaches_top_gear_and_ends_in_an_ice_only_tail(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    """The terminal speed is measured over a stretch where the motor asked for nothing.
+
+    C5.2.7's cap, the store's 4 MJ window and the gearbox's caller-owned shift requests are
+    unchanged; what changed is that the last segment of this run is explicitly motor-free, so the
+    number quoted as terminal speed is a settled ICE-only asymptote rather than a boost still being
+    spent.
+    """
+    run = runs["full_throttle"]
+    scenario = suite["full_throttle"]
+    windows = _windows(run, scenario)
+    tail = scenario.segments[-1]
+    assert max(run.gears) == config.gear_ratios.size, "the requests are what put it in eighth"
+    assert tail.mgu_k_request_nm == 0.0, "the terminal tail asks the motor for nothing"
+    assert tail.request is gearbox.GearRequest.HOLD, "and asks for no further gear"
+    assert np.all(run.drivetrain.mgu_k_power_w[windows[-1]] == 0.0), (
+        "no store energy moves during the terminal tail"
+    )
+    assert tail.duration_s >= 40.0, (
+        "the tail has to be long enough to settle; a shorter one measures a boost, not an "
+        "asymptote"
+    )
+
+
+def test_the_bounded_mgu_k_deployment_sits_in_the_high_speed_window(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    """Deployment where the run is meant to reach a high speed, and nowhere else.
+
+    Top gear is where a full C5.2.11 deployment is transmissible at all (see the module docstring),
+    and a brief window is what makes the deployment bounded: the store, not the scenario, decides
+    when it runs out.
+    """
+    run = runs["full_throttle"]
+    scenario = suite["full_throttle"]
+    windows = _windows(run, scenario)
+    deployment = [
+        i for i, segment in enumerate(scenario.segments) if segment.mgu_k_request_nm > 0.0
+    ]
+    assert len(deployment) == 1, "one brief deployment, not a motor-assisted run"
+    index = deployment[0]
+    assert 0 < index < len(scenario.segments) - 1, "the deployment is followed by an ICE-only tail"
+    assert scenario.segments[index].mgu_k_request_nm == pytest.approx(
+        config.mgu_k_torque_limit_nm / config.mgu_k_crankshaft_ratio, rel=1e-12
+    ), "the request is C5.2.11's crank-referenced limit at the shaft, not a new number"
+    assert scenario.segments[index].duration_s == 3.0, "the requested deployment window is bounded"
+    assert all(
+        int(run.drivetrain.gear[window][0]) == config.gear_ratios.size
+        for window in windows[index:]
+    ), "the deployment happens in top gear, where the motor can actually be used"
+    speeds_km_h = np.array([step.vx_m_s for step in run.record.ground_truth]) * 3.6
+    assert speeds_km_h[windows[index]].min() > config.launch_speed_kmh, (
+        "C5.2.12's launch block is not in play this far up, so the deployment is the motor's own"
+    )
+    power = run.drivetrain.mgu_k_power_w
+    assert np.all(power[windows[index]] > 0.0), (
+        "a deployment spends the store, in the positive direction"
+    )
+    cap_w = config.mgu_k_peak_power_kw * 1_000.0
+    assert float(power[windows[index]].max()) <= cap_w, "C5.2.7's 350 kW"
+    soc = run.drivetrain.soc_mj
+    assert soc[windows[index].start] > soc[windows[index].stop - 1]
+    assert np.all(soc >= 0.0) and np.all(soc <= config.store_energy_mj), "C5.2.9's window"
+    outside = np.concatenate([power[: windows[index].start], power[windows[index].stop :]])
+    assert np.all(outside == 0.0), "no other segment of this run moves the store"
+
+
+def test_the_transient_maximum_speed_is_measured_apart_from_the_terminal_speed(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    """Two quantities, two stretches, neither standing in for the other.
+
+    The reachability floor in `PLAN.md` §11.1 is compared against the **maximum** speed the run
+    reaches, deployment included; the terminal speed is a separate result with no event-trap
+    target. This test measures and reports both separately, and checks only that the transient
+    maximum clears the cited reachability floor; that floor is not a terminal-speed target.
+    """
+    run = runs["full_throttle"]
+    scenario = suite["full_throttle"]
+    tail_window = _windows(run, scenario)[-1]
+    transient_km_h = float(run.trace[:, 1].max()) * 3.6
+    terminal_km_h = float(run.trace[-1, 1]) * 3.6
+    tail_km_h = float(run.trace[tail_window.start, 1]) * 3.6
+    last_five = run.trace[-round(5.0 / run.dt_s) :, 1]
+    drift_km_h = float((last_five[-1] - last_five[0]) * 3.6)
+    print(
+        f"full_throttle transient maximum {transient_km_h:.4f} km/h (the reachability-floor "
+        f"quantity, {transient_km_h - TOP_SPEED_REACHABILITY_KMH:+.4f} km/h against the cited "
+        f"{TOP_SPEED_REACHABILITY_KMH} km/h floor), terminal {terminal_km_h:.4f} km/h after a "
+        f"{tail_km_h:.4f} km/h ICE-only tail entry, {drift_km_h:+.4f} km/h over its last five "
+        f"seconds. The transient maximum is asserted against its floor; terminal speed is not."
+    )
+    assert transient_km_h >= TOP_SPEED_REACHABILITY_KMH, (
+        "the transient maximum, not the terminal speed, must reach the cited FIA speed-trap floor"
+    )
+    assert abs(drift_km_h) < 1.0, (
+        "the last five seconds of an ICE-only tail are the settled speed, not a residual climb"
+    )
+
+
+def test_the_launch_grip_keeps_the_rear_tyres_inside_their_peak(
+    runs: Mapping[str, ScenarioRun], config: KernelConfig
+) -> None:
+    """The demanded torque must stay inside what the tyre can hold, or the wheel runs away.
+
+    With no traction control (C9.1.2) a demand above the Magic Formula's peak has no
+    equilibrium: the wheel accelerates, slip grows past the peak and the force falls further
+    still. That is the correct behaviour of the model, but it is not a usable scenario trace,
+    so the launch is required to stay below the demand that would cause it.
+
+    **Open since the launch declared its engine speed.** ``scenarios.LAUNCH_ICE_RPM`` raises the
+    first-gear demand several times over on these synthetic tyres, so this assertion is expected
+    to need re-deriving against a measured run rather than to be quietly weakened; nothing was run
+    after that wiring went in, so which way it goes is not recorded. `tasks/todo.md` Task 5 keeps
+    it open.
+    """
+    run = runs["standing_launch"]
+    for corner in ("RL", "RR"):
+        kappa = [step.wheels[CORNERS.index(corner)].kappa for step in run.record.ground_truth]
+        assert max(kappa) < 1.0, f"{corner} slip ratio reached {max(kappa)}, which is past the peak"
+
+
+# ---------------------------------------------------------------- behaviour: shifting
+
+
+@pytest.mark.parametrize("name", ["full_throttle_shifts", "full_throttle"])
+def test_the_gearbox_moves_only_where_the_scenario_asks(
+    name: str, runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    """Every requested change, in its own segment, and no unrequested one anywhere.
+
+    ``full_throttle`` is in this list because it now carries a motor deployment as well as the
+    upshifts: a run whose mid-segment MGU-K request could move the box would be a gearbox bug, and
+    this is the assertion that says the seven requests are still the only thing that does.
+    """
+    run = runs[name]
+    scenario = suite[name]
+    gears = np.asarray(run.gears)
+    changes = np.flatnonzero(np.diff(gears) != 0)
+    requested = [
+        i
+        for i, segment in enumerate(scenario.segments)
+        if segment.request is gearbox.GearRequest.UP
+    ]
+    assert len(changes) == len(requested)
+    windows = _windows(run, scenario)
+    for change, index in zip(changes.tolist(), requested, strict=True):
+        assert windows[index].start <= change + 1 < windows[index].stop, (
+            f"the gear changed at recorded step {change + 1}, outside segment {index}"
+        )
+        assert int(gears[change + 1]) == int(gears[change]) + 1, (
+            "one request moves one gear (C9.8.3)"
+        )
+    assert gears.max() == len(requested) + 1
+
+
+def test_a_requested_shift_cuts_the_driveline_for_the_configured_shift_time(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    run = runs["full_throttle_shifts"]
+    scenario = suite["full_throttle_shifts"]
+    cut_steps = round(config.shift_time_s / config.dt_s)
+    offset = 0
+    for segment in scenario.segments:
+        if segment.request is gearbox.GearRequest.UP:
+            active = np.flatnonzero(run.drive_torque_nm[offset:] != 0.0)
+            resumed = offset + int(active[0])
+            cut = resumed - offset
+            assert cut_steps <= cut <= cut_steps + 1
+            assert np.all(run.drive_torque_nm[offset:resumed] == 0.0)
+        offset += round(segment.duration_s / run.dt_s)
+    assert config.shift_time_s <= config.shift_time_max_up_s, "C9.8.4's up-change limit"
+
+
+# ------------------------------------------------------- behaviour: coast and neutral
+
+
+def test_neutral_transmits_nothing_and_first_gear_restores_the_torque(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    run = runs["coast_neutral"]
+    scenario = suite["coast_neutral"]
+    windows = _windows(run, scenario)
+    neutral = next(
+        index
+        for index, segment in enumerate(scenario.segments)
+        if segment.request is gearbox.GearRequest.NEUTRAL
+    )
+    after = next(
+        index
+        for index, segment in enumerate(scenario.segments)
+        if index > neutral and segment.request is gearbox.GearRequest.UP
+    )
+    assert scenario.segments[neutral].throttle == 1.0, "the engine is still asked for full torque"
+    assert np.all(run.drivetrain.drive_torque_nm[windows[neutral]] == 0.0)
+    after_shift = windows[after].start + round(config.shift_time_s / run.record_dt_s) + 1
+    assert np.all(run.drivetrain.drive_torque_nm[after_shift : windows[after].stop] > 0.0)
+    assert all(gear == 0 for gear in run.gears[windows[neutral]])
+
+
+def test_a_coasting_car_slows_against_drag_and_the_drag_grows_with_speed(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    run = runs["coast_neutral"]
+    scenario = suite["coast_neutral"]
+    neutral = next(
+        index
+        for index, segment in enumerate(scenario.segments)
+        if segment.request is gearbox.GearRequest.NEUTRAL
+    )
+    window = _windows(run, scenario)[neutral]
+    speeds = np.array([step.vx_m_s for step in run.record.ground_truth[window]])
+    drag = np.array([step.drag_w for step in run.record.ground_truth[window]])
+    accel = run.drivetrain.accel_m_s2[window]
+    assert np.all(np.diff(speeds[1:]) < 0.0), "nothing but drag acts after neutral selection"
+    assert np.all(accel[1:] < 0.0)
+    assert np.all(drag < 0.0), "drag power is signed against forward motion"
+    assert abs(drag[-1]) < abs(drag[0]), "drag power falls as the car's speed falls"
+    assert abs(drag[-1] / speeds[-1]) < abs(drag[0] / speeds[0]), (
+        "drag force grows approximately with speed squared"
+    )
+
+
+# ------------------------------------------------------------------ behaviour: braking
+
+
+def test_caller_brake_torque_decelerates_the_car_and_all_four_wheels(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    run = runs["braking"]
+    scenario = suite["braking"]
+    braking = next(
+        index for index, segment in enumerate(scenario.segments) if segment.brake_torque_nm < 0.0
+    )
+    window = _windows(run, scenario)[braking]
+    steps = run.record.ground_truth[window]
+    assert all(step.ax_m_s2 < 0.0 for step in steps[1:])
+    first, last = steps[0], steps[-1]
+    assert last.vx_m_s < first.vx_m_s
+    for corner in CORNERS:
+        before = first.wheels[CORNERS.index(corner)]
+        after = last.wheels[CORNERS.index(corner)]
+        assert after.fx_n < 0.0, f"{corner} produces no braking force"
+        assert after.kappa < 0.0, f"{corner} does not slow relative to the road"
+        assert after.fx_n != before.fx_n
+
+
+# ------------------------------------------------------------------- behaviour: MGU-K
+
+
+def test_the_standing_start_rule_blocks_mgu_deployment_below_fifty_km_h(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    run = runs["mgu_k_standing_start"]
+    scenario = suite["mgu_k_standing_start"]
+    blocked = next(
+        index
+        for index, segment in enumerate(scenario.segments)
+        if segment.grid_standing_start and segment.mgu_k_request_nm > 0.0
+    )
+    window = _windows(run, scenario)[blocked]
+    speeds_km_h = np.array([step.vx_m_s for step in run.record.ground_truth[window]]) * 3.6
+    assert np.all(speeds_km_h < config.launch_speed_kmh), "the rule only applies below 50 km/h"
+    assert np.all(run.drivetrain.mgu_k_power_w[window] == 0.0), (
+        "C5.2.12 blocks positive MGU-K torque in a declared grid standing start"
+    )
+    assert np.ptp(run.drivetrain.soc_mj[window]) == 0.0, "a blocked motor moves no energy"
+
+
+def test_mgu_k_deployment_drains_the_store_and_regeneration_refills_it(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    run = runs["mgu_k_deploy_regen"]
+    scenario = suite["mgu_k_deploy_regen"]
+    windows = _windows(run, scenario)
+    deploy = next(
+        index
+        for index, segment in enumerate(scenario.segments)
+        if segment.mgu_k_request_nm > 0.0 and not segment.grid_standing_start
+    )
+    regen = next(
+        index for index, segment in enumerate(scenario.segments) if segment.mgu_k_request_nm < 0.0
+    )
+    soc = run.drivetrain.soc_mj
+    assert soc[windows[deploy].start] > soc[windows[deploy].stop - 1], (
+        "deployment does not drain the store"
+    )
+    assert np.all(run.drivetrain.mgu_k_power_w[windows[deploy]] > 0.0)
+    assert soc[windows[regen].stop - 1] > soc[windows[regen].start], (
+        "regeneration does not refill the store"
+    )
+    assert np.all(run.drivetrain.mgu_k_power_w[windows[regen]] < 0.0)
+    assert np.all(run.drivetrain.lap_recharge_mj[windows[regen]] > 0.0), "C5.2.10's budget is used"
+    assert np.all(soc >= 0.0) and np.all(soc <= config.store_energy_mj), (
+        "the store stays inside C5.2.9's window"
+    )
+
+
+def test_mgu_k_power_is_reported_in_watts_and_is_driven_against_the_electrical_cap(
+    runs: Mapping[str, ScenarioRun], config: KernelConfig
+) -> None:
+    """The reported store-side power must be the C5.2.7 quantity, in watts.
+
+    ``-d(SOC)/dt`` is MJ/s over a buffer C5.2.9 states in MJ, so the W-named column was reporting
+    a millionth of the power it claimed. Dividing that by 1 000 to compare it with a kW cap is what
+    let the test pass while proving nothing: 0.35 was read as 0.35 kW against a 350 kW cap. A cap
+    assertion is only worth anything if the value it measures reaches the cap.
+    """
+    run = runs["mgu_k_deploy_regen"]
+    power_w = np.abs(run.drivetrain.mgu_k_power_w)
+    cap_w = config.mgu_k_peak_power_kw * 1_000.0
+
+    assert float(power_w.max()) <= cap_w, "C5.2.7's 350 kW"
+    assert float(power_w.max()) >= 0.99 * cap_w, (
+        "the motor is asked for C5.2.11's full crank-referenced torque at the run's own engine "
+        "speed, so the store-side power has to reach the cap. A MJ/s figure in a W column is a "
+        "millionth of this and the assertion above would pass without it moving anything"
+    )
+    regen_w = -float(run.drivetrain.mgu_k_power_w.min())
+    assert regen_w >= 0.5 * cap_w, "regeneration moves real energy too"
+
+
+def test_mgu_k_power_matches_the_stored_energy_it_claims_to_measure(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    """Cross-check the watts against the store trace, so the unit is fixed by two quantities.
+
+    The SOC column and the power column are recorded from the same buffer, so the one has to be
+    the time integral of the other in watts. This ties the two together independently of the cap,
+    which both would pass if the units were wrong in the same way.
+    """
+    run = runs["mgu_k_deploy_regen"]
+    soc = run.drivetrain.soc_mj
+    # A recorded step spans control_steps kernel steps and the SOC delta is per step, so the
+    # interval power is the whole SOC change over the interval that produced it.
+    change_mj = np.diff(soc)
+    elapsed_s = np.full(change_mj.shape, run.record_dt_s)
+    expected_w = -change_mj / elapsed_s * 1.0e6
+    reported_w = run.drivetrain.mgu_k_power_w[:-1]
+
+    moving = np.abs(change_mj) > 0.0
+    assert moving.sum() > len(change_mj) // 2, "most of the run must actually move the store"
+    assert np.allclose(reported_w[moving], expected_w[moving], rtol=0.02, atol=1.0)
+    assert np.all(np.sign(reported_w) == np.sign(-change_mj)), (
+        "deployment spends the store and regeneration fills it, in the same direction of sign"
+    )
+
+
+# --------------------------------------------------------------- invariants and records
+
+
+def test_every_phase_one_invariant_passes_on_the_produced_records(
+    runs: Mapping[str, ScenarioRun], spec: CarSpec, suite: Mapping[str, Scenario]
+) -> None:
+    for name, run in runs.items():
+        for result in run_all(run.record, spec, scenarios.PHASE_ONE_INVARIANTS):
+            assert result.passed, f"{name}: {result.summary()}"
+
+
+def test_invariant_seven_accepts_legal_neutral_selection(
+    runs: Mapping[str, ScenarioRun], spec: CarSpec
+) -> None:
+    for run in runs.values():
+        assert not check_gearbox_progression(run.record, spec), run.name
+    assert any(gear == 0 for gear in runs["coast_neutral"].gears)
+
+
+def test_the_energy_invariant_gates_the_actual_chassis_and_wheel_energy_balance(
+    runs: Mapping[str, ScenarioRun], spec: CarSpec
+) -> None:
+    for run in runs.values():
+        assert not check_energy_balance(run.record, spec), run.name
+        fractions = [step.energy_residual_fraction for step in run.record.ground_truth]
+        assert all(value is not None and np.isfinite(value) for value in fractions), run.name
+        assert max(value for value in fractions if value is not None) < 0.01, run.name
+
+
+def test_energy_invariant_rejects_a_real_run_record_over_one_percent(
+    runs: Mapping[str, ScenarioRun], spec: CarSpec
+) -> None:
+    from dataclasses import replace
+
+    run = runs["standing_launch"]
+    steps = list(run.record.ground_truth)
+    steps[1] = replace(steps[1], energy_residual_fraction=0.0101)
+    record = replace(run.record, ground_truth=tuple(steps))
+    result = check_energy_balance(record, spec)
+    assert len(result) == 1
+    assert result[0].where == "step 1"
+
+
+def test_the_published_channels_are_contract_channels_inside_their_declared_ranges(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    for name, run in runs.items():
+        for channel in run.record.channels:
+            assert channel in CHANNELS, (
+                f"{name} publishes {channel!r}, which is not in the contract"
+            )
+            spec = CHANNELS[channel]
+            assert spec.dtype in DTYPES
+            values = run.record.series(channel)
+            assert min(values) >= spec.range_min, f"{name}.{channel} below {spec.range_min}"
+            assert max(values) <= spec.range_max, f"{name}.{channel} above {spec.range_max}"
+
+
+def test_a_record_is_an_even_decimation_of_the_kernel_trace(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    for run in runs.values():
+        assert run.record.dt_s == run.control_steps * run.dt_s
+        assert len(run.record) == run.steps // run.control_steps + 1
+        assert run.trace.shape == (run.steps + 1, run.trace.shape[1])
+        assert [step.t_s for step in run.record.ground_truth] == pytest.approx(
+            [index * run.record.dt_s for index in range(len(run.record))]
+        )
+
+
+# ---------------------------------------------------------------------- determinism
+
+
+def test_two_runs_of_one_scenario_are_byte_identical(
+    config: KernelConfig, suite: Mapping[str, Scenario]
+) -> None:
+    scenario = suite["standing_launch"]
+    first = scenarios.run_scenario(config, scenario)
+    second = scenarios.run_scenario(config, scenario)
+    assert first.trace.tobytes() == second.trace.tobytes()
+    assert first.drive_torque_nm.tobytes() == second.drive_torque_nm.tobytes()
+    for field in ("gear", "soc_mj", "ice_rpm", "mgu_k_power_w"):
+        left = getattr(first.drivetrain, field)
+        right = getattr(second.drivetrain, field)
+        assert left.tobytes() == right.tobytes(), field
+
+
+# ----------------------------------------------------------------------- the boundary
+
+
+def test_a_duration_off_the_kernel_step_grid_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=0.10051)
+    scenario = scenarios.Scenario("off_grid", 0.0, (segment,), "off grid")
+    with pytest.raises(ValueError, match=r"whole number of .* kernel steps"):
+        scenarios.run_scenario(config, scenario)
+
+
+def test_a_segment_shorter_than_one_control_interval_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=config.dt_s * 5.0)
+    scenario = scenarios.Scenario("short", 0.0, (segment,), "shorter than one interval")
+    with pytest.raises(ValueError, match=r"control intervals"):
+        scenarios.run_scenario(config, scenario, control_steps=100)
+
+
+def test_a_pedal_outside_the_stroke_is_refused(config: KernelConfig) -> None:
+    for pedal in ({"throttle": 1.5}, {"clutch": -0.1}):
+        segment = scenarios.ScenarioSegment(duration_s=0.1, **pedal)  # pyright: ignore[reportArgumentType]
+        scenario = scenarios.Scenario("pedal", 0.0, (segment,), "bad pedal")
+        with pytest.raises(ValueError, match=r"must be in \[0, 1\]"):
+            scenarios.run_scenario(config, scenario)
+
+
+def test_a_brake_torque_that_drives_the_wheels_forward_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=0.1, brake_torque_nm=100.0)
+    scenario = scenarios.Scenario("brake", 0.0, (segment,), "brake with the wrong sign")
+    with pytest.raises(ValueError, match=r"brake torque"):
+        scenarios.run_scenario(config, scenario)
+
+
+def test_an_unknown_gear_request_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=0.1, request=9)  # pyright: ignore[reportArgumentType]
+    scenario = scenarios.Scenario("request", 0.0, (segment,), "unknown request")
+    with pytest.raises(ValueError, match=r"request"):
+        scenarios.run_scenario(config, scenario)
+
+
+def test_an_engine_speed_override_outside_the_configured_range_is_refused(
+    config: KernelConfig,
+) -> None:
+    """An override the engine could not be at is refused rather than clamped.
+
+    The derived rpm is clamped to ``[idle_rpm, rev_limit_rpm]`` because a wheel speed outside that
+    band is a gear-ratio artefact, not an engine speed. A *declared* speed outside it is different:
+    it is a caller stating the engine is turning faster than the rev limit, and clamping it would
+    quietly report a different engine speed than the one asked for - the same lie the override
+    exists to remove.
+    """
+    for override in (
+        config.idle_rpm - 1.0,
+        config.rev_limit_rpm + 1.0,
+        -12_000.0,
+    ):
+        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        scenario = scenarios.Scenario("rpm", 0.0, (segment,), "out of range")
+        with pytest.raises(ValueError, match=r"ice_rpm_override must be within"):
+            scenarios.run_scenario(config, scenario)
+
+
+def test_a_nonfinite_engine_speed_override_is_refused(config: KernelConfig) -> None:
+    for override in (math.nan, math.inf, -math.inf):
+        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        scenario = scenarios.Scenario("rpm", 0.0, (segment,), "nonfinite rpm")
+        with pytest.raises(ValueError, match=r"ice_rpm_override must be finite"):
+            scenarios.run_scenario(config, scenario)
+
+
+def test_the_configured_idle_and_rev_limit_are_legal_override_bounds(
+    config: KernelConfig,
+) -> None:
+    for override in (config.idle_rpm, config.rev_limit_rpm):
+        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        scenario = scenarios.Scenario("rpm", 0.0, (segment,), "bound")
+        run = scenarios.run_scenario(config, scenario)
+        assert np.all(run.drivetrain.ice_rpm == override)
+
+
+def test_a_nonfinite_mgu_k_request_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=0.1, mgu_k_request_nm=math.nan)
+    scenario = scenarios.Scenario("mgu", 0.0, (segment,), "nan request")
+    with pytest.raises(ValueError, match=r"mgu_k_request_nm must be finite"):
+        scenarios.run_scenario(config, scenario)
+
+
+def test_a_bias_vector_of_the_wrong_length_is_refused(config: KernelConfig) -> None:
+    segment = scenarios.ScenarioSegment(duration_s=0.1)
+    scenario = scenarios.Scenario(
+        "bias", 0.0, (segment,), "three brakes", brake_bias=(-1.0, -1.0, -1.0)
+    )
+    with pytest.raises(ValueError, match=r"brake_bias"):
+        scenarios.run_scenario(config, scenario)
+
+
+def test_an_unknown_scenario_name_is_refused(config: KernelConfig) -> None:
+    with pytest.raises(KeyError):
+        scenarios.scenario(config, "reverse_on_a_straight")

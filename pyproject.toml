@@ -68,9 +68,14 @@ ignore = [
 "src/f1telemetry/generated/*" = ["E501", "UP040"]
 "tests/*" = ["ANN001", "ANN201"]
 # The layer-isolation rule bans importing the physics kernel from layers 4-6. The
-# toolchain probe is the one place that has to import it, because proving the kernel
-# compiles is the whole point of P0-T1b.
+# toolchain probe, longitudinal kernel, force model, powertrain model and gearbox
+# model import compiled code because proving those kernels compile and produce the
+# right values is the point of the tests.
 "tests/test_numba_toolchain.py" = ["TID251"]
+"tests/test_longitudinal_kernel.py" = ["TID251"]
+"tests/test_forces.py" = ["TID251"]
+"tests/test_powertrain.py" = ["TID251"]
+"tests/test_gearbox.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "f1telemetry.physics" = { msg = "Layers 4-6 may not import from the physics core (PLAN.md section 3)." }
@@ -96,7 +101,12 @@ markers = [
   "golden: golden-trace regression comparison (reports, does not auto-fail)",
   "analytics: PLAN.md section 9 detection tables; no tests collected until P7",
   "codegen: contract/code-generation drift checks",
+  "contract: channels.yaml / car_spec.yaml schema, validation and provenance",
   "toolchain: environment and dependency toolchain probes",
+  "kernel: P1 physics kernel - fixed step, state layout, caller-owned buffers, determinism",
+  "forces: P1 aero and longitudinal tyre force model - Cl/Cd(v), dynamic pressure, slip ratio, Pacejka, grip limit",
+  "powertrain: P1 ICE torque curve and turbo-lag multiplier (P1-T4)",
+  "gearbox: P1 gearbox step - gear progression, shift timer, clutch engagement (P1-T5)",
 ]
 filterwarnings = ["error"]
 

@@ -536,12 +536,14 @@ artifacts rather than a demo:
 Non-negotiable. Without it "physics-based" is a claim, not a result.
 
 **Numeric targets.** Fix these against published figures during calibration and record the source.
-Treat the values below as order-of-magnitude sanity bounds to be confirmed, not as gospel:
+The two straight-line rows are now **external reference points with their uncertainty stated**,
+fixed before any parameter edit — see §11.1. The remaining rows are still order-of-magnitude sanity
+bounds to be confirmed, not as gospel:
 
-| Quantity | Expectation | Source to confirm |
+| Quantity | Expectation | Source |
 |---|---|---|
-| 0–100 km/h | ~2.5–3.0 s | published acceleration figures for 2026 PU power/mass |
-| Top speed | ~350–370 km/h | drag-limited solve, cross-checked vs published top speeds |
+| 0–100 km/h | reference **2.32 s**, uncertainty of order **±0.30 s** (§11.1) | coarse telemetry-derived median, 2026 Belgian GP race, OpenF1 `car_data` at ~3.7 Hz |
+| Top speed | a high-speed scenario must transiently reach **≥325.8 km/h** (§11.1) | FIA 2026 Australian GP race speed table, Ocon at Intermediate 2 — a reachability floor, not a terminal target |
 | Peak lateral g | ~4.5–5.5 g at high downforce | downforce from `car_spec`, grip from Pacejka `D` |
 | Peak longitudinal decel | ~−5 to −6 g | tire-road μ, brake torque limit, weight transfer |
 | 200–0 km/h braking distance | order ~4–6 s | derived, then checked against published braking data |
@@ -549,11 +551,92 @@ Treat the values below as order-of-magnitude sanity bounds to be confirmed, not 
 | Tire equilibrium temp | compound- and surface-dependent, plausible window | published tyre operating windows |
 | Energy balance | residual <1% | CI invariant, §6 |
 
+### 11.1 Straight-line reference points
+
+Two external observations that P1's straight-line work is measured against. Both were fixed
+**before** any parameter edit, so tuning cannot choose its own pass mark, and both are coarse: the
+first is a median read off a ~3.7 Hz feed, the second is one car's speed at one point on one
+circuit in one session. Neither is a published performance figure, and neither validates
+configuration-matched performance — a run that lands on either number has not thereby been shown
+to match the real car. Registering them does not close the P1 performance gate; the measured
+values miss both, which `PHASES.md` P1 and `tasks/todo.md` record.
+
+**0–100 km/h: reference 2.32 s, uncertainty of order ±0.30 s.**
+
+Derived as the **median of the six quickest clean first-motion-to-100 km/h crossings** in the
+2026 Belgian Grand Prix Race, computed from OpenF1 `car_data` for `session_key=11334` — drivers
+1, 16, 3, 12, 44 and 6 gave 2.12, 2.12, 2.32, 2.32, 2.32 and 2.60 s, whose median is 2.32 s.
+
+What that evidence is, and is not:
+
+- **Telemetry-derived, not a published figure.** No organisation publishes a 0–100 time for the
+  2026 car. This number was measured by this project from a public feed and carries that feed's
+  errors. It is not a homologation, press or manufacturer figure.
+- **Sampling rate ~3.7 Hz, and that dominates the uncertainty.** `car_data` is a decimated feed,
+  not the car's own telemetry, so the sample interval is ~0.27 s. Both endpoints of the window —
+  first motion and the 100 km/h crossing — are resolved only to the samples bracketing them, and
+  an individual crossing therefore carries up to ~0.27 s of quantisation uncertainty before
+  anything else is counted. Six crossings suppress an outlier; they do not reduce quantisation
+  error. **The quoted ±0.30 s is the size of that uncertainty, not a confidence interval on the
+  car's real capability.** A model agreeing with 2.32 s to inside it has been shown to fall
+  within the resolution of the feed, nothing more, so this number is a coarse reference and is
+  not a precise acceptance target.
+- **Window definition: first motion to 100 km/h includes the launch.** The window opens at motion
+  onset, so it contains the entire physical launch — clutch take-up, gear engagement, whatever
+  wheelspin the driven rear axle does — and excludes only the pre-motion delay before the car
+  starts moving, that is driver reaction and lights out. It is a launch-and-acceleration figure,
+  not a rolling one.
+- **Throttle is a power percentage, not a pedal position.** Per the OpenF1 documentation the
+  `car_data` `throttle` field is the "percentage of maximum engine power being used", while
+  `brake` is reported as whether the pedal is pressed. A throttle trace from this feed is
+  therefore not a pedal trace, and setting it against a model's commanded throttle compares two
+  differently-defined channels. Nothing in the feed reports what any driver aid was doing, and no
+  such mechanism is inferred here: the figure is simply what one car did on one afternoon.
+
+Source: [OpenF1 documentation](https://openf1.org/docs/) ·
+[`car_data` endpoint, `session_key=11334`](https://api.openf1.org/v1/car_data?session_key=11334)
+
+**Top speed: a transient reachability floor of 325.8 km/h, not a terminal target.**
+
+The 2026 Australian Grand Prix Race speed table published by the FIA records 325.8 km/h for Ocon
+at Intermediate 2.
+
+- **What it is.** One car, at one point on one circuit, in one session, and a **reachability
+  floor** and nothing more. A model that cannot reach 325.8 km/h anywhere has failed to reproduce
+  something a real 2026 car demonstrably did, and a high-speed scenario that never approaches it
+  says the drag-limited solve is too slow. A model that does reach it has demonstrated
+  reachability and nothing beyond it.
+- **What it is not.** It is **not a terminal or asymptotic speed, and an event speed trap is not
+  comparable to one** — the trap sits part-way down a straight where the car is still accelerating,
+  so the trap value and the drag-limited asymptote are different physical quantities, and matching
+  the first is not a validation of the second. No tolerance around 325.8 km/h is claimed, because
+  the observation's own uncertainty (fuel load, track and air temperature, wind, track evolution)
+  is not quantified here; it is not a target to hit exactly. It is not a season-wide figure
+  either — other events' speed tables report other numbers.
+- **The comparable model output is the scenario's maximum speed, not its terminal speed.** This
+  is a **transient maximum-speed / reachability check**: take the high-speed `full_throttle`
+  scenario, including any MGU-K deployment in it, and compare its **maximum** speed against
+  325.8 km/h. The same run's **terminal/asymptotic** speed remains a separate result, and there is
+  **no direct event-trap target for it** — a trap is a mid-straight reading with the car still
+  accelerating, so this project holds no published figure an asymptote should be matched against.
+- **This checks the combined propulsion/aero scenario, not the drag-limited solve alone.** The
+  maximum speed a finite run reaches is set by the whole path together — ICE and MGU-K power
+  through the gearbox, the tyre traction limit, and the `Cl`/`Cd` curves — so a shortfall against
+  the floor says something is wrong in that combination and does not localise to drag, power, or
+  grip on its own. `PLAN.md` §6 still derives terminal speed from the drag-limited solve in
+  `car_spec.yaml`; that stays a modelled result with no event-trap target attached.
+
+Source: [FIA 2026 Australian Grand Prix, Race/Qualifying results](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification)
+
 **Cross-check against real data.** OpenF1 serves historical `car_data` — speed, throttle, brake, rpm,
-gear — at ~3.7 Hz from 2023 onward, free, no auth. Run a scenario, decimate to 3.7 Hz, compare traces
-against a real session. This is the cheapest credibility win available and the original plan missed
-it entirely. It will not match exactly, and it should not; what it validates is that throttle and brake
-*timing and shape* are realistic, and that gear-shift points and rpm ranges are in the right place.
+gear — at ~3.7 Hz from 2023 onward, free, no auth. The same feed supplies the coarse 0–100
+reference above, so it is already a load-bearing input to this plan rather than an optional extra.
+Run a scenario, decimate to 3.7 Hz, compare traces against a real session. This is the cheapest
+credibility win available and the original plan missed it entirely. It will not match exactly, and
+it should not; what it validates is that throttle and brake *timing and shape* are realistic, and
+that gear-shift points and rpm ranges are in the right place. Compare **channel definitions** as
+well as values: the feed's `throttle` is a percentage of maximum engine power and its `brake` is a
+pedal-pressed flag, so neither is the same quantity as a model's commanded torque or brake torque.
 
 **Independent solver check.** Run the same `car_spec` through `fastest-lap` and compare lap times on
 a known circuit (§4).

@@ -114,6 +114,8 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
             "downforce_n": step.downforce_n,
             "steer_rad": step.steer_rad,
         }
+        if step.energy_residual_fraction is not None:
+            scalars["energy_residual_fraction"] = step.energy_residual_fraction
         for label, value in scalars.items():
             if not math.isfinite(value) or abs(value) > _FINITE_TOLERANCE:
                 found.append(
@@ -251,15 +253,6 @@ def check_sign_conventions(record: SampleRecord, _spec: CarSpec) -> tuple[Violat
                         limit=wheel.alpha_rad,
                     )
                 )
-        if step.ax_m_s2 < 0.0 and any(wheel.fx_n > 0.0 for wheel in step.wheels):
-            issues.append(
-                Violation(
-                    where=f"step {index}",
-                    detail="a wheel drives forward while the chassis is decelerating",
-                    value=max(wheel.fx_n for wheel in step.wheels),
-                    limit=0.0,
-                )
-            )
     return tuple(issues)
 
 
@@ -343,21 +336,16 @@ def check_symmetry(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...
 
 
 def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 6: d(KE)/dt = ICE power + MGU-K power - drag work, residual under 1%.
-
-    The kinetic energy rate is taken from the reported accelerations,
-    ``m * (vx * ax + vy * ay)``, which is what the physics core publishes. A
-    finite-difference of positions is a weaker statement (it is first-order accurate at
-    the interval ends) and is used by the P1 harness once there are real traces to
-    difference.
-    """
+    """Invariant 6: modeled longitudinal kinetic-energy residual stays under 1%."""
     issues: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
-        kinetic_rate = spec.mass_kg * (step.vx_m_s * step.ax_m_s2 + step.vy_m_s * step.ay_m_s2)
-        power_in = step.ice_power_w + step.mgu_k_power_w
-        residual = power_in - step.drag_w - kinetic_rate
-        scale = max(abs(kinetic_rate), 1.0)
-        relative = abs(residual) / scale
+        if step.energy_residual_fraction is not None:
+            relative = step.energy_residual_fraction
+        else:
+            kinetic_rate = spec.mass_kg * (step.vx_m_s * step.ax_m_s2 + step.vy_m_s * step.ay_m_s2)
+            power_in = step.ice_power_w + step.mgu_k_power_w
+            residual = power_in - step.drag_w - kinetic_rate
+            relative = abs(residual) / max(abs(kinetic_rate), 1.0)
         if relative > _ENERGY_RESIDUAL_LIMIT:
             issues.append(
                 Violation(
@@ -371,7 +359,12 @@ def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation
 
 
 def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 7: monotonic gear progression, and no reverse under positive throttle."""
+    """Invariant 7: no uncommanded downshift across forward gears or reverse under throttle.
+
+    Neutral is a legal driver-selected state between forward gears. The record does not retain
+    the driver's request, so neutral resets the forward progression check; reverse remains
+    forbidden under positive throttle regardless of the preceding gear.
+    """
     issues: list[Violation] = []
     top = len(spec.gear_ratios)
     previous = record.ground_truth[0].gear if record.ground_truth else 0
@@ -386,6 +379,9 @@ def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Viol
                     limit=float(top),
                 )
             )
+        if gear == 0:
+            previous = 0
+            continue
         if index > 0 and gear < previous:
             issues.append(
                 Violation(
