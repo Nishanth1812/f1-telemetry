@@ -702,3 +702,18 @@ fancy indexing.
 Review correction before commit: the first kernel draft added the full downforce to each of four
 contact patches. It now adds `downforce / 4` per wheel, and a one-step comparison against the
 independent tyre calculations checks the assembled result using the conserved total load.
+# Phase 1 slice 5: deterministic scenario checks and braking input
+
+Added caller-owned signed per-wheel brake torque to the wheel equation and compiled longitudinal
+kernel. The path does not redistribute torque and adds no ABS; equal four-wheel input is only a
+synthetic scenario. Documented that performance targets, brake capacity, hydraulics and bias remain
+unavailable or unmodelled. Focused physics/kernel/drivetrain checks: 228 passed; Ruff and
+basedpyright clean. Commit: `dee4226`.
+
+# Phase 1 slice 6: exit status and boundaries
+
+The new braking regression checks deceleration, front-wheel braking, deterministic replay, and
+shape/finiteness validation. The existing invariant suite passes (12 tests). Updated `PHASES.md`
+and `tasks/todo.md` to mark only demonstrated work; the Phase 1 exit gate remains open because no
+configuration-matched acceleration/top-speed target, real-run invariant report or independent
+solver comparison is recorded. Full-car F1 fidelity and compliance are not claimed.

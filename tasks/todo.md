@@ -71,13 +71,13 @@
 
 **Description:** Connect the synthesized ICE torque curve and MGU-K drive to the wheels through the specified drivetrain, including eight-speed shifts and clutch state.
 
-**Progress:** P1-T4 ICE torque curve is committed (`5ce583f`). P1-T5 gearbox/clutch (`ccd0f35`), P1-T4/P1-T6 powertrain limits (`34ac0e3`) and P1-T6/P1-T7 wheel state and force assembly are implemented and verified in their own work slices. Task 4's remaining work is a brake model (Article C11): nothing torques a wheel backwards yet except a caller passing negative drive torque. Ledger: `.superpowers/sdd/phase-1/progress.md` § Phase 1 slice 4.
+**Progress:** P1-T4 ICE torque curve is committed (`5ce583f`). P1-T5 gearbox/clutch (`ccd0f35`), P1-T4/P1-T6 powertrain limits (`34ac0e3`), P1-T6/P1-T7 wheel state and force assembly (`753b0b1`), and a caller-supplied signed per-wheel brake-torque path (`dee4226`) are implemented. Brake capacity, hydraulics and brake bias remain synthetic/unmodelled, so this is not a C11 compliance demonstration. Ledger: `.superpowers/sdd/phase-1/progress.md` § Phase 1 slices 4–6.
 
 **Acceptance criteria:**
 - [x] Gear ratios, final drive, shift limits, and clutch capacity come from `car_spec.yaml`; gearbox progression and positive-throttle reverse behavior satisfy invariant 7.
 - [ ] Launch, trailing throttle, and boost-cut/upshift exercise clutch state; low-speed wheel cases are covered by P1-T6/P1-T7.
 - [ ] ICE curve provenance and synthesis assumptions are documented; motor power is accounted for separately from ICE power.
-- [ ] Brake torque reaches the wheels under a C11 brake model, and left/right brake torque is symmetric per C11.1.2.
+- [x] Caller-supplied brake torque reaches each wheel independently; a symmetric case and deceleration are tested. Brake capacity and full C11 compliance remain open.
 
 **Verification:** Focused drivetrain tests for launch, shift boundaries, clutch transition, and wheel force direction.
 

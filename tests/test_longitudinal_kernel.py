@@ -180,8 +180,27 @@ def test_caller_brake_torque_slows_car_and_applies_to_front_wheels(config: Kerne
         config, steps, state, np.zeros(steps, dtype=np.float64),
         longitudinal.allocate(steps), brake_torque_nm=brake,
     )
+    replay = longitudinal.simulate(
+        config, steps, state, np.zeros(steps, dtype=np.float64),
+        longitudinal.allocate(steps), brake_torque_nm=brake,
+    )
     assert trace[-1, longitudinal.V_INDEX] < speed
     assert trace[-1, longitudinal.FL_WHEEL_INDEX] < state[longitudinal.FL_WHEEL_INDEX]
+    assert trace.tobytes() == replay.tobytes()
+
+
+def test_brake_torque_history_is_validated(config: KernelConfig) -> None:
+    state = longitudinal.initial_state()
+    drive = np.zeros(2, dtype=np.float64)
+    out = longitudinal.allocate(2)
+    with pytest.raises(ValueError, match=r"brake_torque_nm.*shape"):
+        longitudinal.simulate(
+            config, 2, state, drive, out, brake_torque_nm=np.zeros((2, 2), dtype=np.float64)
+        )
+    invalid = np.zeros((2, forces.WHEEL_COUNT), dtype=np.float64)
+    invalid[1, 0] = np.nan
+    with pytest.raises(ValueError, match="brake_torque_nm must be finite"):
+        longitudinal.simulate(config, 2, state, drive, out, brake_torque_nm=invalid)
 
 
 def _reference(

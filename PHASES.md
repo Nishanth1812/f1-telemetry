@@ -79,11 +79,19 @@ drive a real dashboard, every later phase is built on sand.
 - [ ] 0–100 km/h and top speed within the agreed tolerance of `PLAN.md` §11
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
-- [ ] Two identical runs produce byte-identical output
+- [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
 - [ ] `fastest-lap` comparison recorded — agree within a few percent, or the discrepancy is explained
 
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written
 explanation of which coefficient is wrong.
+
+**Implementation status (2026-10):** The approved six-slice longitudinal fidelity plan is
+implemented on `feat/phase-1`, including explicit drivetrain controls, 2026 powertrain limits,
+four-wheel force assembly, caller-supplied brake torque and deterministic behavior checks. The P1
+exit gate remains open: the broad `PLAN.md` performance ranges are not configuration-matched
+published targets, no real-run invariant report or `fastest-lap` comparison is recorded, and the
+generic aero/tyre/brake inputs remain synthetic. This work does not establish full F1-car fidelity
+or regulatory compliance.
 
 ---
 
