@@ -26,11 +26,37 @@ The claims are checked here in the form that would actually fail:
 * **Finite output.** Every force is finite over a range wider than the car can reach, including
   past the top of the aero table, where the curves are held flat instead of extrapolated.
 
+**The wheel rotational state (P1-T6/P1-T7)** is the other half of the same step, and its claims are
+checked in the form that would actually fail:
+
+* **C9.1.1 rear wheels only.** The two front wheels receive *exactly* ``0.0`` of drive torque, and
+  the two rear ones sum to the drivetrain torque that went in - not approximately, exactly, because
+  a model that quietly fed the front axle would still produce a plausible-looking straight-line run.
+* **Equal left/right split, declared synthetic.** Each rear wheel gets one half of the drivetrain
+  torque. There is no differential model, so the split is a symmetry assumption rather than a
+  prediction, and it is named as one rather than presented as a calibrated figure.
+* **No traction control and no limited-slip behaviour (C9.1.2, C9.9.1).** The drive torque a wheel
+  receives does not depend on that wheel's own speed, on the other rear wheel's speed, or on how
+  hard it is already spinning. That is what "no system capable of preventing driven wheels from
+  spinning under power" looks like in code: a faster wheel is not given less torque and is never
+  given a slower wheel's surplus. The *force* still falls off past the tyre's peak, so spin and
+  lock both arise on their own.
+* **Free-rolling fronts and the loop itself.** With no drive torque a front wheel obeys
+  ``I dω/dt = -Fx r`` exactly, a wheel rolling at ``ω r = v`` feels exactly nothing, and
+  ``I dω/dt = T_drive - Fx r`` holds to the last bit the arithmetic can carry.
+* **Zero and negative speed.** At rest the guarded slip ratio is finite and zero for a stationary
+  wheel; rolling backwards at ``ω r = v`` is zero slip too, and a stationary wheel under a
+  backwards-moving car is braking slip, which is the sign the reverse path depends on.
+* **Invalid state.** A wheel index outside ``0..3``, a fractional or boolean one, a nonfinite speed,
+  angular speed, torque or load, a nonpositive wheel inertia or rolling radius, a front weight
+  fraction outside ``(0, 1)``, and replaced aero arrays are all refused at the Python boundary
+  before any arithmetic happens.
+
 Every physical number comes from the loaded ``car_spec.yaml``, so this file contains no tuned
 constant. The one-way ``@njit`` boundary is the P0 convention: the primitives take flat scalars
 and ``float64`` arrays and are what a compiled kernel calls, while
-:func:`forces.step_forces` is the Python-facing composition that re-checks the configuration
-before use.
+:func:`forces.step_forces` and :func:`forces.step_wheel` are the Python-facing compositions that
+re-check the configuration before use.
 
 The ``forces`` marker keeps this apart from the ``kernel`` marker on the integrator: this file
 is about the numbers the integrator is fed, not about the scheme it integrates with.
@@ -174,12 +200,32 @@ def test_the_force_primitives_are_compiled_kernels_with_the_project_options(
     forces.dynamic_pressure_pa(50.0, config.air_density_kg_m3)
     forces.speed_curve(50.0, config.aero_speed_m_s, config.cl)
     forces.slip_ratio(52.0, 50.0, config.slip_ratio_min_speed_m_s)
+    forces.wheel_drive_torque_nm(forces.RL_WHEEL_INDEX, 2_000.0)
+    forces.static_wheel_load_n(
+        config.mass_kg * config.gravity_m_s2, config.front_weight_fraction, forces.FL_WHEEL_INDEX
+    )
+    forces.wheel_tyre_force_n(
+        50.0,
+        52.0 / config.rolling_radius_m,
+        2_000.0,
+        config.rolling_radius_m,
+        config.slip_ratio_min_speed_m_s,
+        config.pacejka_b,
+        config.pacejka_c,
+        config.pacejka_e,
+        config.pacejka_mu,
+    )
+    forces.wheel_angular_acceleration_rad_s2(1_000.0, 100.0, 0.36, 0.9)
     for function in (
         forces.dynamic_pressure_pa,
         forces.speed_curve,
         forces.aero_forces,
         forces.slip_ratio,
         forces.tyre_longitudinal_force,
+        forces.wheel_drive_torque_nm,
+        forces.static_wheel_load_n,
+        forces.wheel_tyre_force_n,
+        forces.wheel_angular_acceleration_rad_s2,
     ):
         name = function.py_func.__name__
         assert len(function.signatures) >= 1, f"{name} never compiled a signature"
@@ -675,3 +721,477 @@ def test_step_forces_validates_replaced_aero_arrays(config: KernelConfig) -> Non
     for broken in malformed:
         with pytest.raises(ValueError, match="step_forces: config"):
             forces.step_forces(broken, 60.0, 66.0, 4_000.0)
+
+
+def test_only_the_rear_wheels_receive_drive_torque_and_the_split_is_equal(
+    config: KernelConfig,
+) -> None:
+    """C9.1.1: "The transmission may only drive the two rear wheels."
+
+    The front wheels receive *exactly* zero rather than a small number, because an equal-split
+    implementation applied to the wrong axle produces a straight-line run that still accelerates
+    plausibly - the failure this test exists for is invisible in the trace and obvious here. The
+    conservation half is the other direction of the same claim: the four torques must sum to the
+    drivetrain torque that went in, so the split cannot quietly lose torque on its way to the road.
+    """
+    assert forces.WHEEL_COUNT == 4
+    assert forces.FIRST_REAR_WHEEL_INDEX == forces.REAR_WHEEL_COUNT == 2
+    for drivetrain_torque_nm in (0.0, 1.0, 2_400.0, -2_400.0):
+        torques = [
+            forces.wheel_drive_torque_nm(index, drivetrain_torque_nm)
+            for index in range(forces.WHEEL_COUNT)
+        ]
+        assert torques[forces.FL_WHEEL_INDEX] == 0.0, drivetrain_torque_nm
+        assert torques[forces.FR_WHEEL_INDEX] == 0.0, drivetrain_torque_nm
+        assert torques[forces.RL_WHEEL_INDEX] == drivetrain_torque_nm / 2.0, drivetrain_torque_nm
+        assert torques[forces.RR_WHEEL_INDEX] == drivetrain_torque_nm / 2.0, drivetrain_torque_nm
+        assert sum(torques) == drivetrain_torque_nm, drivetrain_torque_nm
+
+
+def test_the_rear_drive_split_is_half_and_not_a_configured_share() -> None:
+    """The split is a derived ``1 / REAR_WHEEL_COUNT``, stated rather than fitted.
+
+    It is a *synthetic* symmetry assumption, not a calibrated number and not a regulation value:
+    there is no differential model in P1, so left and right are simply the same. Asserting the
+    derivation rather than the literal is what keeps a future third "share" constant from being
+    added as configuration with no file entry behind it.
+    """
+    assert forces.REAR_DRIVE_SHARE == 1.0 / forces.REAR_WHEEL_COUNT == 0.5
+    assert forces.wheel_drive_torque_nm(forces.RL_WHEEL_INDEX, 3.0) == (
+        3.0 * forces.REAR_DRIVE_SHARE
+    )
+
+
+def test_a_wheel_that_is_already_spinning_is_not_given_less_drive_torque(
+    config: KernelConfig,
+) -> None:
+    """C9.1.2 forbids any system capable of preventing driven wheels from spinning under power.
+
+    Traction control looks like this in code: the more slip a driven wheel has, the less torque it
+    is handed. This sweeps the wheel's own angular speed over four orders of magnitude and requires
+    the transmitted torque to be *identical* every time, and requires the tyre force itself to fall
+    away at the top of the sweep so that the absence of a cut is visible in the physics rather than
+    merely absent from the function.
+    """
+    drivetrain_torque_nm = 2_400.0
+    speed_m_s = 50.0
+    load_n = 2_100.0
+    rolling = speed_m_s / config.rolling_radius_m
+    # All four are at or past the tyre's peak slip, so the sweep measures the fall-off rather than
+    # the rise: a wheel at `rolling` feels nothing, one a slip ratio past the peak is near `mu Fz`,
+    # and one far past it is on the way back down to nothing.
+    torques = []
+    forces_over_spin = []
+    for omega_rad_s in (rolling, 2.0 * rolling, 10.0 * rolling, 50.0 * rolling):
+        drive, tyre, _ = forces.step_wheel(
+            config, forces.RL_WHEEL_INDEX, drivetrain_torque_nm, speed_m_s, omega_rad_s, load_n
+        )
+        torques.append(drive)
+        forces_over_spin.append(tyre)
+    assert len(set(torques)) == 1, "the drive torque varies with wheel speed, which is C9.1.2"
+    assert torques[0] == drivetrain_torque_nm / 2.0
+    assert forces_over_spin[0] == pytest.approx(0.0, abs=1e-9)
+    assert forces_over_spin[1] > forces_over_spin[2] > forces_over_spin[3] > 0.0, (
+        "a driven wheel spinning harder past the Magic Formula's peak transmits less and less "
+        "force, so this asserts the spin is real rather than the tyre model flattening out"
+    )
+
+
+def test_no_torque_moves_from_a_slower_rear_wheel_to_a_faster_one(config: KernelConfig) -> None:
+    """C9.9.1: no torque transfer from a slower wheel to a faster one.
+
+    A limited-slip differential is exactly that transfer, and its signature is that the faster
+    wheel receives *more* than half. Both rear wheels are therefore driven at wildly different
+    speeds - one rolling, one spun up to several times road speed - and each must still be handed
+    one half of the drivetrain torque, unchanged by what the other is doing.
+    """
+    drivetrain_torque_nm = 1_800.0
+    speed_m_s = 60.0
+    rolling = speed_m_s / config.rolling_radius_m
+    left_drive, left_tyre, _ = forces.step_wheel(
+        config, forces.RL_WHEEL_INDEX, drivetrain_torque_nm, speed_m_s, rolling, 2_100.0
+    )
+    right_drive, right_tyre, _ = forces.step_wheel(
+        config, forces.RR_WHEEL_INDEX, drivetrain_torque_nm, speed_m_s, 6.0 * rolling, 2_100.0
+    )
+    assert left_drive == right_drive == drivetrain_torque_nm / 2.0
+    assert left_drive == forces.wheel_drive_torque_nm(forces.RL_WHEEL_INDEX, drivetrain_torque_nm)
+    assert right_drive == forces.wheel_drive_torque_nm(forces.RR_WHEEL_INDEX, drivetrain_torque_nm)
+    # The *response* is allowed to differ - each wheel answers its own slip - which is what makes
+    # the torque equality above a statement about torque rather than about the whole step.
+    assert right_tyre > left_tyre > -1e-9, (
+        "the faster wheel is the one past the tyre's peak, so it is the one transmitting less"
+    )
+    assert abs(left_tyre) <= 1e-9, (
+        "a wheel rolling at omega r = v feels nothing. The bound rather than `== 0.0` is the "
+        "rounding of `v / r * r` back to `v`, not a tolerance on the model"
+    )
+
+
+def test_the_front_wheels_free_roll_between_the_tyre_and_the_road(config: KernelConfig) -> None:
+    """With no drive torque a front wheel obeys ``I dω/dt = -Fx r`` and nothing else.
+
+    C9.1.1's other half: the fronts are not inert, they are *undriven*. They still feel the road, so
+    a front wheel rolling at exactly ``ω r = v`` neither accelerates nor decelerates - the zero is
+    exact, not "small" - and a front wheel that is not rolling is spun up by the road rather than
+    left behind.
+    """
+    speed_m_s = 70.0
+    load_n = 1_800.0
+    inertia = config.wheel_inertia_kg_m2
+    radius = config.rolling_radius_m
+
+    rolling = speed_m_s / radius
+    drive, tyre, alpha = forces.step_wheel(
+        config, forces.FL_WHEEL_INDEX, 2_400.0, speed_m_s, rolling, load_n
+    )
+    assert drive == 0.0
+    assert tyre == 0.0
+    assert alpha == 0.0
+
+    locked = forces.step_wheel(config, forces.FR_WHEEL_INDEX, 2_400.0, speed_m_s, 0.0, load_n)
+    assert locked[0] == 0.0
+    assert locked[1] < 0.0, "a locked wheel is braking slip, so the force opposes the car"
+    assert locked[2] > 0.0, "and the road spins that wheel back up"
+    assert locked[2] == pytest.approx(-locked[1] * radius / inertia, rel=1e-12)
+
+    spun = forces.step_wheel(
+        config, forces.FR_WHEEL_INDEX, 2_400.0, speed_m_s, 4.0 * rolling, load_n
+    )
+    assert spun[1] > 0.0
+    assert spun[2] < 0.0, "a front wheel spinning faster than the road is slowed by it"
+
+
+def test_the_wheel_state_closes_the_loop_on_its_own_angular_momentum(
+    config: KernelConfig,
+) -> None:
+    """``I dω/dt = T_drive - Fx r``, for every wheel, at every sign of torque and slip.
+
+    The reaction term is the whole point of owning a wheel state: the tyre pushes the car forward by
+    ``Fx`` and pushes *back* on the wheel by ``Fx r``, and a model that integrates the wheel with
+    only the drive torque invents energy. Checked both as the balance itself and as the update a
+    step of the configured length makes, and against a plain-Python recomputation of the same
+    balance so a transposed argument cannot pass.
+    """
+    inertia = config.wheel_inertia_kg_m2
+    radius = config.rolling_radius_m
+    dt_s = config.dt_s
+    speed_m_s = 55.0
+    rolling = speed_m_s / radius
+    for wheel_index in range(forces.WHEEL_COUNT):
+        for drivetrain_torque_nm in (-2_400.0, 0.0, 900.0, 2_400.0):
+            for omega_rad_s in (0.0, 0.5 * rolling, rolling, 2.5 * rolling):
+                drive, tyre, alpha = forces.step_wheel(
+                    config, wheel_index, drivetrain_torque_nm, speed_m_s, omega_rad_s, 2_100.0
+                )
+                assert inertia * alpha == pytest.approx(drive - tyre * radius, rel=1e-12), (
+                    wheel_index,
+                    drivetrain_torque_nm,
+                    omega_rad_s,
+                )
+                assert alpha == pytest.approx((drive - tyre * radius) / inertia, rel=1e-12)
+                # The step a caller takes with it: one explicit Euler advance over the configured
+                # step. Integrated back out over the interval, that advance has to deliver exactly
+                # the impulse the balance says it should - no energy created or lost on the way.
+                # The absolute bound is the *rounding*, not the physics: when the balance is
+                # materially zero, `omega r` differs from `v` only by the last bits of `v / r * r`,
+                # and a difference of two nearly equal wheel speeds carries that error amplified.
+                advanced = omega_rad_s + alpha * dt_s
+                assert inertia * (advanced - omega_rad_s) == pytest.approx(
+                    (drive - tyre * radius) * dt_s, rel=1e-9, abs=1e-9
+                )
+
+
+def test_drive_torque_spins_a_rear_wheel_up_and_the_road_holds_it_back(
+    config: KernelConfig,
+) -> None:
+    """The two halves of the balance have to be able to fight each other.
+
+    A rear wheel with positive drive torque at zero slip accelerates; the moment it slips, the tyre
+    reaction opposes the drive torque and is what finally limits it. Nothing in the model decides
+    that crossover - it falls out of the balance - so the test asserts the sign of each term rather
+    than a speed at which they happen to match.
+    """
+    load_n = 2_100.0
+    speed_m_s = 60.0
+    radius = config.rolling_radius_m
+    inertia = config.wheel_inertia_kg_m2
+    rolling = speed_m_s / radius
+
+    spinning_up = forces.step_wheel(
+        config, forces.RL_WHEEL_INDEX, 2_400.0, speed_m_s, rolling, load_n
+    )
+    assert spinning_up[0] == 1_200.0
+    assert spinning_up[1] == pytest.approx(0.0, abs=1e-9), "no slip, so no force"
+    assert spinning_up[2] == pytest.approx(1_200.0 / inertia, rel=1e-12)
+
+    reacting = forces.step_wheel(
+        config, forces.RL_WHEEL_INDEX, 1_200.0, speed_m_s, 3.0 * rolling, load_n
+    )
+    assert reacting[1] > 0.0, "a slipping driven wheel pushes the car forward"
+    assert reacting[2] < 0.0, "and the road takes the speed back out of the wheel"
+    # Reverse drive torque spins the rear wheels the other way, which is the path a reverse gear
+    # takes: the gearbox hands P1-T7 a negative torque and nothing here changes sign convention.
+    # Measured from rest, so that the tyre reaction is exactly zero and the only torque on the
+    # wheel is the one the driver asked for - a locked wheel on a *moving* car is a different state
+    # entirely, and there the road wins.
+    reversing = forces.step_wheel(config, forces.RR_WHEEL_INDEX, -1_200.0, 0.0, 0.0, load_n)
+    assert reversing[0] == -600.0
+    assert reversing[1] == 0.0
+    assert reversing[2] == pytest.approx(-600.0 / inertia, rel=1e-12)
+
+
+def test_zero_and_negative_speed_stay_finite_and_keep_the_slip_sign(
+    config: KernelConfig,
+) -> None:
+    """At rest and rolling backwards the guarded slip ratio is still finite and still signed.
+
+    Two things are asserted rather than one. A stationary wheel on a stationary car has *exactly*
+    zero slip and therefore exactly zero force - which is what a launch has to start from, and what
+    a zero-torque coast must stay at. And rolling backwards, ``ω r = v`` with both negative, is
+    still zero slip: reverse has to be drivable (C9.7), and a model whose slip denominator or sign
+    mishandled negative speed would make it undrivable.
+    """
+    radius = config.rolling_radius_m
+    load_n = 2_100.0
+
+    at_rest = forces.step_wheel(config, forces.RL_WHEEL_INDEX, 0.0, 0.0, 0.0, load_n)
+    assert at_rest[1] == 0.0
+    assert at_rest[2] == 0.0
+
+    launching = forces.step_wheel(config, forces.RL_WHEEL_INDEX, 2_400.0, 0.0, 40.0, load_n)
+    assert launching[1] > 0.0, "a spinning wheel on a stationary car is driving slip"
+    assert math.isfinite(launching[1])
+
+    backwards = -45.0
+    rolling_back = forces.step_wheel(
+        config, forces.RL_WHEEL_INDEX, 0.0, backwards, backwards / radius, load_n
+    )
+    assert rolling_back[1] == 0.0, "rolling backwards without slip is still no slip"
+
+    # A stationary wheel under a car sliding backwards is braking slip: the force pushes the car
+    # forwards, towards zero speed, which is the direction that reduces the slide.
+    sliding = forces.step_wheel(config, forces.RL_WHEEL_INDEX, 0.0, backwards, 0.0, load_n)
+    assert sliding[1] > 0.0
+    assert sliding[2] < 0.0
+
+    for speed_m_s in np.linspace(-200.0, 200.0, 401):
+        for omega_rad_s in (-4_000.0, -40.0, 0.0, 40.0, 4_000.0):
+            _, tyre, alpha = forces.step_wheel(
+                config, forces.RL_WHEEL_INDEX, 1_500.0, float(speed_m_s), omega_rad_s, load_n
+            )
+            assert math.isfinite(tyre), (speed_m_s, omega_rad_s)
+            assert math.isfinite(alpha), (speed_m_s, omega_rad_s)
+
+
+def test_the_static_axle_loads_split_the_car_weight_by_the_front_fraction(
+    config: KernelConfig,
+) -> None:
+    """``Fz = weight x axle fraction / 2``, summed back to the car's own weight.
+
+    Load transfer is P2-T2's work, so P1's split is the static one: ``front_weight_fraction`` from
+    ``car_spec.yaml``, divided evenly inside each axle, with no speed dependence at all. The sum is
+    what invariant 3 checks, so it is asserted here rather than only downstream - and adding
+    downforce on top is the caller's, because the front/rear share of the aero load is a different
+    decision (see :func:`forces.step_forces`).
+    """
+    weight_n = config.mass_kg * config.gravity_m_s2
+    fraction = config.front_weight_fraction
+    assert 0.0 < fraction < 1.0
+    loads = [
+        forces.static_wheel_load_n(weight_n, fraction, index) for index in range(forces.WHEEL_COUNT)
+    ]
+    front = weight_n * fraction / 2.0
+    rear = weight_n * (1.0 - fraction) / 2.0
+    assert loads[forces.FL_WHEEL_INDEX] == front
+    assert loads[forces.FR_WHEEL_INDEX] == front
+    assert loads[forces.RL_WHEEL_INDEX] == rear
+    assert loads[forces.RR_WHEEL_INDEX] == rear
+    assert sum(loads) == pytest.approx(weight_n, rel=1e-12)
+    # No downforce, no speed dependence: the same four numbers at any speed, which is the property
+    # P2-T2 removes.
+    assert loads[forces.FL_WHEEL_INDEX] == loads[forces.FL_WHEEL_INDEX]
+
+
+def test_the_wheel_tyre_force_is_the_configured_tyre_model_at_the_wheels_own_speed(
+    config: KernelConfig,
+) -> None:
+    """``wheel_tyre_force_n`` is ``slip_ratio`` and ``tyre_longitudinal_force`` composed.
+
+    Driven with the configured numbers and compared against the two primitives reached
+    independently, so the ``ω r`` product inside it, the guarded denominator and the load guard all
+    have to line up - a composition that dropped the ``r``, or read the curve at ``ω`` instead of
+    ``ω r``, would return a plausible force at the wrong slip.
+    """
+    radius = config.rolling_radius_m
+    load_n = 3_000.0
+    for speed_m_s in (0.0, 12.5, 60.0, 95.0):
+        for omega_rad_s in (-400.0, 0.0, 20.0, 260.0):
+            expected_slip = forces.slip_ratio(
+                omega_rad_s * radius, speed_m_s, config.slip_ratio_min_speed_m_s
+            )
+            expected = _tyre(config, expected_slip, load_n)
+            assert (
+                forces.wheel_tyre_force_n(
+                    speed_m_s,
+                    omega_rad_s,
+                    load_n,
+                    radius,
+                    config.slip_ratio_min_speed_m_s,
+                    config.pacejka_b,
+                    config.pacejka_c,
+                    config.pacejka_e,
+                    config.pacejka_mu,
+                )
+                == expected
+            ), (speed_m_s, omega_rad_s)
+    # The load guard reaches the composition too: a wheel in the air transmits nothing.
+    assert (
+        forces.wheel_tyre_force_n(
+            60.0,
+            400.0,
+            0.0,
+            radius,
+            config.slip_ratio_min_speed_m_s,
+            config.pacejka_b,
+            config.pacejka_c,
+            config.pacejka_e,
+            config.pacejka_mu,
+        )
+        == 0.0
+    )
+
+
+@pytest.mark.parametrize(
+    "wheel_index",
+    [-1, forces.WHEEL_COUNT, forces.WHEEL_COUNT + 1, 1.0, 0.5, True, "1", None],
+    ids=["negative", "one-past", "far-past", "float", "fraction", "bool", "str", "none"],
+)
+def test_step_wheel_refuses_a_wheel_index_it_could_not_assemble(
+    config: KernelConfig,
+    wheel_index: object,
+) -> None:
+    """The corner index decides which axle is driven and which load is read, so it has to be real.
+
+    A ``float`` is refused rather than coerced for the same reason a gear request is: ``4.0`` would
+    compile a second Numba specialisation beside the integer one, and every later caller would have
+    to be checked against both. ``bool`` is refused although it is an ``int`` - ``True`` is front
+    left by value, and a corner arriving as a truth value is a bug.
+    """
+    with pytest.raises(ValueError, match="wheel_index"):
+        forces.step_wheel(config, wheel_index, 1_000.0, 50.0, 140.0, 2_000.0)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("drivetrain_torque_nm", (math.nan, 50.0, 140.0, 2_000.0)),
+        ("drivetrain_torque_nm", (-math.inf, 50.0, 140.0, 2_000.0)),
+        ("speed_m_s", (1_000.0, math.nan, 140.0, 2_000.0)),
+        ("speed_m_s", (1_000.0, math.inf, 140.0, 2_000.0)),
+        ("wheel_omega_rad_s", (1_000.0, 50.0, math.nan, 2_000.0)),
+        ("wheel_omega_rad_s", (1_000.0, 50.0, -math.inf, 2_000.0)),
+        ("load_n", (1_000.0, 50.0, 140.0, math.nan)),
+        ("load_n", (1_000.0, 50.0, 140.0, math.inf)),
+    ],
+)
+def test_step_wheel_refuses_inputs_that_would_produce_nans(
+    config: KernelConfig,
+    name: str,
+    arguments: tuple[float, float, float, float],
+) -> None:
+    """A NaN angular speed is a wheel that has already left the model, not a slower wheel.
+
+    It would propagate into the slip ratio, from there into the force, and from there into the
+    chassis - so the run would finish looking successful while every column after it was NaN. The
+    refusal is at the Python boundary for the same reason the tyre model's load guard is in
+    :func:`forces.tyre_longitudinal_force` rather than in a caller.
+    """
+    with pytest.raises(ValueError, match=name):
+        forces.step_wheel(config, forces.RL_WHEEL_INDEX, *arguments)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("wheel_inertia_kg_m2", 0.0),
+        ("wheel_inertia_kg_m2", -0.9),
+        ("wheel_inertia_kg_m2", math.nan),
+        ("rolling_radius_m", 0.0),
+        ("rolling_radius_m", -0.36),
+        ("rolling_radius_m", math.inf),
+        ("front_weight_fraction", 0.0),
+        ("front_weight_fraction", 1.0),
+        ("front_weight_fraction", 1.5),
+        ("front_weight_fraction", math.nan),
+    ],
+)
+def test_step_wheel_refuses_a_configuration_it_could_not_use(
+    config: KernelConfig,
+    name: str,
+    value: float,
+) -> None:
+    """Three new divisors, and the sign rules they need.
+
+    ``wheel_inertia_kg_m2`` and ``rolling_radius_m`` are both divisors of the angular acceleration,
+    and a zero of either is a NaN wheel rather than an error. ``front_weight_fraction`` is a
+    fraction of a total weight, so the interesting boundary is the top: a value of exactly 1 would
+    leave the rear axle carrying nothing, which is a fraction of nothing rather than a car.
+    """
+    broken = replace(config, **{name: value})
+    with pytest.raises(ValueError, match=name):
+        forces.step_wheel(broken, forces.RL_WHEEL_INDEX, 1_000.0, 50.0, 140.0, 2_000.0)
+
+
+def test_step_wheel_narrows_numeric_scalars_before_numba(config: KernelConfig) -> None:
+    """Equivalent int and float inputs use the same wheel arithmetic."""
+    compiled = len(forces.wheel_drive_torque_nm.nopython_signatures)
+    forces.step_wheel(config, forces.RL_WHEEL_INDEX, 1_000, 50, 140, 2_000)
+    assert len(forces.wheel_drive_torque_nm.nopython_signatures) == compiled
+    with pytest.raises(ValueError, match="speed_m_s"):
+        forces.step_wheel(
+            config,
+            forces.RL_WHEEL_INDEX,
+            1_000.0,
+            np.float32(50.0),  # pyright: ignore[reportArgumentType]
+            140.0,
+            2_000.0,
+        )
+    # A replaced config field is read through `getattr`, so it never had to be `float`; what has to
+    # be refused is a value that is neither an int nor a float, which is exactly what np.float32 is
+    # not, and a float32 *is* a `float` subclass in Numba's eyes but not Python's.
+    with pytest.raises(ValueError, match="wheel_inertia_kg_m2"):
+        forces.step_wheel(
+            replace(config, wheel_inertia_kg_m2=np.float32(0.9)),
+            forces.RL_WHEEL_INDEX,
+            1_000.0,
+            50.0,
+            140.0,
+            2_000.0,
+        )
+
+
+def test_editing_the_car_spec_changes_the_wheel_step_with_no_code_edit(
+    tmp_path: Path,
+    repo: Path,
+    config: KernelConfig,
+) -> None:
+    """P1-T1b for the wheel model: the file is the only place the wheel inertia lives.
+
+    Wheel inertia is the one physical number the rotational state divides by, so a version of it
+    hardcoded in the module would pass every other test in this file. Doubling it has to halve the
+    angular acceleration exactly, measured where the tyre force is zero so that the only thing the
+    ratio can be is the inertia.
+    """
+    root = _document(repo)
+    assert forces.validated_config_scalars(config, "test")["wheel_inertia_kg_m2"] > 0.0
+    _at(root, ("tyres",))["wheel_inertia_kg_m2"] = config.wheel_inertia_kg_m2 * 2.0
+    edited = load_car_spec(_write(root, tmp_path)).kernel_config()
+
+    rolling = 60.0 / config.rolling_radius_m
+    before = forces.step_wheel(config, forces.RL_WHEEL_INDEX, 1_200.0, 60.0, rolling, 2_100.0)
+    after = forces.step_wheel(edited, forces.RL_WHEEL_INDEX, 1_200.0, 60.0, rolling, 2_100.0)
+    assert edited.wheel_inertia_kg_m2 == 2.0 * config.wheel_inertia_kg_m2
+    assert before[2] != after[2]
+    assert after[2] == pytest.approx(before[2] / 2.0, rel=1e-12)
+    assert before[0] == after[0], "the drive torque is not an inertia, so it must not move"

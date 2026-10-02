@@ -243,8 +243,9 @@ than reporting a wrong number, because the engine peak is below the capacity and
 selects it. A capacity that can never be selected is configuration no model reads.
 
 The product is still a **torque**, and that is the boundary of P1-T5: P1-T7 divides by the rolling
-radius to make `Fx`. Wheel-speed coupling, which needs the gear the step has not chosen yet, stays
-with P1-T6.
+radius to make `Fx`, and P1-T6 supplies the wheel speed it divides by. Both arrived in Phase 1
+slice 4, which closes the loop inside the integrator rather than leaving the torque at a boundary -
+see "Wheel rotational state" below.
 
 **Clutch capacity (`gearbox.clutch_torque_capacity_nm: 3000.0`) — synthesised (P1-T5).** No FIA
 article states a clutch torque capacity and no public F1 figure is cited here.
@@ -294,6 +295,61 @@ standing start. Note that the units are part of the number: an engine-side capac
 physical clutch would be a different physical quantity, and quoting one where the other belongs
 produces the dead clamp described above rather than a wrong torque. `car_spec.yaml` says so in its
 `not_regulated` claim and its `note`.
+
+**Wheel rotational state (P1-T6/P1-T7) — synthesised, and the second half of that assumption.**
+`wheel_inertia_kg_m2: 0.9` is the wheel-plus-tyre rotational inertia about the spin axis, the `I_w`
+of `I_w d(omega)/dt = T_drive - Fx r`. `PLAN.md` section 4 gives **0.5-1.2 kg·m²** as the band an F1
+wheel and tyre occupy and this project has read no published figure inside it, so 0.9 is a labelled
+placeholder on the same principle as the Pacejka coefficients. No clause fixes a rotational inertia:
+C10.7.2 (page 111) gives rim diameter and the two mounting widths, which are geometry, and no
+article states a mass for the wheel assembly. The value is consequential rather than cosmetic — it is
+the divisor of the whole wheel equation, so a wheel that is too light spins up and locks more
+readily than one that is not, and it is the input P1-T9's acceleration work will move first.
+
+**The two things around it are assumptions, not data.** Neither is in `car_spec.yaml`, on purpose:
+
+* **Equal left/right drive split.** C9.1.1 (page 100) states "The transmission may only drive the two
+  rear wheels" and says nothing else about the distribution. What decides left against right is a
+  differential, and P1 has no differential model, so `forces.REAR_DRIVE_SHARE` is a derived
+  `1 / REAR_WHEEL_COUNT` in code rather than a configured figure — a constant that no file supplies
+  is a constant that cannot be mistaken for a calibrated one.
+* **Equal left/right static load, and no load transfer at all.** `front_weight_fraction: 0.46` is the
+  already-recorded `PLAN.md` section 5 placeholder, divided evenly inside each axle, with zero speed
+  dependence. **Downforce is split equally across all four patches** because no aero balance is
+  configured; this keeps the total vertical load at weight plus downforce. P2-T2 replaces both
+  shortcuts with axle and per-corner transfer (see §2 on why C4.2 is not enforceable against it).
+
+**No differential, no traction control, no ABS.** C9.1.2 (page 100) forbids any system capable of
+preventing driven wheels from spinning under power or of compensating excessive driver torque
+demand, C9.9.1 (page 105) forbids torque transfer from a slower wheel to a faster one, and C11.4.1
+(page 117) forbids a braking system designed to prevent wheels locking. In code that means
+`wheel_drive_torque_nm` takes **no wheel speed at all**: traction control would appear as a term
+reading slip, and a limited-slip differential would appear as the faster rear wheel being handed
+more than its half. Neither does, and the tests sweep the wheel's own speed over four orders of
+magnitude to prove the torque does not move with it. Wheelspin and lock are still real states —
+the Magic Formula's fall-off past its peak produces them — so this is a statement about the torque,
+not a claim that wheels never slip.
+
+**No brake model yet.** Braking reaches a wheel in this slice only as a negative drive torque from
+a caller, which is the same sign convention the reverse gear already uses. C11.1.1's 2 500 Nm
+per-wheel floor and the rest of Article C11 are not represented; that is a brake task, not a wheel
+task.
+
+**The loop's update order is part of the model.** One step evaluates every force at the state it
+started from, advances the four wheel speeds and the car's speed on those forces, and then advances
+position with the speed that step produced. The wheel states are advanced inside the same single
+pass that accumulates the force on the car, because recomputing the tyre forces in a second loop
+would mean either four transcendental evaluations per step done twice or a scratch array allocated
+inside the step, and `PLAN.md` section 4.1 rule 2 forbids the second. The ordering is asserted
+rather than left to taste, because updating the wheels on the *new* speed is a different and equally
+plausible launch.
+
+**A consequence worth naming: `mass_kg` is not an acceleration knob in P1.** The static axle load is
+a fraction of `mass_kg * gravity_m_s2`, so doubling the mass doubles `mu Fz` on every patch and
+therefore doubles the force on the car — and the car's inertia doubled with it. With no load transfer
+(P2-T2) and no tyre load sensitivity (P2-T3) the mass cancels out of longitudinal acceleration
+exactly, and the test asserts that it does rather than skipping it. The wheel states are *not*
+mass-free, because the reaction term scales with the load. P2-T2 and P2-T3 will both change this.
 
 **Aero curves (`aero`) — synthesised.** Six-point `Cl(v)` and `Cd(v)` tables with
 `Cl` rising 1.80 → 3.35 and `Cd` falling 1.15 → 0.62 across 0-105 m/s, deliberately
@@ -458,7 +514,19 @@ curvature factor carries a sign, so a sign check would be the wrong rule. Slice 
 fractions on the same principle: `fuel_to_shaft_efficiency` and `mgu_k_motor_inverter_efficiency`
 must lie in `(0, 1]`, because both are divisors and an above-one would report more power than the
 energy it came from — leaving every fuel-energy-flow limit and the whole C5.2.7 cap permanently
-out of reach. All of them raise `ContractError` at the boundary.
+out of reach.
+
+Slice 4 added the same kind of check for the two divisors the wheel equation introduced —
+`wheel_inertia_kg_m2` and `rolling_radius_m` must be finite and strictly positive, and
+`front_weight_fraction` strictly inside `(0, 1)` — and, more importantly, moved the check *into the
+kernel boundary*. Until slice 4, force was an input array and the integrator divided by nothing
+but `mass_kg`, so `simulate` validated three scalars. It now indexes the aero curves with
+`boundscheck=False` and divides by the wheel inertia inside its step loop, so it re-establishes the
+loader's array and sign guarantees through `forces.validated_config_scalars` and
+`forces.validate_aero_arrays` before the loop starts. That is the point of one shared validator: three
+entry points (`step_forces`, `step_wheel`, `simulate`) now read the force model's coefficients, and
+three copies of the same eight names and the same sign rules would be three places for the rule to
+be wrong. All of them raise at the boundary.
 
 ## 5. Still outstanding for later tasks
 
@@ -481,6 +549,16 @@ out of reach. All of them raise `ContractError` at the boundary.
 * **Longitudinal Pacejka coefficients.** `b`, `c`, `e` and `mu` are placeholders (section 3). The
   first evidence that they are wrong will be a Task 5 0-100 km/h figure outside the chosen
   tolerance, or a peak longitudinal deceleration that cannot reach the Task 6 energy balance.
+* **Wheel inertia.** `tyres.wheel_inertia_kg_m2: 0.9` is a placeholder inside `PLAN.md` section 4's
+  0.5-1.2 kg·m² band (section 3). No public F1 figure has been read into this project, so it is
+  labelled rather than cited.
+* **Brakes.** Slice 4 closed the wheel loop with **drive** torque only. A wheel slows because the
+  road pushes back on it, so a car decelerates — but there is no brake torque, no C11.1.1 2 500 Nm
+  per-wheel check, and no brake bias. C11.4.1 is satisfied trivially because nothing acts on the
+  wheels at all beyond the tyre.
+* **A differential.** Equal left/right drive and equal left/right load are both synthetic symmetry
+  assumptions (section 3). C9.9.1 is satisfied by not modelling a transfer at all, which is not the
+  same as modelling a real one.
 * **Load sensitivity.** `D = mu Fz` has none. P2-T3, with the lateral force.
 * **`fastest-lap` cross-check.** Task 6, per `PHASES.md` P1-T10.
 * **2027 regulations.** Section C Issue 2 is already published. A 2027 run would be a new

@@ -810,6 +810,14 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
     assert config.pacejka_mu == pacejka["mu"] > 0.0
     guard = _at(spec.raw, ("tyres",))["slip_ratio_min_speed_m_s"]
     assert config.slip_ratio_min_speed_m_s == guard > 0.0
+    # The wheel inertia is the fourth number the P1-T6 rotational state needs, and it is claimed
+    # as synthesised for the reason the claim block says: PLAN.md section 4 gives a band and no
+    # clause fixes it.
+    inertia = _at(spec.raw, ("tyres",))["wheel_inertia_kg_m2"]
+    assert config.wheel_inertia_kg_m2 == inertia > 0.0
+    inertia_claim = _at(spec.raw, ("tyres", "not_regulated", "wheel_inertia_kg_m2"))
+    assert "inertia" in inertia_claim
+    assert "PLAN.md" in inertia_claim
     # Both are claimed as synthesised, and the claim says which model it is, so a later edit
     # that imports a published parameter set without changing the claim fails the audit's eye.
     claim = _at(spec.raw, ("tyres", "not_regulated", "longitudinal_pacejka"))
@@ -920,6 +928,12 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
         (("tyres", "longitudinal_pacejka", "c"), -1.0, "longitudinal_pacejka.c"),
         (("tyres", "longitudinal_pacejka", "e"), math.inf, "longitudinal_pacejka.e"),
         (("tyres", "longitudinal_pacejka", "mu"), 0.0, "longitudinal_pacejka.mu"),
+        # P1-T6/T7: the wheel rotational state divides by the inertia, so zero is a NaN wheel
+        # rather than a car that happens to have no wheel mass. It is synthesised (PLAN.md section
+        # 4 gives 0.5-1.2 kg.m^2 for wheel plus tyre), so the loader's only job is to keep it a
+        # usable magnitude.
+        (("tyres", "wheel_inertia_kg_m2"), 0.0, "wheel_inertia_kg_m2"),
+        (("tyres", "wheel_inertia_kg_m2"), -0.9, "wheel_inertia_kg_m2"),
         (("chassis", "wheelbase_m"), 0.0, "wheelbase_m"),
     ],
 )

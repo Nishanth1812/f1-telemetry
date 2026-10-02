@@ -579,3 +579,126 @@ inverter efficiency on state-of-charge updates. The MGU-K step now enforces the 
 torque as `motor_shaft_torque * ratio <= 500 Nm`, returns crankshaft-equivalent torque for the
 gearbox, draws `mechanical_power / efficiency` from the electrical store during deployment, and
 stores `mechanical_power * efficiency` during regeneration.
+
+## Phase 1 slice 4: four-wheel angular state and force assembly (P1-T6/P1-T7)
+
+Uncommitted at the time of writing. Files: `car_spec.yaml`,
+`src/f1telemetry/contracts/car_spec.py`, `src/f1telemetry/physics/forces.py`,
+`src/f1telemetry/kernels/longitudinal.py`, `src/f1telemetry/physics/__init__.py`,
+`tests/test_forces.py` (+38), `tests/test_longitudinal_kernel.py` (rewritten; 34 -> 58),
+`tests/test_car_spec.py` (+3), `docs/calibration.md`.
+
+New config: `tyres.wheel_inertia_kg_m2: 0.9`, `not_regulated`, checked strictly positive in
+`build_kernel_config`. It is the only number this slice adds: everything else is either already on
+`KernelConfig` (`mass_kg`, `gravity_m_s2`, `front_weight_fraction`, `rolling_radius_m`,
+`slip_ratio_min_speed_m_s`, `pacejka_*`, `aero_speed_m_s`, `cl`, `cd`) or is derived from the wheel
+count in code.
+
+### Rulings
+
+1. **The kernel stops taking a force array.** `simulate`'s third argument becomes
+   `drive_torque_nm` - one drivetrain torque per step, which is what `gearbox.step_gearbox`
+   returns - and the loop derives aero, slip, tyre force, load and the four wheel states itself.
+   This is the change the Task 3 handoff predicted ("Task 4 is where `STATE_SIZE` and the index
+   constants change if they change") and what spec S5's "four `omega` states close the
+   slip -> force -> chassis loop" asks for. `STATE_SIZE` is 6 and the wheel columns are derived as
+   `forces`' corner indices plus `WHEEL_STATE_OFFSET`, so the two modules cannot disagree about
+   which wheel is which.
+2. **One pass, and the ordering is pinned.** Every force is evaluated at the state the step started
+   from; the wheel speeds and the car's speed are advanced on those forces; position then advances
+   with the speed that step produced. The wheel states are advanced inside the same single pass that
+   accumulates the force on the car - a second loop would either repeat four `sin`/`atan` pairs per
+   step or need a scratch array, and `PLAN.md` section 4.1 rule 2 forbids the second. A separate
+   test recomputes every row from the row that went in and requires exact agreement.
+3. **The rear-only rule lives in a function with no wheel speed in its signature.**
+   `wheel_drive_torque_nm(wheel_index, drivetrain_torque_nm)` returns exactly `0.0` for a front
+   index and `drivetrain_torque * REAR_DRIVE_SHARE` for a rear one, where `REAR_DRIVE_SHARE` is
+   `1 / REAR_WHEEL_COUNT`. Deriving the split from the wheel count rather than configuring it is the
+   point: C9.1.1 fixes the axle and states nothing about left against right, and a constant no file
+   supplies cannot be mistaken for a calibrated one. The absent wheel-speed argument *is* the C9.1.2
+   and C9.9.1 claim - traction control would read slip here, a limited-slip differential would give
+   the faster wheel more than its half.
+4. **Static axle loads and uniform aero load.** `static_wheel_load_n` is
+   `weight x axle fraction / 2` with no speed dependence. The kernel adds `downforce / 4` to each
+   patch because no aero balance is configured, so the four loads sum to `weight + downforce`.
+   P2-T2 replaces the uniform aero split and static axle fractions with per-corner transfer.
+5. **`validated_config_scalars` is now the shared boundary, and it is wider than any one caller.**
+   Three entry points read the force model's coefficients (`step_forces`, `step_wheel`,
+   `simulate`), so one list of eight names and one set of sign rules live in `forces` and the other
+   two call it. `simulate` reads it once outside the loop, which is what `PLAN.md` section 4.1
+   rule 3 requires, and re-checks the aero arrays itself because it now indexes them with
+   `boundscheck=False`. `step_wheel` is held to the wheel inertia and the rolling radius even though
+   it does not read both - `KernelConfig` is replaceable, and a boundary that checked only what its
+   own call happened to touch would leave a bad value sitting in the object the next call reads.
+6. **The seeded state is checked; the torque history is not.** Six values are checked once before the
+   loop, because a nonfinite wheel speed is not a slow wheel - it reaches the slip ratio, from there
+   the force, and every later row is NaN while the run reports success. The torque array is left
+   unscanned, which is the same position Task 2 took when force was an input: it is the one buffer
+   the caller owns for the whole run, and walking it in Python is O(steps) before any simulation.
+7. **`initial_state` takes one wheel speed, not four.** P1 has no lateral dynamics, so the only wheel
+   asymmetry it can express is the one a differential would make, and there is not one. Seeding four
+   columns from four numbers would suggest a model that can carry a difference it cannot produce.
+
+### Two findings worth carrying forward
+
+1. **`mass_kg` cancels out of longitudinal acceleration in P1, exactly.** The static load is a
+   fraction of `mass_kg * gravity_m_s2`, so doubling the mass doubles `mu Fz` on every patch and
+   therefore the force - and the car's inertia doubled with it. With no load transfer (P2-T2) and no
+   tyre load sensitivity (P2-T3) the two cancel to the last bit. The test asserts the whole trace is
+   unchanged rather than skipping the case. The *wheel states* are not mass-free, because the
+   reaction term scales with the load, so mass only starts to matter through slip from row two on.
+2. **A launch reaches a steady slip within a few hundred steps.** With a static load and a
+   synthesised Magic Formula, the rear wheels settle at the slip whose reaction exactly balances the
+   drive torque they were handed - `Fx = (T/2)/r` - after which the force is constant and the car
+   accelerates linearly. That is the loop relaxing, not a controller acting. A locked front wheel
+   behaves the same way in reverse: the road spins it up past rolling around step 380 and it settles
+   back onto the car's own speed, with nothing damping the approach.
+
+### What this slice deliberately leaves
+
+Braking (a wheel slows only because the road pushes back on it; no brake torque, no C11.1.1 2 500 Nm
+check, no bias), a differential (the equal split is a symmetry assumption, so C9.9.1 holds because
+no transfer is modelled rather than because one is), and the downforce split between the axles.
+`docs/calibration.md` sections 3 and 5 say all three.
+
+### TDD record
+
+RED, in three parts. `pytest tests/test_forces.py` could not collect:
+`AttributeError: module 'f1telemetry.physics.forces' has no attribute 'WHEEL_COUNT'`. Three
+behavioural failures in `tests/test_car_spec.py`: `DID NOT RAISE ContractError` for
+`tyres.wheel_inertia_kg_m2` at `0.0` and `-0.9`, and an `AttributeError` on `wheel_inertia_kg_m2`
+in `test_the_longitudinal_tyre_coefficients_reach_the_kernel_config`. `pytest
+tests/test_longitudinal_kernel.py` could not collect: `AttributeError: module
+'f1telemetry.kernels.longitudinal' has no attribute 'FL_WHEEL_INDEX'`.
+
+GREEN: `pytest tests/test_forces.py tests/test_longitudinal_kernel.py` 134 passed (38 + 34 at the
+start of the slice -> 76 + 58). `pytest tests/test_car_spec.py tests/test_contract.py
+tests/test_gearbox.py tests/test_powertrain.py` 228 passed. All six focused files together: 363
+passed. `ruff check` clean apart from one **pre-existing** F841 in `tests/test_car_spec.py:410`,
+verified against `HEAD` by stashing; `ruff format --check` clean over every file this slice touched
+(`src/f1telemetry/physics/powertrain.py` and `tests/test_powertrain.py` are unformatted at `HEAD`
+and were left that way). `basedpyright`: 1 error / 2 warnings, all three **pre-existing** and in the
+ledger's earlier list (`tests/test_contract.py:339`, `tests/test_gearbox.py:1112`,
+`tests/test_car_spec.py:410`). `f1-check-contract` and `f1-codegen --check` clean.
+
+Eight test-expectation bugs surfaced during the green phase, and each was the *test* being wrong
+about the physics rather than the physics being wrong - which is the pattern the Task 3 entry
+recorded and the reason to keep recording it. (1) The C9.1.2 spin sweep mixed braking slip with
+driving slip, so "the force falls past the peak" compared a large negative force against a positive
+one; it now starts at rolling. (2) `omega r = v` is not bit-exact when `omega` is computed as
+`v / r`, so "a rolling wheel feels exactly zero" is a `1e-9` bound, not `== 0.0`, and the *exactly*
+zero case is the from-rest one where both quantities are literally zero. (3) A locked wheel under a
+negative drive torque is spun up by the road faster than reverse torque spins it down, so that case
+was moved to a standing start. (4) The integrated angular impulse was asserted with `abs=0.0`,
+which fails on a materially-zero balance because `advanced - omega` amplifies the rounding of
+`v / r * r`; the bound is now the rounding, not the physics. (5) A car seeded at 3 m/s with the
+default zero wheel speed has a *locked* axle and decelerates, so the read-only-buffer test now seeds
+rolling wheels. (6) Semi-implicit position advances further than explicit only while the car
+accelerates; a coast decelerates, so it advances *less*, and the test now says which way and why.
+(7) Doubling the mass does not halve the acceleration here - it cancels, per finding 1 above.
+(8) `WHEEL_COLUMNS` as a tuple of indices was read by NumPy as multi-dimensional indexing, not
+fancy indexing.
+
+Review correction before commit: the first kernel draft added the full downforce to each of four
+contact patches. It now adds `downforce / 4` per wheel, and a one-step comparison against the
+independent tyre calculations checks the assembled result using the conserved total load.

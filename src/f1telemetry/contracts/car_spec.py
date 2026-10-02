@@ -168,6 +168,7 @@ class KernelConfig:
     clutch_launch_exception_s: float
     rolling_radius_m: float
     wheel_diameter_m: float
+    wheel_inertia_kg_m2: float
     front_width_mm: float
     rear_width_mm: float
     wheelbase_m: float
@@ -555,6 +556,15 @@ class CarSpec:
             tyres.get("slip_ratio_min_speed_m_s"),
             "car_spec: tyres.slip_ratio_min_speed_m_s",
         )
+        # P1-T6: the `I_w` of `I_w d(omega)/dt = T_drive - Fx r`. It is the only divisor in the
+        # wheel rotational state and no clause fixes it - C10.7.2 gives rim diameter and mounting
+        # widths, which are geometry - so the committed value is a synthesised placeholder inside
+        # PLAN.md section 4's 0.5-1.2 kg.m^2 band. Zero would make every wheel angular acceleration
+        # a NaN, which is a wheel that has left the model rather than a car with no wheel.
+        wheel_inertia = _positive(
+            tyres.get("wheel_inertia_kg_m2"),
+            "car_spec: tyres.wheel_inertia_kg_m2",
+        )
         wheelbase = _positive(chassis.get("wheelbase_m"), "car_spec: chassis.wheelbase_m")
         front_weight = _number(
             chassis.get("front_weight_fraction"), "car_spec: chassis.front_weight_fraction"
@@ -654,6 +664,7 @@ class CarSpec:
             clutch_launch_exception_s=clutch_launch_exception,
             rolling_radius_m=rolling_radius,
             wheel_diameter_m=wheel_diameter,
+            wheel_inertia_kg_m2=wheel_inertia,
             front_width_mm=_positive(tyres.get("front_width_mm"), "car_spec: tyres.front_width_mm"),
             rear_width_mm=_positive(tyres.get("rear_width_mm"), "car_spec: tyres.rear_width_mm"),
             wheelbase_m=wheelbase,

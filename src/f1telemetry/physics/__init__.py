@@ -5,11 +5,15 @@ first car in :mod:`f1telemetry.kernels.longitudinal` - and deliberately left eve
 it, because deciding what the net longitudinal force is belongs to the tasks that own the models
 behind it. This package is the first of those.
 
-:mod:`f1telemetry.physics.forces` holds P1-T3's two models: speed-dependent aerodynamics and
-the longitudinal tyre force, both driven by the validated arrays in
-:class:`~f1telemetry.contracts.car_spec.KernelConfig`. It carries the P0 Numba conventions -
-``@njit(cache=True, fastmath=False)``, flat numeric arguments, no allocation, no clock - so
-there is one set of kernel rules to read, not two.
+:mod:`f1telemetry.physics.forces` holds P1-T3's two models - speed-dependent aerodynamics and
+the longitudinal tyre force - and P1-T6/P1-T7's wheel rotational state, all driven by the
+validated arrays in :class:`~f1telemetry.contracts.car_spec.KernelConfig`. It carries the P0 Numba
+conventions - ``@njit(cache=True, fastmath=False)``, flat numeric arguments, no allocation and no
+clock - so there is one set of kernel rules to read, not two. The wheel half closes
+``I_w d(omega)/dt = T_drive - Fx r`` for four caller-owned angular speeds, hands the drivetrain's
+differential-side torque to the two rear wheels as an equal split and exactly zero to the fronts
+(C9.1.1), and derives each corner's static vertical load from ``front_weight_fraction`` with no
+speed dependence at all.
 
 :mod:`f1telemetry.physics.powertrain` holds P1-T4's and P1-T6's: the synthesised ICE torque curve
 and the turbo-lag multiplier below about 4 000 rpm, plus the 2026 limits that bound the whole power
@@ -30,7 +34,8 @@ clutch demand. The MGU-K joins at the **crankshaft**, ahead of the gear and the 
 C5.18.2 fixes its coupling to the crankshaft at a fixed ratio, so the sum
 ``(throttle * ice + mgu_k) * ratio * final_drive`` is what the clutch demand sees;
 :func:`~f1telemetry.physics.gearbox.step_drivetrain` is the composition that applies the motor's
-limits before joining it. Wheel speed and force assembly belong to P1-T6 and P1-T7.
+limits before joining it. The torque it returns is what
+:func:`~f1telemetry.physics.forces.wheel_drive_torque_nm` splits between the two rear wheels.
 
 Of the three state slots the step advances two. The gear and the shift timer move on every call;
 the clutch engagement is **supplied by the caller and read, never written**, so a caller ramps a
@@ -46,14 +51,21 @@ unambiguous to check (PLAN.md section 11, invariant 4):
 * ``kappa`` is positive in drive, and the longitudinal tyre force has the sign of the slip;
 * downforce is a positive magnitude added to the vertical load, so it is even in speed;
 * ``gear`` is ``-1`` in reverse, ``0`` in neutral, and ``1..n_gears`` forward. Drive torque is
-  positive and reverse torque negative under positive throttle.
+  positive and reverse torque negative under positive throttle;
+* a wheel's angular speed is positive when it turns the way a forward-rolling wheel turns, so a
+  wheel spinning faster than the road is driving slip and a wheel turning slower is braking slip -
+  which is the same convention the slip ratio uses, one product up.
 
-**What this package does not do.** No lateral force, no combined slip, no load sensitivity and no
-load split: those are P2's (P2-T2 owns the static axial split, P2-T3 the load sensitivity on
-``D`` and ``B``, P2-T4 the similarity method). No wheel rotational state and no assembly of drive
-or brake torque into a force either - P1-T6 and P1-T7 own those, and the gearbox hands P1-T7 a
-torque rather than a newton. Nothing here reads a clock, a random source or a dict, and no number
-is written in Python that ``car_spec.yaml`` does not supply.
+**What this package does not do.** No lateral force, no combined slip, and no load sensitivity or
+load *transfer*: those are P2's (P2-T2 owns the static axial split and the longitudinal transfer,
+P2-T3 the load sensitivity on ``D`` and ``B``, P2-T4 the similarity method). P1's load split is
+therefore the static one, unchanged by speed. No brake torque either - a wheel slows because the
+road pushes back on it, which is enough to decelerate a car but is not Article C11 - and no
+differential, traction control or ABS: C9.9.1, C9.1.2 and C11.4.1 are satisfied here by *not
+modelling* those systems rather than by modelling them. Nothing here reads a clock, a random source
+or a dict, and no number is written in Python that ``car_spec.yaml`` does not supply - the two
+symmetry assumptions (equal rear drive split, equal load inside an axle) are derived from the wheel
+count rather than configured, precisely so that they cannot be read as coefficients.
 
 **Layer isolation.** Nothing in ``analytics``, ``server`` or the web layer may import from here
 (PLAN.md section 3); ruff's banned-api list enforces it, and the tests that must import a kernel

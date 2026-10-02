@@ -592,6 +592,7 @@ tyres:
   rear_width_mm: 401.3
   rim_diameter_mm: 462.5
   slip_ratio_min_speed_m_s: 1.0
+  wheel_inertia_kg_m2: 0.9
   longitudinal_pacejka:
     b: 11.0
     c: 1.65
@@ -645,6 +646,17 @@ tyres:
       `omega r / 1.0`, so a launch sits on the falling branch of the Magic Formula rather than on
       the part of the curve that rises. No regulation fixes a simulation guard, and Task 4 of
       tasks/plan.md owns the launch model that has to live with it.
+    wheel_inertia_kg_m2: >-
+      Wheel-plus-tyre rotational inertia about the spin axis, the `I_w` of
+      `I_w d(omega)/dt = T_drive - Fx r`. PLAN.md section 4 gives 0.5-1.2 kg.m^2 as the band an F1
+      wheel and tyre occupy, and 0.9 is this project's value inside it. No FIA article fixes a
+      rotational inertia: C10.7.2 fixes the rim diameter and the mounting widths, which are
+      geometry rather than inertia, and no clause states a mass for the wheel assembly. The value
+      is a placeholder for calibration on the same principle as `longitudinal_pacejka` below, and
+      it is consequential rather than cosmetic - it is the divisor of the whole P1-T6 wheel
+      equation, so a wheel that is too light spins up and locks more readily than one that is not.
+      P1-T7 splits the rear drive torque equally between the rear wheels, which is the matching
+      synthetic assumption on the torque side.
     longitudinal_pacejka: >-
       Synthesised longitudinal Magic Formula shape, added by the same force work. No public F1
       Pacejka coefficient set has been read into this project: PLAN.md section 4 names Limebeer
@@ -658,11 +670,15 @@ tyres:
     `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
     replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
     not match Issue 20. `longitudinal_pacejka` and `slip_ratio_min_speed_m_s` arrived with the
-    P1-T3/P1-T6 force work (Task 3 of tasks/plan.md), which needs a longitudinal force; lateral
-    coefficients, load sensitivity on `D` and `B`, and relaxation lengths remain
-    P2-T3/P2-T5 work and are still deliberately absent. The P1 force model is deliberately
-    linear in `Fz` - `D = mu Fz` with no load sensitivity - so that changing it later is a
-    visible act rather than an invisible correction.
+    P1-T3/P1-T6 force work (Task 3 of tasks/plan.md), which needs a longitudinal force, and
+    `wheel_inertia_kg_m2` arrived with the P1-T6/P1-T7 wheel rotational state, which needs
+    something to divide the wheel torque balance by. Lateral coefficients, load sensitivity on
+    `D` and `B`, relaxation lengths, and any brake or differential model remain P2-T3/P2-T5
+    work and are still deliberately absent. The P1 force model is deliberately linear in `Fz` -
+    `D = mu Fz` with no load sensitivity - so that changing it later is a visible act rather than
+    an invisible correction, and the drive torque reaches the two rear wheels as an equal split
+    (C9.1.1 forbids the front axle; the left/right split itself is synthetic) with no
+    differential, traction-control or ABS feedback (C9.1.2, C9.9.1, C11.4.1).
 
 chassis:
   wheelbase_m: 3.4

@@ -71,12 +71,13 @@
 
 **Description:** Connect the synthesized ICE torque curve and MGU-K drive to the wheels through the specified drivetrain, including eight-speed shifts and clutch state.
 
-**Progress:** P1-T4 ICE torque curve is committed (`5ce583f`). P1-T5 gearbox/clutch is implemented and verified in this work slice; Task 4 remains in progress for MGU-K drive and wheel rotation/force assembly (P1-T6/T7).
+**Progress:** P1-T4 ICE torque curve is committed (`5ce583f`). P1-T5 gearbox/clutch (`ccd0f35`), P1-T4/P1-T6 powertrain limits (`34ac0e3`) and P1-T6/P1-T7 wheel state and force assembly are implemented and verified in their own work slices. Task 4's remaining work is a brake model (Article C11): nothing torques a wheel backwards yet except a caller passing negative drive torque. Ledger: `.superpowers/sdd/phase-1/progress.md` § Phase 1 slice 4.
 
 **Acceptance criteria:**
 - [x] Gear ratios, final drive, shift limits, and clutch capacity come from `car_spec.yaml`; gearbox progression and positive-throttle reverse behavior satisfy invariant 7.
-- [ ] Launch, trailing throttle, and boost-cut/upshift exercise clutch state; low-speed wheel cases remain with P1-T6/T7.
+- [ ] Launch, trailing throttle, and boost-cut/upshift exercise clutch state; low-speed wheel cases are covered by P1-T6/P1-T7.
 - [ ] ICE curve provenance and synthesis assumptions are documented; motor power is accounted for separately from ICE power.
+- [ ] Brake torque reaches the wheels under a C11 brake model, and left/right brake torque is symmetric per C11.1.2.
 
 **Verification:** Focused drivetrain tests for launch, shift boundaries, clutch transition, and wheel force direction.
 
@@ -88,7 +89,8 @@
 
 ## Checkpoint: Drive path
 
-- [x] P1-T5 launch/shift tests pass with finite torque and expected gear direction; force direction remains with P1-T6/T7.
+- [x] P1-T5 launch/shift tests pass with finite torque and expected gear direction; P1-T6/P1-T7 then closed the wheel loop with rear-only drive and a signed tyre reaction.
+- [x] The rear/left-right drive split and the static load split are recorded as synthetic in `docs/calibration.md` §3; no differential, traction control or ABS is modelled.
 - [ ] Review any remaining P1/P2 boundary decisions before adding scenarios.
 
 ## Task 5: Add P1 scenarios and calibrate performance
