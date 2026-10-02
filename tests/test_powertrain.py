@@ -16,6 +16,9 @@ any engine speed, and the boundary they are read through:
 * **The boundary.** ``KernelConfig`` is public and replaceable, so ``step_ice_torque`` checks
   what it reads before the values reach a ``boundscheck=False`` lookup, which on an empty, short
   or reversed curve returns a plausible-looking number rather than failing.
+* **Nothing clips the curve on its way to the car.** One test reaches the drivetrain to check that
+  the engine's own torque arrives at the rear axle: the synthetic ``clutch_torque_capacity_nm`` that
+  used to cap a launch below what first gear offers is gone, and the C9.2.5 demand sits above it.
 
 Every physical number comes from the loaded ``car_spec.yaml``, so this file tunes nothing.
 """
@@ -29,7 +32,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from f1telemetry.physics import powertrain
+from f1telemetry.physics import gearbox, powertrain
 
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
@@ -253,6 +256,49 @@ def test_step_ice_torque_refuses_a_negative_torque_knot_and_accepts_a_zero(
     negative[-1] = -1.0
     with pytest.raises(ValueError, match=r"step_ice_torque: config\.torque_nm"):
         powertrain.step_ice_torque(replace(config, torque_nm=negative), top_rpm)
+
+
+def test_the_ice_torque_reaches_the_rear_axle_without_the_synthetic_clutch_clamp(
+    config: KernelConfig,
+) -> None:
+    """The engine's own torque is what drives the car, with nothing clipped out of it on the way.
+
+    This is the powertrain's half of the C9.2.5 clutch slice. The committed synthetic
+    ``clutch_torque_capacity_nm`` of 3 000 Nm used to sit below what first gear offers, so at the
+    engine's peak the driveline got the clamp rather than the engine - a 330 Nm curve whose first
+    gear delivered 3 000 Nm instead of 3 844 Nm. The clamp is gone, so the launch now delivers the
+    engine's torque scaled by the configured reduction, and the C9.2.5 demand sits above it rather
+    than in the way of it.
+
+    The gearbox is reached through :func:`~f1telemetry.physics.gearbox.step_gearbox` on purpose: the
+    claim is about the torque at the rear axle, which is the composition's output and not a number
+    this module could produce on its own.
+    """
+    peak_rpm = float(config.torque_rpm[int(np.argmax(config.torque_nm))])
+    peak_nm = powertrain.step_ice_torque(config, peak_rpm)
+    first = float(config.gear_ratios[0]) * config.final_drive
+    offered_nm = peak_nm * first
+
+    assert offered_nm > config.clutch_torque_capacity_nm, (
+        "this test needs a gear whose offer is above the old clamp, or the clamp would have been "
+        "invisible here"
+    )
+    assert offered_nm < config.clutch_demand_torque_nm, (
+        "the C9.2.5 demand has to exceed launch torque, or the paddle could not hold "
+        "the clutch against the engine"
+    )
+
+    state = gearbox.initial_state(gear=1.0, clutch_engagement=1.0)
+    assert gearbox.step_gearbox(config, state, peak_rpm, 1.0) == pytest.approx(
+        offered_nm, rel=1e-12
+    )
+
+    # And the same at a fraction of the pedal: the engine decides the torque through a closed
+    # clutch,
+    # so a half-throttle launch is half of it rather than the clamp or the demand.
+    assert gearbox.step_gearbox(config, state, peak_rpm, 0.5) == pytest.approx(
+        0.5 * offered_nm, rel=1e-12
+    )
 
 
 def test_step_ice_torque_narrows_numeric_scalars_before_numba(config: KernelConfig) -> None:

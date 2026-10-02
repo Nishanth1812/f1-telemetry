@@ -18,21 +18,11 @@ rather than carrying a second interpolator, and it splits the two ways in the sa
 primitives that take bare numbers, and one Python entry point that validates what it reads
 before handing it over.
 
-:mod:`f1telemetry.physics.gearbox` holds P1-T5's: gear selection against the configured shift
-points, a shift timer that freezes the gear while it runs, and the clutch that both the boost cut
-and trailing throttle pass through. Its state - the gear, the shift timer and the clutch engagement
-- is one caller-owned ``float64`` buffer written in place, so a run steps a single array with no
-allocation, and its engine torque comes from :func:`~f1telemetry.physics.powertrain.step_ice_torque`
-rather than from a second copy of the torque lookup.
-
-It returns **differential-side** torque: the throttled engine torque multiplied by the selected
-gear's ratio and by `final_drive`, and only then passed through the clutch ceiling — `PLAN.md`
-section 6 puts the clutch downstream of the gearbox, so that capacity is a differential-side figure.
-The committed value sits inside the range the box produces (3 000 Nm, against 3 844 Nm in first and
-1 618 Nm in eighth), which leaves gears 1-3 clutch-limited and gears 4-8 transparent, so the eight
-ratios are read rather than merely counted. Wheel speed and force assembly are not in it: those are
-P1-T6's and P1-T7's, which is why `ice_rpm` is an argument to
-`f1telemetry.physics.gearbox.step_gearbox` and not something it computes.
+:mod:`f1telemetry.physics.gearbox` holds P1-T5's driver-requested shifts and clutch demand. RPM
+does not shift the gearbox. The caller owns gear, shift timer, clutch engagement, and the one-step
+gear request; the compiled step writes the first two state values and returns differential-side
+torque using the configured ratios, final drive, and C9.2.5 clutch demand. Wheel speed and force
+assembly belong to P1-T6 and P1-T7.
 
 Of the three state slots the step advances two. The gear and the shift timer move on every call;
 the clutch engagement is **supplied by the caller and read, never written**, so a caller ramps a
@@ -46,10 +36,8 @@ unambiguous to check (PLAN.md section 11, invariant 4):
 * x is forward, so a positive force accelerates the car and drag is negative going forward;
 * ``kappa`` is positive in drive, and the longitudinal tyre force has the sign of the slip;
 * downforce is a positive magnitude added to the vertical load, so it is even in speed;
-* ``gear`` is ``1..n_gears`` with no neutral and no reverse, and the transmitted drive torque is
-  positive in drive. That pair is what makes ``PLAN.md`` section 11's invariant 7 - monotonic
-  progression, no reverse under positive throttle - a property of the model rather than of a
-  record that happens to be monotone.
+* ``gear`` is ``-1`` in reverse, ``0`` in neutral, and ``1..n_gears`` forward. Drive torque is
+  positive and reverse torque negative under positive throttle.
 
 **What this package does not do.** No lateral force, no combined slip, no load sensitivity and no
 load split: those are P2's (P2-T2 owns the static axial split, P2-T3 the load sensitivity on
