@@ -347,6 +347,54 @@ for "clip" returns nothing. The 3.0 s midpoint is a project assumption. If Task 
 energy management it must be treated as unverified, and the 2027 regulations may well state a
 duration that this project has not read.
 
+**Two efficiency conversions (`powertrain.ice.fuel_to_shaft_efficiency: 0.52`,
+`powertrain.mgu_k.motor_inverter_efficiency: 0.95`) — synthesised, and the weakest numbers in
+the powertrain.** Section C states no efficiency anywhere, and both conversions are needed before a
+single clause can be applied:
+
+* **C5.2.3, C5.2.4 and C5.2.5 bound the ICE in MJ/h of fuel *energy*** while everything the model
+  computes at the crankshaft is shaft power in kW. `0.52` is the thermal efficiency a current F1
+  ICE reaches at its best point, so it is a ceiling-shaped figure rather than a measured one.
+* **C5.2.7 caps the ERS-K in *electrical* DC power** while the model holds mechanical torque at the
+  MGU-K shaft. `0.95` covers the motor and inverter together.
+
+They are consequential rather than incidental. C5.2.3's 3 000 MJ/h total works out to about
+433 kW of shaft power at 0.52, so the committed 400 kW peak **survives the cap uncut** - which is
+the state slice 3 tests assert, so that a later efficiency edit which does start clipping shows up
+as a failure of that test rather than as every ICE knot assertion quietly becoming a test of the
+clip. At 0.40 the same curve *is* cut back, and that is how the tests prove the cap is load-bearing
+rather than a branch that can never fire.
+
+`mgu_k.crankshaft_ratio: 3.0` converts motor-shaft speed and torque to the crankshaft. C5.2.11's
+500 Nm crankshaft-referenced limit therefore allows at most `500 / ratio` Nm at the faster motor
+shaft; the step returns crankshaft-equivalent torque to the gearbox. C5.2.7 and C5.2.8 separately
+limit electrical DC power, converted through the declared synthetic motor/inverter efficiency.
+
+**At 3.0, C5.18.5's 60 000 rpm part speed arrives at about 233 km/h**, which is below the speeds
+where C5.2.8's curve is interesting. On the committed numbers the relative-speed ceiling therefore
+binds *before* the speed-dependent power cap, and the latter is only reachable at a lower ratio.
+Both are enforced; the tests isolate each by relaxing the other rather than pretending the
+committed pair can exercise both at once.
+
+**C5.2.3's per-cylinder arm is recorded and cited but not enforced.** 550 MJ/h per cylinder needs a
+cylinder count to apply, and no block of `car_spec.yaml` carries one and this project's verified
+clause set does not cite it. The number stays in the file with its quote and an `enforcement`
+note, and the omission is named in `powertrain.ice.note` and pinned by
+`test_the_c52_3_per_cylinder_arm_is_recorded_and_the_file_says_it_is_not_enforced`. Inventing a
+cylinder count would have been an unsourced number sitting inside a regulatory check.
+
+**C5.18.4's 520 Nm is cited and never read.** It is the threshold above which an *optional*
+torque-limiting device may act, not a second cap, so `mgu_k.transient_torque_limiter_threshold_nm`
+stays in `car_spec.yaml` with its basis and never reaches `KernelConfig`. The only MGU-K torque
+limit the model applies is C5.2.11's 500 Nm.
+
+**Two of C5.2.10's conditions are caller declarations rather than numbers.** Whether the FIA
+Standard ECU mandates minimum acceleration (C5.2.12's exception) and which of the article's three
+per-lap recharge figures applies are both facts about the *event*, so `step_mgu_k` takes them as
+flags and an enum rather than reading them from this file. The 8.5 MJ baseline is the `RACE`
+default; 7 MJ and the 4 MJ qualifying floor are `REDUCED` and `QUALIFYING`; the conditional
+0.5 MJ allowance is a separate flag on top of whichever is selected.
+
 **Power split and fuel LHV (`powertrain`) — plan figures.** 0.53 ICE / 0.47 ERS is
 `PLAN.md` section 6; the regulations cap ERS-K power with both C5.2.7's absolute limit and
 C5.2.8's speed profiles, and state no ICE/ERS split. `fuel_lhv_kj_kg: 44000.0` is a standard F1 fuel value: C5.2.6 has the
@@ -406,8 +454,11 @@ restoring a raw C5.2.8 value would otherwise hand the kernel power the regulatio
 Task 3 added the checks the tyre model needs: `slip_ratio_min_speed_m_s` finite and positive,
 because it is the one denominator in the tyre model that would otherwise divide by zero at a
 standing start, and the three Pacejka magnitudes positive with the curvature factor finite — the
-curvature factor carries a sign, so a sign check would be the wrong rule. All of them raise
-`ContractError` at the boundary.
+curvature factor carries a sign, so a sign check would be the wrong rule. Slice 3 added two
+fractions on the same principle: `fuel_to_shaft_efficiency` and `mgu_k_motor_inverter_efficiency`
+must lie in `(0, 1]`, because both are divisors and an above-one would report more power than the
+energy it came from — leaving every fuel-energy-flow limit and the whole C5.2.7 cap permanently
+out of reach. All of them raise `ContractError` at the boundary.
 
 ## 5. Still outstanding for later tasks
 
@@ -415,7 +466,14 @@ curvature factor carries a sign, so a sign check would be the wrong rule. All of
   350-370 km/h as sanity bounds, not agreed tolerances. Task 5 must choose published figures,
   record the sources, and set numeric tolerances here before anything is tuned.
 * **ICE torque curve.** Task 4 owns it, and it should be validated against the C5.2.3/5.2.4
-  energy-flow limits rather than the 400 kW shorthand.
+  energy-flow limits rather than the 400 kW shorthand. **Slice 3 now applies that check**
+  (`ice_fuel_energy_flow_limit_mj_h` and `step_ice_torque`), and the committed curve survives it
+  at the committed efficiency - see section 3. What is *not* done is the calibration half: the
+  curve has still never been chosen to land a published acceleration figure.
+* **Lap recharge enforcement.** The per-lap budget is enforced and testable, but no lap or
+  harvesting scenario exists yet, so nothing calls `begin_lap` in a run. That is Task 5's.
+* **C5.2.5's 380 MJ/h constant arm** is now enforced rather than merely recorded (section 3), and
+  C5.2.3's **per-cylinder** arm is deliberately not - see section 3.
 * **Gearbox.** Task 4 replaces the provisional ratios with the drag-limited top-speed solve.
 * **Aero curves.** Task 3 consumed them; it did not replace them (see section 3). Replacing the
   synthesised `Cl`/`Cd` tables with a published F1 parameter set is still open, and should happen

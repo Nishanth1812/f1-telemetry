@@ -11,23 +11,32 @@ the longitudinal tyre force, both driven by the validated arrays in
 ``@njit(cache=True, fastmath=False)``, flat numeric arguments, no allocation, no clock - so
 there is one set of kernel rules to read, not two.
 
-:mod:`f1telemetry.physics.powertrain` holds P1-T4's: the synthesised ICE torque curve and the
-turbo-lag multiplier below about 4 000 rpm, read from the same ``KernelConfig`` and under the
-same conventions. It reuses :func:`~f1telemetry.physics.forces.speed_curve` for the interpolation
-rather than carrying a second interpolator, and it splits the two ways in the same way: compiled
-primitives that take bare numbers, and one Python entry point that validates what it reads
-before handing it over.
+:mod:`f1telemetry.physics.powertrain` holds P1-T4's and P1-T6's: the synthesised ICE torque curve
+and the turbo-lag multiplier below about 4 000 rpm, plus the 2026 limits that bound the whole power
+unit - because Section C Issue 20 states no ICE power in kW at all and bounds the engine through
+fuel energy flow (C5.2.3, C5.2.4, C5.2.5) instead. The same module holds the MGU-K: the 350 kW DC
+and speed-dependent propulsion caps, the crankshaft-referenced 500 Nm torque limit, the 60 000 rpm
+part-speed ceiling, the grid standing-start rule, the 4 MJ usable window and the event-conditioned
+per-lap recharge limit. It reuses :func:`~f1telemetry.physics.forces.speed_curve` for the
+interpolation rather than carrying a second interpolator, and it splits the two ways in the same
+way: compiled primitives that take bare numbers, and Python entry points that validate what they
+read before handing it over.
 
-:mod:`f1telemetry.physics.gearbox` holds P1-T5's driver-requested shifts and clutch demand. RPM
-does not shift the gearbox. The caller owns gear, shift timer, clutch engagement, and the one-step
-gear request; the compiled step writes the first two state values and returns differential-side
-torque using the configured ratios, final drive, and C9.2.5 clutch demand. Wheel speed and force
-assembly belong to P1-T6 and P1-T7.
+:mod:`f1telemetry.physics.gearbox` holds P1-T5's driver-requested shifts and clutch demand, and
+P1-T6's placement of the MGU-K. RPM does not shift the gearbox. The caller owns gear, shift timer,
+clutch engagement, and the one-step gear request; the compiled step writes the first two state
+values and returns differential-side torque using the configured ratios, final drive, and C9.2.5
+clutch demand. The MGU-K joins at the **crankshaft**, ahead of the gear and the clutch, because
+C5.18.2 fixes its coupling to the crankshaft at a fixed ratio, so the sum
+``(throttle * ice + mgu_k) * ratio * final_drive`` is what the clutch demand sees;
+:func:`~f1telemetry.physics.gearbox.step_drivetrain` is the composition that applies the motor's
+limits before joining it. Wheel speed and force assembly belong to P1-T6 and P1-T7.
 
 Of the three state slots the step advances two. The gear and the shift timer move on every call;
 the clutch engagement is **supplied by the caller and read, never written**, so a caller ramps a
 launch or lifts off between steps and the shift's boost cut - which is applied to a local copy -
-leaves the caller's value untouched.
+leaves the caller's value untouched. The MGU-K's two slots - state of charge and the per-lap
+recharge accumulator - are likewise advanced in place by the MGU-K step.
 
 **Sign conventions**, fixed here and matching
 :class:`~f1telemetry.testing.records.GroundTruthStep` so the invariants have something

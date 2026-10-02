@@ -438,7 +438,9 @@ def test_the_mgu_k_torque_limit_is_referenced_to_crankshaft_speed(spec: CarSpec)
     assert "transient_torque_limiter_threshold_nm" not in fields(car_spec_module.KernelConfig)
 
 
-def test_the_mgu_k_crank_ratio_is_synthetic_and_the_relative_speed_cap_is_not(spec: CarSpec) -> None:
+def test_the_mgu_k_crank_ratio_is_synthetic_and_the_relative_speed_cap_is_not(
+    spec: CarSpec,
+) -> None:
     """C5.18.5 caps a number; C5.18.2 requires a property. Only the first states a value.
 
     The MGU-K is permanently geared to the crankshaft, so joining its torque at the crankshaft
@@ -513,14 +515,68 @@ def test_the_c52_5_partial_load_limit_is_expressed_in_engine_power(spec: CarSpec
     assert config.fuel_energy_flow_partial_load_gain == 9.78
     assert config.fuel_energy_flow_partial_load_offset_mj_h == 869.0
 
-    arms = config.fuel_energy_flow_partial_load_gain * config.fuel_energy_flow_partial_load_threshold_kw
+    arms = (
+        config.fuel_energy_flow_partial_load_gain
+        * config.fuel_energy_flow_partial_load_threshold_kw
+    )
     assert _close(
         arms + config.fuel_energy_flow_partial_load_offset_mj_h,
         config.fuel_energy_flow_partial_load_min_mj_h,
     ), f"C5.2.5's arms leave a step: {arms} + offset != min"
 
-    claim = _at(spec.raw, ("powertrain", "ice", "regulation", "fuel_energy_flow_partial_load_gain_mj_h_per_kw"))
+    claim = _at(
+        spec.raw,
+        ("powertrain", "ice", "regulation", "fuel_energy_flow_partial_load_gain_mj_h_per_kw"),
+    )
     assert (claim["clause"], claim["page"]) == ("C5.2.5", 64)
+
+
+def test_the_two_efficiency_conversions_are_declared_synthetic_and_read_as_data(
+    spec: CarSpec,
+) -> None:
+    """The regulations bound power in fuel MJ/h and electrical kW, and state neither efficiency.
+
+    C5.2.3 through C5.2.5 cap the ICE by fuel *energy* flow while everything the model computes
+    at the crank is *shaft* power, and C5.2.7 caps the MGU-K in electrical DC power while the
+    model holds mechanical shaft torque. Both conversions need an efficiency the document does
+    not publish, so both are project numbers and are labelled as such rather than quoted to a
+    clause. A test that let them look regulated would be claiming a number the FIA never stated.
+    """
+    config = spec.kernel_config()
+    assert 0.0 < config.fuel_to_shaft_efficiency < 1.0
+    assert 0.0 < config.mgu_k_motor_inverter_efficiency < 1.0
+
+    ice_claim = _at(spec.raw, ("powertrain", "ice", "not_regulated", "fuel_to_shaft_efficiency"))
+    mgu_claim = _at(spec.raw, ("powertrain", "mgu_k", "not_regulated", "motor_inverter_efficiency"))
+    assert "C5.2.3" in ice_claim and "C5.2.5" in ice_claim
+    assert "C5.2.7" in mgu_claim
+    assert "not a regulated value" in ice_claim.lower()
+    assert "not a regulated value" in mgu_claim.lower()
+
+    citations = spec.citations()
+    assert "powertrain.ice.fuel_to_shaft_efficiency" not in citations
+    assert "powertrain.mgu_k.motor_inverter_efficiency" not in citations
+
+
+def test_the_c52_3_per_cylinder_arm_is_recorded_and_the_file_says_it_is_not_enforced(
+    spec: CarSpec,
+) -> None:
+    """C5.2.3's per-cylinder figure is cited but stays out of the physics, and the file says why.
+
+    The per-cylinder limit is a real clause and its number is in the file with its quote, but
+    enforcing it needs a cylinder count, which no block of ``car_spec.yaml`` carries and which
+    this project's verified clause set does not cite. Rather than invent one, the arm is recorded
+    and named as unenforced: an unrecorded omission is indistinguishable from an oversight, and a
+    silently invented cylinder count would be an unsourced number doing regulatory work.
+    """
+    value = _at(spec.raw, ("powertrain", "ice", "fuel_energy_flow_per_cylinder_max_mj_h"))
+    assert value == 550.0
+    note = _at(spec.raw, ("powertrain", "ice", "note"))
+    assert "per-cylinder" in note
+    assert "C5.2.3" in note
+
+    config = spec.kernel_config()
+    assert "fuel_energy_flow_per_cylinder_max_mj_h" not in config.__dataclass_fields__
 
 
 def test_the_gearbox_section_is_mixed_and_says_which_number_is_which(spec: CarSpec) -> None:
@@ -811,6 +867,30 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
             ("powertrain", "mgu_k", "relative_speed_limit_rpm"),
             -1.0,
             "relative_speed_limit_rpm",
+        ),
+        # The two efficiency conversions are the only numbers in the powertrain block that are
+        # neither regulated nor bounded by a clause, and a fraction is the rule: a zero divides by
+        # nothing useful and an above-one would report more energy out of the motor than the
+        # regulations cap it delivering.
+        (
+            ("powertrain", "ice", "fuel_to_shaft_efficiency"),
+            0.0,
+            "fuel_to_shaft_efficiency",
+        ),
+        (
+            ("powertrain", "ice", "fuel_to_shaft_efficiency"),
+            1.01,
+            "fuel_to_shaft_efficiency",
+        ),
+        (
+            ("powertrain", "mgu_k", "motor_inverter_efficiency"),
+            0.0,
+            "motor_inverter_efficiency",
+        ),
+        (
+            ("powertrain", "mgu_k", "motor_inverter_efficiency"),
+            math.nan,
+            "motor_inverter_efficiency",
         ),
         (("gearbox", "final_drive"), 0.0, "final_drive"),
         (("gearbox", "reverse_ratio"), 0.0, "reverse_ratio"),

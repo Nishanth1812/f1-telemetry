@@ -172,6 +172,7 @@ powertrain:
     fuel_energy_flow_partial_load_gain_mj_h_per_kw: 9.78
     fuel_energy_flow_partial_load_offset_mj_h: 869.0
     fuel_energy_flow_partial_load_min_mj_h: 380.0
+    fuel_to_shaft_efficiency: 0.52
     torque_curve_nm:
       - { rpm: 2000.0, torque_nm: 60.0 }
       - { rpm: 4000.0, torque_nm: 150.0 }
@@ -202,6 +203,12 @@ powertrain:
         quote: >-
           with a maximum energy flow per cylinder never exceeding 550MJ/h under normal
           operating conditions.
+        enforcement: >-
+          Recorded and cited, but deliberately NOT enforced by the P1 physics. Applying a
+          per-cylinder cap needs a cylinder count, which no block of this file carries and which
+          this project's verified clause set does not cite. An invented count would be an
+          unsourced number doing regulatory work, so the arm is left out of the model and named
+          here instead. See `ice.note` and docs/calibration.md section 5.
       fuel_energy_flow_low_rpm_limit_rpm:
         clause: C5.2.4
         page: 64
@@ -242,6 +249,16 @@ powertrain:
         not state an ICE power in kW at all; C5.2.3 and C5.2.4 bound the ICE through fuel
         energy flow instead, which is why both are recorded as cited values here. P1-T4 uses
         the fuel-energy-flow limits as the real constraint on the torque curve.
+      fuel_to_shaft_efficiency: >-
+        Not a regulated value, and not in Section C at all. C5.2.3, C5.2.4 and C5.2.5 bound the
+        ICE in MJ/h of fuel *energy*, while everything the model computes at the crankshaft is
+        shaft power in kW, so applying any of the three clauses needs a conversion between them.
+        The regulations publish no efficiency and FIA does not measure one, so this is a project
+        number: 0.52, the thermal efficiency a current F1 ICE reaches at its best point. It is
+        the weakest number in this block, because C5.2.3's 3 000 MJ/h total works out to about
+        433 kW of shaft power at it - which is above the 400 kW peak the published figure names,
+        so the committed torque curve survives the cap uncut and the cap is a bound rather than a
+        hidden calibration of the curve. A lower efficiency would start clipping the top of it.
       rev_limit_rpm: >-
         Not in Section C. C5.14 (page 76) only requires every high rev limit to sit inside a
         750rpm band and forbids response changes more than 750rpm below the final limit; the
@@ -263,6 +280,11 @@ powertrain:
       `fuel_energy_flow_partial_load_threshold_kw`, and
       `fuel_energy_flow_partial_load_gain_mj_h_per_kw * P + fuel_energy_flow_partial_load_offset_mj_h`
       above it. The arms meet at the threshold: `9.78 * -50 + 869 = 380`.
+      P1-T6 applies the smallest of C5.2.3's total, C5.2.4's rpm arm and C5.2.5's power arm,
+      measured against the delivered shaft power through `fuel_to_shaft_efficiency`. The
+      per-cylinder arm of C5.2.3 is recorded and cited above and is deliberately not enforced:
+      it needs a cylinder count this file does not carry, and inventing one would put an
+      unsourced number inside a regulatory check.
   mgu_k:
     peak_power_kw: 350.0
     torque_limit_nm: 500.0
@@ -273,6 +295,7 @@ powertrain:
     recharge_allowance_mj_per_lap: 0.5
     relative_speed_limit_rpm: 60000.0
     transient_torque_limiter_threshold_nm: 520.0
+    motor_inverter_efficiency: 0.95
     crankshaft_ratio: 3.0
     superclip_s: 3.0
     launch_speed_kmh: 50.0
@@ -403,6 +426,14 @@ powertrain:
           other half of the fixed coupling in C5.18.2: the MGU-K spins at
           `crankshaft_ratio * ice_rpm`, so this is the speed at which that product is capped.
     not_regulated:
+      motor_inverter_efficiency: >-
+        Not a regulated value, and not in Section C at all. C5.2.7 caps the ERS-K in *electrical*
+        DC power while the model holds mechanical torque at the MGU-K shaft, so the conversion
+        between the two needs a motor-and-inverter efficiency the regulations do not publish.
+        0.95 is a project number for a combined motor/inverter pair, and it is what makes C5.2.7's
+        350 kW read as a torque cap that varies with motor speed. The separate C5.2.11 cap is
+        500 Nm at the crankshaft, or 500/3 Nm at the faster motor shaft under this project's
+        configured ratio.
       crankshaft_ratio: >-
         Synthesised. C5.18.2 requires the MGU-K's rotating parts to be permanently geared to the
         ICE at a fixed ratio to the crankshaft, and that fixed ratio is the model's coupling
@@ -428,6 +459,21 @@ powertrain:
       `recharge_limit_reduced_mj_per_lap` is that 7 MJ, recorded separately from the baseline
       rather than being the baseline, and with the 4 MJ qualifying floor and the conditional
       0.5 MJ allowance alongside it.
+      P1-T6 applies all of it: `store_energy_mj` is the usable window the state of charge is held
+      inside, and the three recharge figures are three *events* rather than one cap, so the limit a
+      run is held to is selected by the caller from
+      `RechargeEvent.RACE | REDUCED | QUALIFYING`, with `recharge_allowance_mj_per_lap` added only
+      when the caller declares the conditional allowance. `launch_speed_kmh` is enforced only under
+      a declared grid standing start, and `ecu_mandates_minimum_acceleration` is a separate caller
+      declaration because C5.2.12's exception is a fact about the mandated launch rather than a
+      constant this file could hold.
+      `transient_torque_limiter_threshold_nm` is cited and deliberately not read by the physics:
+      C5.18.4's 520 Nm is the threshold above which an optional device may act, not a cap, so
+      `torque_limit_nm` is the only MGU-K torque limit the model applies.
+      At `crankshaft_ratio: 3.0`, C5.18.5's 60 000 rpm part speed is reached at about 233 km/h,
+      which is below the speeds where C5.2.8's curve is interesting - so on the committed numbers
+      the relative-speed ceiling binds first and the speed-dependent power cap is only reachable at
+      a lower ratio. Both are enforced; the tests isolate each by relaxing the other.
 
 gearbox:
   ratios: [3.883, 3.437, 3.041, 2.691, 2.381, 2.107, 1.865, 1.634]

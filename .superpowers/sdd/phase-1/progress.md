@@ -501,3 +501,81 @@ notes still promised a replacement Task 3 did not make. Commit `c47ba59` validat
 tests integer normalization and malformed arrays, and corrects the notes. The follow-up added two
 force tests; `pytest` passes (194 total), Ruff and basedpyright are clean, contract/codegen checks
 pass, and the web build succeeds.
+
+## Phase 1 slice 3: ICE, MGU-K, fuel-flow and energy-store limits
+
+Uncommitted at the time of writing. Files: `car_spec.yaml`,
+`src/f1telemetry/contracts/car_spec.py`, `src/f1telemetry/physics/powertrain.py`,
+`src/f1telemetry/physics/gearbox.py`, `src/f1telemetry/physics/__init__.py`,
+`tests/test_powertrain.py` (+19), `tests/test_car_spec.py` (+2, +4 params),
+`docs/calibration.md`. `kernels/longitudinal.py` is **untouched**: force is still an input array
+and P1-T6/T7 wheel state is slice 4, so the integrator had nothing to change.
+
+New config: `powertrain.ice.fuel_to_shaft_efficiency: 0.52` and
+`powertrain.mgu_k.motor_inverter_efficiency: 0.95`, both `not_regulated` and both checked as
+fractions in `(0, 1]`.
+
+### Rulings
+
+1. **The ICE is bounded by the smallest of three "must not exceed" clauses, measured at the
+   delivered power.** `throttle` became a parameter of `step_ice_torque` rather than a caller-side
+   multiplication, because C5.2.5's arm is a function of engine power and the arm *rises* with
+   it — scaling afterwards would have measured the cap at the full request and cut torque the
+   driver may legally ask for, silently.
+2. **The fuel-energy-flow cap is not applied at or below zero delivered power.** There is no fuel
+   request to bound, and C5.2.4's arm goes negative below ~610 rpm, which would otherwise zero the
+   curve below idle.
+3. **C5.2.3's per-cylinder arm is cited and not enforced** — no cylinder count exists in the file
+   and none is in the verified clause set. Recorded in the claim's `enforcement` and the ICE `note`
+   rather than left as an invisible omission.
+4. **C5.2.11's 500 Nm is applied at the crankshaft.** Since motor-shaft speed is the crankshaft
+   speed times the fixed ratio, the allowed motor-shaft torque is `500 / crankshaft_ratio`; the
+   step converts its result back to crankshaft-equivalent torque before the gearbox. C5.18.4's
+   520 Nm never reaches `KernelConfig` at all.
+5. **C5.2.12 is two caller flags, not numbers.** `grid_standing_start` scopes the rule and
+   `ecu_mandates_minimum_acceleration` is the exception; the latter is a fact about the mandated
+   launch and cannot be a car-file constant. Only positive torque is blocked — regeneration below
+   50 km/h is what gets the car there.
+6. **C5.2.10's per-lap limit is selected by `RechargeEvent`, not fixed at 8.5 MJ**, with the
+   conditional 0.5 MJ allowance as a separate flag. `begin_lap` zeroes the budget and leaves the
+   state of charge alone.
+7. **The store is the usable window `[0, 4 MJ]`**, over-requests are clamped by scaling the torque
+   rather than refused, and the MGU-K owns a two-slot caller buffer like the gearbox.
+8. **The MGU-K joins at the crankshaft.** `_step_gearbox` now takes an assembled engine torque and
+   `step_gearbox` gained a keyword-only `mgu_k_torque_nm`; `step_drivetrain` is the composition
+   that applies the motor's limits first. The throttle is the engine's alone.
+
+### Finding worth carrying forward
+
+At `crankshaft_ratio: 3.0`, C5.18.5's 60 000 rpm part speed arrives at about **233 km/h** — below
+where C5.2.8's curve is interesting — so the relative-speed ceiling binds before the speed-dependent
+power cap on the committed numbers. Both are enforced; each test relaxes the other to isolate it.
+Recorded in `car_spec.yaml`'s `mgu_k.note` and `docs/calibration.md` §3.
+
+### TDD record
+
+RED: 19 failures, 121 passing. `AttributeError`/`NameError` on every new `powertrain` name,
+`AttributeError: 'KernelConfig' object has no attribute 'fuel_to_shaft_efficiency'`, and
+`DID NOT RAISE ContractError` for the four new invalid-value cases. GREEN: `pytest
+tests/test_powertrain.py` 33 passed; `pytest tests/test_gearbox.py tests/test_car_spec.py
+tests/test_contract.py tests/test_forces.py tests/test_longitudinal_kernel.py` 265 passed;
+`pytest tests/test_invariants.py tests/test_golden_trace.py tests/test_synthetic.py
+tests/test_numba_toolchain.py` 26 passed. `ruff format` applied, `ruff check` and
+`ruff format --check` clean apart from one **pre-existing** F841 in `tests/test_car_spec.py:410`;
+basedpyright clean apart from **pre-existing** findings in `tests/test_contract.py:339` and
+`tests/test_gearbox.py:1112`, both verified against `HEAD`. `f1-check-contract` and `f1-codegen
+--check` clean.
+
+Seven test-expectation bugs surfaced during the green phase and are recorded because each was the
+*test* being wrong about the physics: the C5.2.5 arm at 100 kW is above C5.2.4's, so the rpm arm
+only binds at ~250 kW; 100 m/s is 360 km/h, where C5.2.8 permits nothing; at 1 000 rpm the
+C5.2.7 power cap binds before the 500 Nm crank cap; `mgu_k_rpm(2000, 3.0)` is 6 000; a full store
+cannot recharge, so a regeneration assertion needs a depleted one; and a 100 µs step moves ~35 J,
+so a 4 MJ window needs ~10^5 steps — both energy tests use `dt_s=1.0`, which is also the physical
+scale (the store is ~12 s of full deployment).
+
+Review correction before commit: the first implementation inverted the torque ratio and motor /
+inverter efficiency on state-of-charge updates. The MGU-K step now enforces the crankshaft-referenced
+torque as `motor_shaft_torque * ratio <= 500 Nm`, returns crankshaft-equivalent torque for the
+gearbox, draws `mechanical_power / efficiency` from the electrical store during deployment, and
+stores `mechanical_power * efficiency` during regeneration.

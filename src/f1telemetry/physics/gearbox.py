@@ -1,9 +1,23 @@
-"""P1-T5 driver-requested shifts and clutch demand.
+"""P1-T5/P1-T6 driver-requested shifts, clutch demand, and the MGU-K at the crankshaft.
 
 Explicit requests control shifts; rpm never changes gear automatically. The caller owns gear,
 shift timer, and clutch engagement. Neutral transmits zero, reverse uses a synthetic ratio with
-negative torque, and C9.2.5 clutch demand limits torque after gear reduction. Wheel speed and
-force assembly remain P1-T6/T7.
+negative torque, and C9.2.5 clutch demand limits torque after gear reduction.
+
+**The MGU-K joins at the crankshaft, before the gearbox and the clutch.** C5.18.2 (page 78) requires
+the motor's rotating parts to be permanently geared to the ICE at a *fixed* ratio to the
+crankshaft, and that coupling is this model's inferred upstream boundary rather than a second path
+into the differential: the driveline torque is
+``(throttle * ice + mgu_k) * ratio * final_drive`` limited by one C9.2.5 clutch demand. The ratio
+itself is synthesised - the clause fixes its property and states no value - so it is
+``car_spec.yaml`` data, and :func:`~f1telemetry.physics.powertrain.step_mgu_k` is what turns the
+motor's request into the torque that joins here.
+
+**The throttle is the engine's alone.** The MGU-K is its own actuator with its own request, and
+scaling its torque by the ICE pedal would make deployment a function of a control the driver does
+not have for it.
+
+Wheel speed and force assembly remain P1-T6/T7.
 """
 
 from __future__ import annotations
@@ -15,7 +29,11 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 from numba import njit
 
-from f1telemetry.physics.powertrain import step_ice_torque  # noqa: TID251 -- same-layer composition
+from f1telemetry.physics.powertrain import (  # noqa: TID251 -- same-layer composition
+    RechargeEvent,
+    step_ice_torque,
+    step_mgu_k,
+)
 
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
@@ -32,6 +50,7 @@ __all__ = [
     "clutch_output_torque_nm",
     "initial_state",
     "shift_remaining_after",
+    "step_drivetrain",
     "step_gearbox",
     "step_requested_gear",
 ]
@@ -228,7 +247,6 @@ def shift_remaining_after(shift_remaining_s: float, dt_s: float) -> float:
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
 def _step_gearbox(
     state: np.ndarray,
-    throttle: float,
     engine_torque_nm: float,
     dt_s: float,
     gear_ratios: np.ndarray,
@@ -288,7 +306,9 @@ def _step_gearbox(
 
     # Ratio first, demand second: `PLAN.md` section 6 draws `torque_curve -> gearbox -> clutch ->
     # differential -> wheels`, so the clutch sees the torque after the reduction and C9.2.5's demand
-    # is a rear-axle figure.
+    # is a rear-axle figure. `engine_torque_nm` arrives here already assembled at the crankshaft -
+    # the ICE's contribution through its own throttle, plus the MGU-K's - which is what puts the
+    # motor upstream of this gear rather than beside the clutch.
     #
     # The 1-based gear indexes a 0-based table, which is the one indexing rule in this module. It is
     # inlined rather than factored out because a public helper would be callable with an arbitrary
@@ -303,7 +323,7 @@ def _step_gearbox(
         # Reverse negates its own synthetic magnitude rather than borrowing the first or the last
         # forward ratio, so the reverse layout does not depend on how many ratios the box has.
         ratio = -reverse_ratio * final_drive
-    gearbox_torque_nm = throttle * engine_torque_nm * ratio
+    gearbox_torque_nm = engine_torque_nm * ratio
     return clutch_output_torque_nm(gearbox_torque_nm, demand_nm)
 
 
@@ -338,6 +358,8 @@ def step_gearbox(
     ice_rpm: float,
     throttle: float,
     request: GearRequest | int = GearRequest.HOLD,
+    *,
+    mgu_k_torque_nm: float = 0.0,
 ) -> float:
     """The torque the driveline receives this step, in newton-metres at the differential.
 
@@ -345,8 +367,9 @@ def step_gearbox(
     :class:`KernelConfig`, checks the caller's state buffer and every number it hands over, and
     calls
     the compiled step with flat scalars. The engine torque comes from
-    :func:`~f1telemetry.physics.powertrain.step_ice_torque`, so the ICE curve and the turbo lag are
-    validated by the composition that already owns them rather than by a second copy of its rules.
+    :func:`~f1telemetry.physics.powertrain.step_ice_torque`, so the ICE curve, the turbo lag and
+    the fuel-energy-flow limit are validated by the composition that already owns them rather than
+    by a second copy of its rules.
 
     **The gear request is the only thing that moves the gearbox.** ``request`` is one of
     :class:`GearRequest` - or the integer code behind one - and defaults to
@@ -368,13 +391,22 @@ def step_gearbox(
     with :data:`GEAR_INDEX`.
 
     **The returned torque is differential-side, not engine-side.** It is
-    ``throttle * engine torque * ratio * final_drive`` limited by the clutch demand the engagement
-    asks for, which is what ``PHASES.md`` P1-T5 means by naming eight ratios and a final drive and
-    what ``PLAN.md`` section 6 draws as ``torque_curve -> gearbox(8-speed) -> clutch -> differential
-    -> wheels``. The ratios are not decoration and ``final_drive`` is not configuration no model
-    reads. It stops at a torque because that is still what this is: P1-T7 is what divides by the
-    rolling radius to get ``Fx``, and P1-T6 is what owns the wheel speed the caller uses to arrive
-    at ``ice_rpm``.
+    ``(throttle * engine torque + mgu_k_torque_nm) * ratio * final_drive`` limited by the clutch
+    demand the engagement asks for, which is what ``PHASES.md`` P1-T5 means by naming eight ratios
+    and a final drive and what ``PLAN.md`` section 6 draws as ``torque_curve -> gearbox(8-speed)
+    -> clutch -> differential -> wheels``. The ratios are not decoration and ``final_drive`` is not
+    configuration no model reads. It stops at a torque because that is still what this is: P1-T7 is
+    what divides by the rolling radius to get ``Fx``, and P1-T6 is what owns the wheel speed the
+    caller uses to arrive at ``ice_rpm``.
+
+    **``mgu_k_torque_nm`` is added, not geared separately**, because C5.18.2 fixes the MGU-K to the
+    crankshaft: whatever torque survives
+    :func:`~f1telemetry.physics.powertrain.step_mgu_k` is already at the crankshaft and takes the
+    same reduction as the engine's. It defaults to zero so a caller with no hybrid in the picture
+    never has to name it, and it is *not* scaled by ``throttle`` - the motor has its own actuator
+    and its own request. A caller that wants the MGU-K's own limits applied should call
+    :func:`step_drivetrain`, which is the composition that applies them; this parameter exists for
+    the caller that has already done so.
 
     **``shift_time_s`` must be positive.** A zero shift time is refused rather than supported,
     because the timer is the only thing that freezes the gear while a shift runs. With it at zero a
@@ -399,6 +431,7 @@ def step_gearbox(
     _check_state(state, float(config.gear_ratios.size))
     ice_rpm = _checked_float("ice_rpm", ice_rpm)
     throttle = _checked_pedal("throttle", throttle)
+    mgu_k_torque = _checked_float("mgu_k_torque_nm", mgu_k_torque_nm)
     code = _checked_request(request)
     dt_s = _checked_float("config.dt_s", config.dt_s)
     if dt_s <= 0.0:
@@ -430,12 +463,13 @@ def step_gearbox(
             "overlapping points leave a single rpm that could satisfy both"
         )
 
-    engine_torque_nm = step_ice_torque(config, ice_rpm)
+    # The throttle goes in here rather than into `_step_gearbox`, because the ICE's fuel-energy-flow
+    # limit is a function of the power the engine is actually making and its arm rises with power.
+    engine_torque_nm = step_ice_torque(config, ice_rpm, throttle)
     return float(
         _step_gearbox(
             state,
-            throttle,
-            engine_torque_nm,
+            engine_torque_nm + mgu_k_torque,
             dt_s,
             config.gear_ratios,
             values["reverse_ratio"],
@@ -446,6 +480,57 @@ def step_gearbox(
             code,
         )
     )
+
+
+def step_drivetrain(
+    config: KernelConfig,
+    state: np.ndarray,
+    mgu_k_state: np.ndarray,
+    ice_rpm: float,
+    throttle: float,
+    speed_m_s: float,
+    mgu_k_request_nm: float = 0.0,
+    *,
+    request: GearRequest | int = GearRequest.HOLD,
+    overtake: bool = False,
+    grid_standing_start: bool = False,
+    ecu_mandates_minimum_acceleration: bool = False,
+    recharge_event: RechargeEvent | int = RechargeEvent.RACE,
+    recharge_allowance_applies: bool = False,
+) -> float:
+    """Capped MGU-K torque joined at the crankshaft, then one gearbox step - differential-side.
+
+    **This is the composition the drivetrain actually runs.** It exists because the two halves have
+    to happen in that order and for a reason a caller should not have to remember: C5.18.2 fixes
+    the MGU-K to the crankshaft, so its torque is *upstream* of the gear reduction and has to be
+    limited before it is added, or a capped-at-the-axle motor would arrive at the axle already
+    multiplied by the first gear. Calling :func:`step_mgu_k` and handing its result to
+    :func:`step_gearbox` as ``mgu_k_torque_nm`` does the same thing in two calls; this does it in
+    one and makes the ordering the only available one.
+
+    Two caller-owned buffers are advanced in place - the gearbox's ``[gear, shift_remaining_s,
+    clutch_engagement]`` and the MGU-K's ``[state_of_charge_mj, lap_recharge_mj]`` - so a run steps
+    both buffers over and over with no allocation and no object per step.
+
+    The MGU-K keyword arguments are exactly
+    :func:`~f1telemetry.physics.powertrain.step_mgu_k`'s and mean exactly what they mean there:
+    they are five declarations about the event the run is at, not tuning. ``mgu_k_request_nm``
+    defaults to zero, so a car with an empty store and no deployment strategy still produces a
+    driveline torque and still advances the gearbox identically.
+    """
+    mgu_k_torque_nm = step_mgu_k(
+        config,
+        mgu_k_state,
+        mgu_k_request_nm,
+        ice_rpm,
+        speed_m_s,
+        overtake=overtake,
+        grid_standing_start=grid_standing_start,
+        ecu_mandates_minimum_acceleration=ecu_mandates_minimum_acceleration,
+        recharge_event=recharge_event,
+        recharge_allowance_applies=recharge_allowance_applies,
+    )
+    return step_gearbox(config, state, ice_rpm, throttle, request, mgu_k_torque_nm=mgu_k_torque_nm)
 
 
 def _checked_float(label: str, value: object) -> float:

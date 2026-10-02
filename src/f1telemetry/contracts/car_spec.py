@@ -133,10 +133,12 @@ class KernelConfig:
     fuel_energy_flow_partial_load_gain: float
     fuel_energy_flow_partial_load_offset_mj_h: float
     fuel_energy_flow_partial_load_min_mj_h: float
+    fuel_to_shaft_efficiency: float
     mgu_k_peak_power_kw: float
     mgu_k_torque_limit_nm: float
     mgu_k_crankshaft_ratio: float
     mgu_k_relative_speed_limit_rpm: float
+    mgu_k_motor_inverter_efficiency: float
     ers_speed_km_h: np.ndarray
     ers_limit_kw: np.ndarray
     ers_overtake_speed_km_h: np.ndarray
@@ -354,6 +356,14 @@ class CarSpec:
             ice.get("fuel_energy_flow_partial_load_min_mj_h"),
             "car_spec: powertrain.ice.fuel_energy_flow_partial_load_min_mj_h",
         )
+        # P1-T6: the conversion between the MJ/h C5.2.3/.4/.5 bound the engine by and the kW of
+        # shaft power everything downstream computes. No clause publishes it, so it is checked as
+        # a fraction rather than a magnitude: at or above one the model would report more shaft
+        # power than the fuel it burned, and every fuel-energy-flow limit would be unreachable.
+        fuel_to_shaft = _fraction(
+            ice.get("fuel_to_shaft_efficiency"),
+            "car_spec: powertrain.ice.fuel_to_shaft_efficiency",
+        )
 
         mgu_k_power = _positive(
             self.mgu_k_peak_power_kw, "car_spec: powertrain.mgu_k.peak_power_kw"
@@ -380,6 +390,13 @@ class CarSpec:
         relative_speed_limit = _positive(
             mgu_k.get("relative_speed_limit_rpm"),
             "car_spec: powertrain.mgu_k.relative_speed_limit_rpm",
+        )
+        # The same fraction rule as the ICE's: C5.2.7 caps the MGU-K in electrical DC power and
+        # the model holds mechanical shaft torque, so an efficiency above one would let the motor
+        # deliver more than the clause caps and the DC limit would never bind.
+        motor_inverter = _fraction(
+            mgu_k.get("motor_inverter_efficiency"),
+            "car_spec: powertrain.mgu_k.motor_inverter_efficiency",
         )
         # C5.2.10 (page 64) states a per-lap recharge *baseline* and then reduces it under
         # conditions it lists: 7 MJ, a 4 MJ qualifying floor, and a conditional 0.5 MJ
@@ -594,12 +611,14 @@ class CarSpec:
             fuel_energy_flow_partial_load_gain=partial_load_gain,
             fuel_energy_flow_partial_load_offset_mj_h=partial_load_offset,
             fuel_energy_flow_partial_load_min_mj_h=partial_load_min,
+            fuel_to_shaft_efficiency=fuel_to_shaft,
             mgu_k_peak_power_kw=mgu_k_power,
             mgu_k_torque_limit_nm=_positive(
                 mgu_k.get("torque_limit_nm"), "car_spec: powertrain.mgu_k.torque_limit_nm"
             ),
             mgu_k_crankshaft_ratio=crankshaft_ratio,
             mgu_k_relative_speed_limit_rpm=relative_speed_limit,
+            mgu_k_motor_inverter_efficiency=motor_inverter,
             ers_speed_km_h=np.array(deployment.speed_km_h, dtype=np.float64),
             ers_limit_kw=ers_limits,
             ers_overtake_speed_km_h=np.array(overtake.speed_km_h, dtype=np.float64),
