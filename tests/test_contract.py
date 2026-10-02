@@ -336,6 +336,7 @@ def test_the_gear_channel_range_is_a_simulator_convention_not_a_fia_limit(repo: 
     gear = entries["gear"]
     assert gear["provenance"] != "fia_limit"
     assert gear["range"] == [-1, 8]
+    assert isinstance(gear["description"], str)
     assert "simulator convention" in gear["description"]
 
     # The generated artifacts carry the same corrected text, so the label cannot drift from

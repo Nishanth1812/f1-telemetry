@@ -184,7 +184,10 @@ def _integrate(
             net_force_n += tyre_fx_n
             drive_nm = forces.wheel_drive_torque_nm(wheel, drivetrain_torque_nm)
             alpha_rad_s2 = forces.wheel_angular_acceleration_rad_s2(
-                drive_nm, tyre_fx_n, rolling_radius_m, wheel_inertia_kg_m2,
+                drive_nm,
+                tyre_fx_n,
+                rolling_radius_m,
+                wheel_inertia_kg_m2,
                 brake_torque_nm[index, wheel],
             )
             out[index + 1, column] = out[index, column] + alpha_rad_s2 * dt_s

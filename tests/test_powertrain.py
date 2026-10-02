@@ -764,8 +764,7 @@ def test_the_energy_store_never_leaves_the_four_mj_window(config: KernelConfig) 
     used = deliver(part, 1_000.0)
     assert 0.0 < used < 1_000.0
     assert part[powertrain.SOC_INDEX] == pytest.approx(
-        1.0
-        - used * crank_omega * dt_s / config.mgu_k_motor_inverter_efficiency / 1.0e6,
+        1.0 - used * crank_omega * dt_s / config.mgu_k_motor_inverter_efficiency / 1.0e6,
         rel=1e-9,
     )
 

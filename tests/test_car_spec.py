@@ -407,7 +407,6 @@ def test_the_reverse_ratio_is_synthetic_and_never_claimed_to_a_clause(spec: CarS
     number. Recording it as a value with no `regulation` claim is the point: a reverse gear is
     required, a reverse ratio is invented, and only one of those two is the FIA's.
     """
-    gearbox = _at(spec.raw, ("gearbox",))
     assert "reverse_ratio" not in _at(spec.raw, ("gearbox", "regulation"))
 
     config = spec.kernel_config()

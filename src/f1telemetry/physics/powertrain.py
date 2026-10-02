@@ -362,9 +362,7 @@ def mgu_k_shaft_torque_nm(
     part_omega *= _RAD_PER_S_PER_RPM
     if part_omega > 0.0:
         dc_to_mechanical = (
-            motor_inverter_efficiency
-            if request_nm > 0.0
-            else 1.0 / motor_inverter_efficiency
+            motor_inverter_efficiency if request_nm > 0.0 else 1.0 / motor_inverter_efficiency
         )
         power_cap = dc_limit_kw * dc_to_mechanical * 1_000.0 / part_omega
         if power_cap < magnitude:

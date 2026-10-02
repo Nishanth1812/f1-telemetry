@@ -177,12 +177,20 @@ def test_caller_brake_torque_slows_car_and_applies_to_front_wheels(config: Kerne
     )
     brake = np.full((steps, forces.WHEEL_COUNT), -500.0, dtype=np.float64)
     trace = longitudinal.simulate(
-        config, steps, state, np.zeros(steps, dtype=np.float64),
-        longitudinal.allocate(steps), brake_torque_nm=brake,
+        config,
+        steps,
+        state,
+        np.zeros(steps, dtype=np.float64),
+        longitudinal.allocate(steps),
+        brake_torque_nm=brake,
     )
     replay = longitudinal.simulate(
-        config, steps, state, np.zeros(steps, dtype=np.float64),
-        longitudinal.allocate(steps), brake_torque_nm=brake,
+        config,
+        steps,
+        state,
+        np.zeros(steps, dtype=np.float64),
+        longitudinal.allocate(steps),
+        brake_torque_nm=brake,
     )
     assert trace[-1, longitudinal.V_INDEX] < speed
     assert trace[-1, longitudinal.FL_WHEEL_INDEX] < state[longitudinal.FL_WHEEL_INDEX]

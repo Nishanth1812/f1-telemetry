@@ -82,6 +82,7 @@ class GroundTruthStep:
     drag_w: float
     downforce_n: float
     steer_rad: float
+    energy_residual_fraction: float | None = None
     wheels: tuple[WheelTruth, WheelTruth, WheelTruth, WheelTruth] = field(
         default_factory=_unloaded_wheels
     )

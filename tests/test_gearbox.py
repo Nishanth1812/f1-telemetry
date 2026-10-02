@@ -1109,7 +1109,7 @@ def test_step_gearbox_refuses_a_request_it_could_not_narrow_to_a_code(
     for good in (*gearbox.GearRequest, *(int(member) for member in gearbox.GearRequest)):
         gearbox.step_gearbox(config, _state(), 6_000.0, 1.0, good)
     with pytest.raises((TypeError, ValueError)):
-        gearbox.step_gearbox(config, _state(), 6_000.0, 1.0, command)  # pyright: ignore[reportArgumentType]
+        gearbox.step_gearbox(config, _state(), 6_000.0, 1.0, command)
 
 
 @pytest.mark.parametrize(
