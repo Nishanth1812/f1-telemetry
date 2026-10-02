@@ -248,8 +248,7 @@ def test_full_throttle_reaches_top_gear_and_ends_in_an_ice_only_tail(
         "no store energy moves during the terminal tail"
     )
     assert tail.duration_s >= 40.0, (
-        "the tail has to be long enough to settle; a shorter one measures a boost, not an "
-        "asymptote"
+        "the tail has to be long enough to settle; a shorter one measures a boost, not an asymptote"
     )
 
 
@@ -276,8 +275,7 @@ def test_the_bounded_mgu_k_deployment_sits_in_the_high_speed_window(
     ), "the request is C5.2.11's crank-referenced limit at the shaft, not a new number"
     assert scenario.segments[index].duration_s == 3.0, "the requested deployment window is bounded"
     assert all(
-        int(run.drivetrain.gear[window][0]) == config.gear_ratios.size
-        for window in windows[index:]
+        int(run.drivetrain.gear[window][0]) == config.gear_ratios.size for window in windows[index:]
     ), "the deployment happens in top gear, where the motor can actually be used"
     speeds_km_h = np.array([step.vx_m_s for step in run.record.ground_truth]) * 3.6
     assert speeds_km_h[windows[index]].min() > config.launch_speed_kmh, (
