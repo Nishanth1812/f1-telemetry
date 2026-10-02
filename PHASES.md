@@ -76,7 +76,7 @@ drive a real dashboard, every later phase is built on sand.
 | P1-T11 | **Energy-balance invariant** in CI | `d(KE)/dt` = fuel power − drag work, residual <1%. Catches most powertrain bugs |
 
 **Exit gate**
-- [ ] 0–100 km/h within the uncertainty of the **2.32 s** reference, and a high-speed scenario transiently **reaching ≥325.8 km/h** — the two straight-line reference points in `PLAN.md` §11.1. Neither is a published figure or a tolerance-bounded acceptance target: the first is a ~3.7 Hz telemetry-derived median whose ±0.30 s is feed quantisation rather than a confidence interval, the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap on a straight is not comparable to a terminal or asymptotic speed
+- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios declare `ice_rpm_override: 12000` only while the clutch slips, as documented in `docs/calibration.md` § Phase 1 scenario wiring.
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
@@ -94,12 +94,16 @@ Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `doc
 fixed before any parameter edit, so the gate has something to measure against. Both are deliberately
 coarse and neither validates configuration-matched performance: a ~3.7 Hz telemetry-derived 0–100
 median, and a single-event FIA speed-table figure used as a reachability floor rather than a terminal
-speed. The P1 exit gate remains open: the measured 0–100 km/h time is 6.8998 s, far outside the
-2.32 s reference, and the measured terminal speed is 307.4189 km/h, below the 325.8 km/h the model
-has never been shown to reach. No coefficient has been tuned toward either observation and the cause
-of both misses is still unidentified. Recording a reference is not a passed gate, and P1 is not
-complete. Synthetic aero, tyres, brakes and powertrain assumptions remain. This work does not
-establish full F1-car fidelity or regulatory compliance.
+speed. The P1 exit gate remains open, and neither straight-line number has been re-measured since
+the scenario wiring that changed both of them — a declared 12 000 rpm launch and a bounded MGU-K
+deployment ahead of an ICE-only terminal tail (`docs/calibration.md` § Phase 1 scenario wiring). The
+last measured pair, a 0–100 km/h time of 6.8998 s against the 2.32 s reference and a 307.4189 km/h
+`full_throttle` maximum against the 325.8 km/h reachability floor, predates that wiring and is stale;
+the transient maximum is a separate measurement from the terminal speed and is the quantity the floor
+applies to. No coefficient has been tuned toward either observation and the cause of both misses was
+never identified. Recording a reference is not a passed gate, and P1 is not complete. Synthetic
+aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
+fidelity or regulatory compliance.
 
 ---
 

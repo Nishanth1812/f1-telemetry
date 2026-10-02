@@ -533,10 +533,11 @@ be wrong. All of them raise at the boundary.
 
 ## 5. Still outstanding for later tasks
 
-* **Performance calibration remains open.** The straight-line reference points are now recorded in
+* **Performance calibration remains open.** The straight-line reference points are recorded in
   section 6 and `PLAN.md` §11.1, which supersedes the first half of the original note; the bullet
-  below keeps what was rejected and why. The measured outputs still miss both, so nothing here is
-  a passed gate.
+  below keeps what was rejected and why. The last measured outputs missed both, and they were
+  measured before the scenario wiring in *Phase 1 scenario wiring* below, so there is currently no
+  figure to judge either against. Nothing here is a passed gate.
 * **Rejected as calibration targets, for the record.** Formula 1 reported 3.55 s and 3.69 s
   0-100 km/h race-start times for Russell and Hamilton at the 2022 Emilia Romagna GP: useful
   historical context, but not a 2026-car measurement, and no coefficient was tuned to them. Any
@@ -586,6 +587,67 @@ be wrong. All of them raise at the boundary.
   updating all four in one commit; the tests fail loudly if the first two disagree, but nothing
   links the third and fourth automatically.
 
+## Phase 1 scenario wiring
+
+The straight-line scenarios in `src/f1telemetry/testing/scenarios.py` now declare two things they
+previously left implicit. This section is the single place the `PHASES.md` exit gate, the
+reference points in section 6 and the measured outputs in the next section all trace to. Neither
+declaration adds a car coefficient: `car_spec.yaml` is untouched, and each value is either read
+from it or already declared on `ScenarioSegment`.
+
+### Launch: a declared 12 000 rpm through the clutch-slip interval
+
+`standing_launch` and `accelerate_to_speed` carry `scenarios.LAUNCH_ICE_RPM` (12 000 rpm) only on
+their initial, partially engaged clutch-slip segment, through the existing
+`ScenarioSegment.ice_rpm_override`. During clutch slip the crankshaft is decoupled from wheel speed,
+so the scenario declares the near-**12 000 rpm** reported in the cited 2026 start telemetry. The
+following fully engaged segment returns to wheel-derived speed; because the model has no continuous
+engine-speed state, this transition is discontinuous. The override is a scenario assumption, not a
+car coefficient, and is bounded to the configured `idle_rpm..rev_limit_rpm` range.
+
+The declared value is pinned by a test. The existing rear-tyre launch-grip assertion also remains
+in place and must be checked after this change; no run has been made yet to confirm it.
+
+### High speed: a short, bounded MGU-K deployment, then an ICE-only tail
+
+`full_throttle` reaches eighth gear on a rolling start through seven driver-requested upshifts,
+pulls there, and then deploys the MGU-K for a bounded **3 s** window at 15 s into the run before
+returning to ICE alone for a **41 s** tail. The run is still 59 s and the shift requests are
+untouched; they remain the only thing that moves the gearbox, which is now asserted for this
+scenario as well as for `full_throttle_shifts`.
+
+The deployment is the existing selection — C5.2.11's 500 Nm crank-referenced limit expressed at the
+motor shaft — and `step_mgu_k` bounds it in three further ways: C5.2.7's 350 kW absolute cap in
+watts, C5.2.9's 4 MJ store, and the C5.18.5 relative-speed ceiling. So it is bounded by interval
+length *and* by the hardware: the store, not the scenario, decides when it runs out. Top gear is
+the only place on these ratios and tyres where a full deployment is transmissible at all, which is
+also where the run needs to be to exercise the combined propulsion-and-aero path — ICE and MGU-K
+through the gearbox, the tyre traction limit, and the `Cl`/`Cd` curves — at the speed where the
+reference car was observed.
+
+The tail is separate because that is what makes the two high-speed quantities separable, which
+section 6 has required all along:
+
+- **Transient maximum speed** — the highest speed the run reaches anywhere, deployment included.
+  This is the only output comparable to the 325.8 km/h reachability floor, and it is a reachability
+  check with no tolerance attached.
+- **Terminal speed** — the speed the run settles at over the motor-free tail, i.e. inside the
+  ICE-only drag balance. A modelled result recorded for its own sake, with no event-trap target,
+  and never a substitute for the maximum.
+
+### What the straight-line numbers are allowed to mean
+
+`tests/test_scenarios.py` reports both speed quantities separately and asserts that the transient
+maximum reaches the 325.8 km/h floor; the test has not been run since this wiring changed. The
+`accelerate_to_speed` result is compared to the 2.32 s median only as a coarse, sampled reference
+from a ~3.7 Hz feed whose ±0.30 s is quantisation resolution — not a confidence interval or a
+pass/fail tolerance. A model inside ±0.30 s would show nothing more than the feed's resolution.
+
+For the same reason the previously pinned outputs are **stale, not current**: the 0–100 km/h time
+and the terminal speed quoted in the next section were measured before this wiring, so the tests
+report the gap against the cited references rather than pinning numbers that no longer describe the
+runs. Run the suite, record the new numbers here, and only then say whether the gate is met.
+
 ## Phase 1 deterministic scenarios
 
 The kernel scenarios use caller-owned torque histories and fixed `car_spec.yaml` coefficients.
@@ -596,16 +658,23 @@ kinetic-energy change against wheel torque work, aero drag and tyre-slip work. I
 crankshaft or store-side electrical power as direct chassis power, since the P1 state omits engine
 and motor rotor inertia.
 
-Current uncalibrated outputs from the committed coefficients are: the standing-launch scenario
-ends at 25.68 km/h after 2.0 s; the seven-second `accelerate_to_speed` scenario first crosses
-100 km/h at 6.8998 s; the six-second full-throttle shift scenario starts at 12 m/s and ends at
-179.48 km/h. A separate 59-second `full_throttle` run reaches eighth gear and a maximum of
-307.4189 km/h; its speed changes by 0.1448 km/h over the final five seconds, so on that run the
-maximum and the terminal speed are the same number to the digits recorded. The 0-100 time misses
-the 2.32 s reference, and the 59-second run's maximum speed is below the 325.8 km/h reachability
-floor (both in section 6). No values were tuned to make them fit, and the cause of both misses is
-still unidentified. Performance calibration remains open against those two reference points. The
-run's terminal speed has no event-trap target and is recorded here only as a modelled result.
+The outputs recorded below are the **last measured ones, from before the scenario wiring in the
+section above** — they describe `full_throttle` as an ICE-only run with no declared launch speed,
+and neither figure has been re-measured since. They are kept here so the change is visible rather
+than silently overwritten, and they must not be quoted as current:
+
+- standing-launch scenario ends at 25.68 km/h after 2.0 s;
+- the seven-second `accelerate_to_speed` scenario first crosses 100 km/h at 6.8998 s;
+- the six-second full-throttle shift scenario starts at 12 m/s and ends at 179.48 km/h;
+- the 59-second `full_throttle` run reached eighth gear, a maximum of 307.4189 km/h and a speed
+  change of 0.1448 km/h over its final five seconds, so on that run the maximum and the terminal
+  speed were the same number to the digits recorded.
+
+Both straight-line misses below the section 6 references were therefore measured on a different
+scenario than the one now committed, and the cause of each was never identified. Performance
+calibration remains open, and until the suite is run there is no current figure at all for either
+the 0–100 km/h time or the transient maximum speed. The recorded terminal speed has no event-trap
+target in any case and was only ever a modelled result.
 
 The external references are [FIA 2026 Australian GP race maximum speeds](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification) — the source of the 325.8 km/h reachability floor in section 6,
 [OpenF1 documentation](https://openf1.org/docs/) and the [`car_data` endpoint for
@@ -721,9 +790,11 @@ only as a reachability floor" - a different and weaker role than being a target,
 
 - No parameter was edited. `car_spec.yaml` is untouched and no coefficient has been tuned toward
   either reference.
-- The measured 0–100 km/h time (6.8998 s) is far from 2.32 s, and the measured terminal speed
-  (307.4189 km/h) is below the 325.8 km/h reachability floor. The P1 performance exit gate is
-  therefore still open and the cause of both misses is still unidentified.
+- Neither straight-line quantity has been re-measured since the scenario wiring recorded in *Phase
+  1 scenario wiring* above. The last measured pair — a 0–100 km/h time of 6.8998 s and a
+  `full_throttle` maximum of 307.4189 km/h — came from the earlier ICE-only scenario, missed both
+  references, and is recorded there as stale. The gate is therefore still open, and for the
+  stronger reason that there is currently no figure to judge rather than a failing one.
 - Neither reference is precise enough to certify configuration-matched performance. If a later
   task finds the 0–100 window too tight to separate a real coefficient error from feed
   quantisation, the correct response is to say so and re-derive the reference - not to widen the
