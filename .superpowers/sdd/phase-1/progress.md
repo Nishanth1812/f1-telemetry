@@ -717,3 +717,26 @@ shape/finiteness validation. The existing invariant suite passes (12 tests). Upd
 and `tasks/todo.md` to mark only demonstrated work; the Phase 1 exit gate remains open because no
 configuration-matched acceleration/top-speed target, real-run invariant report or independent
 solver comparison is recorded. Full-car F1 fidelity and compliance are not claimed.
+
+# Phase 1 scenario and energy gate follow-up
+
+Scenario records now use each segment's caller-supplied clutch engagement. Added a deterministic
+`accelerate_to_speed` run from rest and retained the full kernel-rate drive and brake histories.
+Invariant 6 checks each recorded interval's total chassis and wheel kinetic-energy change against
+the work terms the kernel actually models: wheel drive/brake torque, aerodynamic drag and tyre
+slip. The real-run suite includes invariant 6 and rejects a recorded residual above 1%. The
+`mgu_k_rpm` channel range now spans its cited C5.18.5 60,000 rpm ceiling.
+
+Measured with the current synthesized coefficients: the new start scenario first crosses
+100 km/h at 6.8998 s; the existing six-second rolling full-throttle run ends at 179.48 km/h and
+does not reach terminal speed. The first value misses `PLAN.md`'s 2.5–3.0 s sanity band. Public
+references found do not match this car configuration: Formula 1's 2022 start times are historical,
+and the FIA 2026 325.8 km/h speed trap is event-specific. No coefficients were tuned to either.
+The available `fastest-lap` comparison completed with its bundled 2014 Catalunya car at 77.9119 s
+and 344.377 km/h; that model mismatch is documented in `docs/calibration.md`.
+
+Full verification after the scenario and gate changes: 419 tests passed; Ruff check and formatting,
+basedpyright, contract/codegen checks, and the web production build passed. The `just check`
+wrapper itself could not run because `just` is not installed. P1 performance calibration remains
+open: the measured acceleration and terminal speed miss the plan bands, and matched target sources
+are not available to support coefficient tuning.

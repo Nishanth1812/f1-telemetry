@@ -530,9 +530,13 @@ be wrong. All of them raise at the boundary.
 
 ## 5. Still outstanding for later tasks
 
-* **0-100 km/h and top-speed targets.** `PLAN.md` section 11 gives 2.5-3.0 s and
-  350-370 km/h as sanity bounds, not agreed tolerances. Task 5 must choose published figures,
-  record the sources, and set numeric tolerances here before anything is tuned.
+* **Performance calibration remains open.** `PLAN.md` section 11 gives 2.5-3.0 s and
+  350-370 km/h as broad sanity bounds, not published targets for this configuration. The 2026
+  FIA Australian GP race maximum-speed sheet reports 325.8 km/h at Intermediate 2 for Ocon; it is
+  an event- and track-specific observation, not a terminal-speed target. Formula 1 reported
+  3.55 s and 3.69 s 0-100 km/h race-start times for Russell and Hamilton at the 2022 Emilia
+  Romagna GP; those are useful historical context but are not 2026-car calibration targets.
+  Therefore no coefficient was tuned to either number.
 * **ICE torque curve.** Task 4 owns it, and it should be validated against the C5.2.3/5.2.4
   energy-flow limits rather than the 400 kW shorthand. **Slice 3 now applies that check**
   (`ice_fuel_energy_flow_limit_mj_h` and `step_ice_torque`), and the committed curve survives it
@@ -560,7 +564,10 @@ be wrong. All of them raise at the boundary.
   assumptions (section 3). C9.9.1 is satisfied by not modelling a transfer at all, which is not the
   same as modelling a real one.
 * **Load sensitivity.** `D = mu Fz` has none. P2-T3, with the lateral force.
-* **`fastest-lap` cross-check.** Task 6, per `PHASES.md` P1-T10.
+* **`fastest-lap` cross-check.** A Windows prebuilt v0.5 run completed using its bundled
+  `limebeer-2014-f1.xml` and Catalunya track. It returned 77.9119 s and a 344.377 km/h peak
+  speed. This is a working independent solver comparison, not a like-for-like validation: the
+  bundled car is a 2014 model, while this kernel is a generic synthesized 2026 straight-line car.
 * **2027 regulations.** Section C Issue 2 is already published. A 2027 run would be a new
   `car_spec.yaml` keyed to a new issue, not an edit to this one.
 * **C4.2 enforcement.** Blocked on the Nominal Tyre Mass (see section 2). Becomes checkable at
@@ -576,9 +583,25 @@ be wrong. All of them raise at the boundary.
 
 The kernel scenarios use caller-owned torque histories and fixed `car_spec.yaml` coefficients.
 Launch, requested shifts, neutral/coast, MGU-K deployment/recharge and braking are checked through
-state direction, transition caps and deterministic replay. These are model invariants, not car
-performance calibration: no public, configuration-matched 2026 launch-time, 0–100 km/h, braking
-distance or top-speed target and tolerance are present in this repository. No coefficients are
-tuned to such a target. The brake scenario applies the same synthetic signed torque to all four
-wheels and checks that the forward wheel speed and chassis speed fall; it does not establish an
-F1 brake capacity or stopping distance.
+state direction, transition caps, deterministic replay and all eight invariant checks. Invariant 6
+balances the kernel's actual modeled boundary over each sampled interval: chassis and four-wheel
+kinetic-energy change against wheel torque work, aero drag and tyre-slip work. It does not treat
+crankshaft or store-side electrical power as direct chassis power, since the P1 state omits engine
+and motor rotor inertia.
+
+Current uncalibrated outputs from the committed coefficients are: the standing-launch scenario
+ends at 25.68 km/h after 2.0 s; the seven-second `accelerate_to_speed` scenario first crosses
+100 km/h at 6.8998 s; the six-second full-throttle shift scenario starts at 12 m/s and ends at
+179.48 km/h. A separate 59-second `full_throttle` run reaches eighth gear and 307.4189 km/h; its
+speed changes by 0.1448 km/h over the final five seconds. The 0-100 time misses `PLAN.md`'s
+2.5-3.0 s sanity band and terminal speed misses its 350-370 km/h band. No values were tuned to
+make them fit. Performance calibration remains open pending configuration-matched source targets
+and an identified cause for these misses.
+
+The external references are [FIA 2026 Australian GP race maximum speeds](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification),
+[Formula 1's 2022 Emilia Romagna GP start analysis](https://www.formula1.com/en/latest/article/tremayne-has-the-advantage-swung-towards-red-bull-after-the-emilia-romagna.pRu5QK7PC2BYp7fT1ohts),
+[Fastest-lap v0.5 Windows installation](https://fastest-lap.readthedocs.io/en/latest/getting_started/installation.html), and its [Catalunya quickstart](https://fastest-lap.readthedocs.io/en/latest/getting_started/quickstart.html).
+
+The brake scenario applies synthetic signed torque to all four wheels and checks deceleration; it
+does not establish an F1 brake capacity or stopping distance. The 2014 solver comparison is
+recorded above with its model mismatch, so it does not validate the 2026 coefficients.

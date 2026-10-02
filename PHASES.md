@@ -85,13 +85,16 @@ drive a real dashboard, every later phase is built on sand.
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written
 explanation of which coefficient is wrong.
 
-**Implementation status (2026-10):** The approved six-slice longitudinal fidelity plan is
-implemented on `feat/phase-1`, including explicit drivetrain controls, 2026 powertrain limits,
-four-wheel force assembly, caller-supplied brake torque and deterministic behavior checks. The P1
-exit gate remains open: the broad `PLAN.md` performance ranges are not configuration-matched
-published targets, no real-run invariant report or `fastest-lap` comparison is recorded, and the
-generic aero/tyre/brake inputs remain synthetic. This work does not establish full F1-car fidelity
-or regulatory compliance.
+**Implementation status (2026-10):** The six-slice longitudinal implementation is on
+`feat/phase-1`, including explicit drivetrain controls, 2026 powertrain limits, four-wheel force
+assembly, caller-supplied brake torque, deterministic acceleration scenarios and all eight
+invariants on real runs. Invariant 6 balances the modeled chassis/wheel boundary and passes its
+<1% gate. The optional `fastest-lap` comparison is recorded, with the bundled 2014 car mismatch.
+The P1 exit gate remains open: the measured 0–100 km/h time is 6.8998 s, outside the plan's
+2.5–3.0 s sanity band; the measured terminal speed is 307.4189 km/h, outside the plan's 350–370
+km/h band; and no configuration-matched published 2026 target and tolerance exists. Synthetic
+aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
+fidelity or regulatory compliance.
 
 ---
 
