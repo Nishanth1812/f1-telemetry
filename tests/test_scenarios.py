@@ -5,7 +5,7 @@ fixed initial conditions and emit traces through the existing testing/record pat
 file covers that path and nothing wider:
 
 * **The behaviour each scenario exists to show.** A standing launch starts from rest in first
-  gear and moves on a **declared** engine speed rather than a wheel-derived one; the gearbox moves
+  gear and seeds an engine-speed **state** that evolves during clutch slip; the gearbox moves
   *only* where the scenario asks, and each request cuts the driveline for the configured shift
   time; a neutral selection transmits exactly nothing and selecting first gear again restores it;
   a coasting car decelerates against drag alone and drag grows with speed; caller brake torque
@@ -45,7 +45,11 @@ import pytest
 
 from f1telemetry.generated.channels import CHANNELS, DTYPES
 from f1telemetry.kernels import longitudinal  # noqa: TID251 -- the scenarios drive the kernel
-from f1telemetry.physics import forces, gearbox  # noqa: TID251 -- the scenarios drive this API
+from f1telemetry.physics import (  # noqa: TID251 -- the scenarios drive this API
+    engine,
+    forces,
+    gearbox,
+)
 from f1telemetry.testing import scenarios
 from f1telemetry.testing.invariants import (
     check_energy_balance,
@@ -229,15 +233,14 @@ def test_each_segment_applies_its_caller_supplied_clutch_state(
         assert np.all(run.drivetrain.clutch[window] == segment.clutch)
 
 
-def test_a_caller_supplied_engine_speed_is_what_a_clutch_slipping_launch_samples(
+def test_a_caller_supplied_initial_engine_speed_advances_during_clutch_slip(
     config: KernelConfig,
 ) -> None:
-    """A declared crank speed has to reach the trace, or a launch interval lies about the engine.
+    """A launch seeds a crank-speed state that evolves under delivered and clutch load torque.
 
-    While the clutch is slipping the crank is not geared to the wheels, so deriving rpm from wheel
-    speed pins a stationary launch at idle - and 2026 start telemetry reports the engine held near
-    12 000 rpm through exactly that interval. The segment therefore declares the speed itself, and
-    the trace has to report the declared number rather than the one the wheels imply.
+    While the clutch slips the crank is not speed-locked to the wheels. The start telemetry is an
+    initial condition, not a speed hold: subsequent rpm follows the configured ICE inertia and
+    crank torque balance.
     """
     declared = 12_000.0
 
@@ -247,7 +250,7 @@ def test_a_caller_supplied_engine_speed_is_what_a_clutch_slipping_launch_samples
             throttle=0.5,
             clutch=0.5,
             grid_standing_start=True,
-            ice_rpm_override=override,
+            ice_rpm_initial=override,
         )
         plan = scenarios.Scenario("slipping_launch", 0.0, (segment,), "declared launch rpm")
         return scenarios.run_scenario(config, plan)
@@ -255,33 +258,43 @@ def test_a_caller_supplied_engine_speed_is_what_a_clutch_slipping_launch_samples
     with_override = _run(declared)
     without = _run(None)
 
-    assert np.all(with_override.drivetrain.ice_rpm == declared)
-    assert without.drivetrain.ice_rpm[0] == config.idle_rpm, (
-        "without a declared speed the runner still derives one from the wheels, which pins a "
-        "stationary launch at idle - that is the behaviour the override exists to replace"
+    assert with_override.drivetrain.ice_rpm[0] == declared
+    assert with_override.drivetrain.ice_rpm[1] != declared, (
+        "the declared telemetry speed seeds the engine state; it is not an override held for "
+        "the whole slipping segment"
     )
+    assert without.drivetrain.ice_rpm[1] >= config.idle_rpm, (
+        "an unseeded engine still evolves from configured idle instead of being re-derived from "
+        "the stationary wheels"
+    )
+    ratio = config.gear_ratios[0] * config.final_drive
+    expected = engine.step_engine_speed(
+        config,
+        declared,
+        float(with_override.drivetrain.ice_torque_nm[0]),
+        float(with_override.drivetrain.drive_torque_nm[0]) / ratio,
+        dt_s=with_override.control_steps * with_override.dt_s,
+    )
+    assert with_override.drivetrain.ice_rpm[1] == pytest.approx(expected)
     assert max(with_override.gears) == 1, "a declared 12 000 rpm is below the upshift point"
     assert float(with_override.drivetrain.ice_power_w.max()) > float(
         without.drivetrain.ice_power_w.max()
     ), "a faster engine at the same pedal delivers more shaft power"
     record_rpm = np.array([frame.values["ice_rpm"] for frame in with_override.record.frames])
-    assert np.all(record_rpm == declared), "the published channel carries the declared speed too"
+    assert record_rpm[0] == declared, "the published channel carries the initial crank speed"
     assert all(step.mgu_k_power_w == 0.0 for step in with_override.record.ground_truth), (
         "no motor was asked for anything, so no store energy moved"
     )
 
 
-def test_the_built_launch_scenarios_declare_the_start_telemetry_engine_speed(
+def test_the_built_launch_scenarios_seed_the_start_telemetry_engine_speed(
     runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
 ) -> None:
-    """Both real launches have to use the override, or they report an idling engine.
+    """Both real launches seed telemetry rpm only during the initial slipping segment.
 
-    ``ScenarioSegment.ice_rpm_override`` already has a mechanism test above, on a scenario built
-    for it. What that cannot see is whether a shipped scenario uses it, which is the failure this
-    covers: a launch whose rpm is derived from the wheels while the clutch slips is pinned at the
-    configured idle, and the run then measures a car that never revs. The declared interval is the
-    grid-start one and nothing else, so the override cannot creep out and quietly become the
-    whole run's engine speed.
+    ``ScenarioSegment.ice_rpm_initial`` is an initial condition for the rotational state. It is
+    legal only for a grid-start segment with a slipping clutch; the state then evolves and fully
+    engaged segments couple engine speed to the wheels.
     """
     assert scenarios.LAUNCH_ICE_RPM == 12_000.0
     assert config.idle_rpm < scenarios.LAUNCH_ICE_RPM <= config.rev_limit_rpm, (
@@ -290,25 +303,27 @@ def test_the_built_launch_scenarios_declare_the_start_telemetry_engine_speed(
     for name in ("standing_launch", "accelerate_to_speed"):
         run = runs[name]
         scenario = suite[name]
-        assert any(segment.ice_rpm_override is None for segment in scenario.segments), (
+        assert any(segment.ice_rpm_initial is None for segment in scenario.segments), (
             f"{name} declares the engine speed for the whole run, not for its launch"
         )
         published = np.array([frame.values["ice_rpm"] for frame in run.record.frames])
         for window, segment in zip(_windows(run, scenario), scenario.segments, strict=True):
-            if segment.ice_rpm_override is None:
+            if segment.ice_rpm_initial is None:
                 continue
             assert segment.grid_standing_start, "only a grid-start segment may declare launch rpm"
             assert segment.clutch < 1.0, (
                 "the override is only valid while the clutch slips and decouples engine speed "
                 "from the wheels"
             )
-            assert segment.ice_rpm_override == scenarios.LAUNCH_ICE_RPM
-            assert np.all(run.drivetrain.ice_rpm[window] == scenarios.LAUNCH_ICE_RPM), (
-                "the trace reports the declared engine speed, not the wheel-derived one"
+            assert segment.ice_rpm_initial == scenarios.LAUNCH_ICE_RPM
+            assert run.drivetrain.ice_rpm[window.start] == scenarios.LAUNCH_ICE_RPM, (
+                "the first sample reports the declared engine state, not the wheel-derived one"
             )
-            assert np.all(published[window] == scenarios.LAUNCH_ICE_RPM), (
-                "and the published channel carries the declared speed with it"
+            assert np.all(np.isfinite(run.drivetrain.ice_rpm[window]))
+            assert np.any(run.drivetrain.ice_rpm[window] != scenarios.LAUNCH_ICE_RPM), (
+                "and later samples evolve from the initial condition instead of holding it"
             )
+            assert published[window.start] == scenarios.LAUNCH_ICE_RPM
 
 
 def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference(
@@ -535,11 +550,10 @@ def test_ice_power_w_is_gross_crank_shaft_power_not_clutch_transmitted(
       exactly zero through the cut, so the clutch-transmitted power is zero, while
       the engine keeps delivering shaft power: the channel does not collapse with
       the driveline it no longer drives.
-    * **A slipping clutch decouples the two boundaries.** Over the standing launch's
-      declared-12 000 rpm slip segment the channel reports the shaft power at the
-      declared crank speed, while the power actually crossing the clutch stays below
-      it because the wheels cannot turn anything like as fast as the engine while
-      they slip.
+    * **A slipping clutch decouples the two boundaries.** The standing launch seeds
+      12 000 rpm, then its crank speed evolves independently of wheel speed under the
+      engine inertia and reflected clutch load. The clutch-transmitted power stays
+      below crankshaft power because the wheels turn much slower while they slip.
 
     The operational form of the boundary is checked first: at every recorded step of
     every scenario the channel is exactly ``ice_torque_nm * ice_rpm * tau / 60``.
@@ -581,7 +595,8 @@ def test_ice_power_w_is_gross_crank_shaft_power_not_clutch_transmitted(
     run = runs["standing_launch"]
     scenario = suite["standing_launch"]
     window = _windows(run, scenario)[0]
-    assert np.all(run.drivetrain.ice_rpm[window] == scenarios.LAUNCH_ICE_RPM)
+    assert run.drivetrain.ice_rpm[window.start] == scenarios.LAUNCH_ICE_RPM
+    assert np.any(run.drivetrain.ice_rpm[window] != scenarios.LAUNCH_ICE_RPM)
     shaft_w = run.drivetrain.ice_power_w[window]
     transmitted_w = _clutch_transmitted_power(run, window)
     assert np.all(transmitted_w < shaft_w), (
@@ -927,41 +942,44 @@ def test_an_unknown_gear_request_is_refused(config: KernelConfig) -> None:
         scenarios.run_scenario(config, scenario)
 
 
-def test_an_engine_speed_override_outside_the_configured_range_is_refused(
+def test_an_initial_engine_speed_outside_the_configured_range_is_refused(
     config: KernelConfig,
 ) -> None:
-    """An override the engine could not be at is refused rather than clamped.
+    """An initial engine state outside the operating band is refused rather than clamped.
 
     The derived rpm is clamped to ``[idle_rpm, rev_limit_rpm]`` because a wheel speed outside that
     band is a gear-ratio artefact, not an engine speed. A *declared* speed outside it is different:
-    it is a caller stating the engine is turning faster than the rev limit, and clamping it would
-    quietly report a different engine speed than the one asked for - the same lie the override
-    exists to remove.
+    it is a caller bug, and clamping it would silently change the requested state.
     """
     for override in (
         config.idle_rpm - 1.0,
         config.rev_limit_rpm + 1.0,
         -12_000.0,
     ):
-        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_initial=override)
         scenario = scenarios.Scenario("rpm", 0.0, (segment,), "out of range")
-        with pytest.raises(ValueError, match=r"ice_rpm_override must be within"):
+        with pytest.raises(ValueError, match=r"ice_rpm_initial must be within"):
             scenarios.run_scenario(config, scenario)
 
 
-def test_a_nonfinite_engine_speed_override_is_refused(config: KernelConfig) -> None:
+def test_a_nonfinite_initial_engine_speed_is_refused(config: KernelConfig) -> None:
     for override in (math.nan, math.inf, -math.inf):
-        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_initial=override)
         scenario = scenarios.Scenario("rpm", 0.0, (segment,), "nonfinite rpm")
-        with pytest.raises(ValueError, match=r"ice_rpm_override must be finite"):
+        with pytest.raises(ValueError, match=r"ice_rpm_initial must be finite"):
             scenarios.run_scenario(config, scenario)
 
 
-def test_the_configured_idle_and_rev_limit_are_legal_override_bounds(
+def test_the_configured_idle_and_rev_limit_are_legal_initial_state_bounds(
     config: KernelConfig,
 ) -> None:
     for override in (config.idle_rpm, config.rev_limit_rpm):
-        segment = scenarios.ScenarioSegment(duration_s=0.1, ice_rpm_override=override)
+        segment = scenarios.ScenarioSegment(
+            duration_s=0.1,
+            clutch=0.5,
+            grid_standing_start=True,
+            ice_rpm_initial=override,
+        )
         scenario = scenarios.Scenario("rpm", 0.0, (segment,), "bound")
         run = scenarios.run_scenario(config, scenario)
         assert np.all(run.drivetrain.ice_rpm == override)

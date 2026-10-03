@@ -29,15 +29,12 @@ model behaviour rather than validated car performance.
   box to top gear as fast as the shift timer allows, which is a scenario bug the gearbox is
   right to refuse to model away.
 
-* **A launch declares the engine speed its driver is holding.** ``ScenarioSegment.ice_rpm_override``
-  exists because a wheel-derived rpm is pinned at idle while a clutch slips, and the two grid-start
-  scenarios here use it so they model the near-12 000 rpm the 2026 start telemetry already reports
-  for that interval instead of an engine idling inside a stationary car. It is the one engine state
-  a scenario may declare, and it is bounded to the launch - :data:`LAUNCH_ICE_RPM` and the wheel-
-  derived speed either side of it are two different numbers, so the step out of the launch is a
-  declared discontinuity rather than a run-up, and it is a scenario assumption about driver engine
-  management, not a coefficient. Nothing in ``car_spec.yaml`` states a launch speed and none is
-  invented.
+* **The ICE has a speed state while its clutch is open.** ``ScenarioSegment.ice_rpm_initial`` seeds
+  the state from the near-12 000 rpm reported by the 2026 start telemetry. The engine then evolves
+  from delivered crank torque, clutch load reflected through the active ratio and configured ICE
+  inertia. With a fully engaged clutch the model applies an ideal speed-lock constraint to the rear
+  axle; an open clutch or shift cut leaves the engine independent. The seed is a scenario initial
+  condition, not a speed hold or a car coefficient.
 
 * **Per-corner inputs are unit-signed bias *magnitudes*.** A throttle bias of ``1.0`` and a brake
   bias of ``1.0`` mean "the pedal as given, on every wheel", which is how a straight-line driver
@@ -109,7 +106,12 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 
 from f1telemetry.kernels import longitudinal  # noqa: TID251 -- scenarios drive the kernel
-from f1telemetry.physics import forces, gearbox, powertrain  # noqa: TID251 -- and the models
+from f1telemetry.physics import (  # noqa: TID251 -- and the models
+    engine,
+    forces,
+    gearbox,
+    powertrain,
+)
 from f1telemetry.testing.records import (
     CORNERS,
     GroundTruthStep,
@@ -143,12 +145,9 @@ CONTROL_STEPS: Final[int] = 100
 # rad/s per rpm, the one conversion a runner needs to report engine speed from a wheel speed.
 _RPM_PER_RAD_S: Final[float] = 60.0 / math.tau
 
-# The crank speed the built grid-start launch scenarios declare for their launch segments, from the
-# 2026 start telemetry already cited on :attr:`ScenarioSegment.ice_rpm_override`: the engine is held
-# near 12 000 rpm through the launch, which a wheel-derived speed cannot report while the clutch
-# slips. It is a scenario assumption about what the driver is doing with the engine, not a car
-# coefficient - ``car_spec.yaml`` states no launch speed and none is invented here - and it is only
-# legal because the runner bounds a declared speed to the configured idle..rev-limit window.
+# Initial crank speed for the built grid-start scenarios, from the 2026 start telemetry already
+# cited on :attr:`ScenarioSegment.ice_rpm_initial`. It seeds an evolving engine state during clutch
+# slip; it is not held through the segment and is not a car coefficient.
 LAUNCH_ICE_RPM: Final[float] = 12_000.0
 
 # J per MJ. C5.2.9's usable window and the MGU-K's state of charge are both held in MJ, while the
@@ -174,13 +173,11 @@ class ScenarioSegment:
     deployment - instead of a share of ``throttle``: the motor has a pedal of its own and the ICE
     does not have it.
 
-    ``ice_rpm_override`` is the crankshaft speed for the segment when the driver is holding one the
-    wheels cannot report. It is the engine state rather than a pedal, so it is declared separately:
-    while a clutch slips the crank is not geared to the wheels, and the derived speed is then pinned
-    at the configured idle however fast the driver has the engine revving - which is what a
-    stationary launch would otherwise report. 2026 start telemetry has the engine near 12 000 rpm
-    through that interval, so a segment that means to model one says so. ``None``, the default,
-    leaves the speed derived from the wheels, which is what every other segment wants.
+    ``ice_rpm_initial`` seeds the ICE speed state at the start of this segment, for cases where the
+    crank is not locked to the rear wheels (such as a slipping launch clutch). The engine speed is
+    then integrated from configured inertia and net crank torque for each control interval. With a
+    fully engaged clutch outside a shift cut, speed follows an ideal gear lock to the rear axle.
+    ``None``, the default, keeps the current state or lets that gear-lock constraint determine it.
 
     It is the last field because the ones above it are positional in existing callers: inserted
     earlier it would silently move ``request`` and every argument after it.
@@ -194,7 +191,7 @@ class ScenarioSegment:
     brake_torque_nm: float = 0.0
     grid_standing_start: bool = False
     overtake: bool = False
-    ice_rpm_override: float | None = None
+    ice_rpm_initial: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +299,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     throttle=0.25,
                     clutch=0.75,
                     grid_standing_start=True,
-                    ice_rpm_override=LAUNCH_ICE_RPM,
+                    ice_rpm_initial=LAUNCH_ICE_RPM,
                 ),
                 ScenarioSegment(
                     1.0,
@@ -329,7 +326,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     throttle=0.25,
                     clutch=0.75,
                     grid_standing_start=True,
-                    ice_rpm_override=LAUNCH_ICE_RPM,
+                    ice_rpm_initial=LAUNCH_ICE_RPM,
                 ),
                 ScenarioSegment(
                     1.0,
@@ -491,6 +488,7 @@ def run_scenario(
 
     gear_state = gearbox.initial_state(float(plan.initial_gear))
     mgu_k_state = powertrain.mgu_k_initial_state(config, plan.soc_mj)
+    engine_rpm = config.idle_rpm
     state = longitudinal.initial_state(
         speed_m_s=plan.initial_speed_m_s,
         wheel_omega_rad_s=plan.initial_speed_m_s / config.rolling_radius_m,
@@ -500,16 +498,35 @@ def run_scenario(
     row = 0
     mgu_k_cap_w = config.mgu_k_peak_power_kw * 1_000.0
     for segment, count in zip(plan.segments, counts, strict=True):
+        if segment.ice_rpm_initial is not None:
+            engine_rpm = float(segment.ice_rpm_initial)
         gear_state[gearbox.CLUTCH_INDEX] = segment.clutch
         brake = _brake_history(segment, plan.brake_bias, count)
         brake_torque[row : row + count] = brake
         for interval in range(0, count, control_steps):
             interval_start = row + interval
             sample = state
-            sampled_rpm = _ice_rpm(config, sample, gear_state, segment.ice_rpm_override)
+            shifting_at_start = gear_state[gearbox.SHIFT_TIMER_INDEX] > 0.0
+            shift_requested = interval == 0 and int(segment.request) != int(
+                gearbox.GearRequest.HOLD
+            )
+            starting_gear = int(gear_state[gearbox.GEAR_INDEX])
+            clutch_open = segment.clutch < 1.0 or starting_gear == gearbox.NEUTRAL_GEAR
+            engine_is_free = clutch_open or shifting_at_start or shift_requested
+            if engine_is_free:
+                if not clutch_open:
+                    # Entering a shift cut from a locked clutch preserves the coupled speed as the
+                    # initial condition of the newly free engine state.
+                    engine_rpm = _wheel_coupled_ice_rpm(config, sample, gear_state)
+                sampled_rpm = engine_rpm
+            else:
+                sampled_rpm = _wheel_coupled_ice_rpm(config, sample, gear_state)
+                engine_rpm = sampled_rpm
             sampled_torque = powertrain.step_ice_torque(config, sampled_rpm, segment.throttle)
             sample_speed = float(sample[longitudinal.V_INDEX])
             torque = np.zeros(control_steps, dtype=np.float64)
+            delivered_torque_sum = 0.0
+            load_torque_sum = 0.0
             for offset in range(control_steps):
                 position = interval_start + offset
                 throttle[position] = segment.throttle
@@ -531,6 +548,16 @@ def run_scenario(
                     segment.request if interval == 0 and offset == 0 else gearbox.GearRequest.HOLD,
                     mgu_k_torque_nm=sampled_mgu_k,
                 )
+                delivered_torque_sum += sampled_torque + sampled_mgu_k
+                current_gear = int(gear_state[gearbox.GEAR_INDEX])
+                if current_gear >= 1:
+                    total_ratio = config.gear_ratios[current_gear - 1] * config.final_drive
+                elif current_gear == gearbox.REVERSE_GEAR:
+                    total_ratio = -config.reverse_ratio * config.final_drive
+                else:
+                    total_ratio = 0.0
+                if total_ratio != 0.0:
+                    load_torque_sum += torque[offset] / total_ratio
                 drive[position] = torque[offset]
                 rpm[position] = sampled_rpm
                 ice[position] = sampled_torque
@@ -555,6 +582,16 @@ def run_scenario(
             )
             trace[interval_start + 1 : interval_start + control_steps + 1] = out[1:]
             state = out[control_steps].copy()
+            if engine_is_free:
+                engine_rpm = engine.step_engine_speed(
+                    config,
+                    sampled_rpm,
+                    delivered_torque_sum / control_steps,
+                    load_torque_sum / control_steps,
+                    dt_s=control_steps * config.dt_s,
+                )
+            else:
+                engine_rpm = _wheel_coupled_ice_rpm(config, state, gear_state)
         row += count
 
     accel = np.concatenate((np.diff(trace[:, longitudinal.V_INDEX]) / config.dt_s, np.zeros(1)))
@@ -601,30 +638,12 @@ def _held(values: np.ndarray, control_steps: int, total: int) -> np.ndarray:
     return np.concatenate((values[:total:control_steps], values[-1:]))
 
 
-def _ice_rpm(
+def _wheel_coupled_ice_rpm(
     config: KernelConfig,
     row: np.ndarray,
     gear_state: np.ndarray,
-    override: float | None = None,
 ) -> float:
-    """Crankshaft speed the drivetrain is at while the car is in ``row``'s state.
-
-    ``override``, when the segment declares one, *is* the answer and is returned as given: a caller
-    stating the engine speed knows something the wheels do not, and the derivation below cannot
-    recover it while a clutch slips. :func:`_checked_segment` has already bounded it to the
-    configured idle..rev limit band before the run starts, so it needs no clamp here - and clamping
-    would defeat the point, since a declared speed the runner quietly adjusted is the same
-    disagreement with telemetry that declaring it avoids.
-
-    Otherwise the mean of the two rear wheels, geared by the gear the box is *in* - C5.18.2 puts the
-    MGU-K's speed on the same number, so this is also what the motor's part speed and the
-    fuel-energy-flow limits are evaluated at. A driven axle has no differential model (C9.9.1), so
-    the two rear speeds agree to the last bit and the mean is only a way of not caring which one it
-    was. The derived result is clamped to the engine's own band, because a wheel speed that implies
-    an engine speed outside it is a gear-ratio artefact rather than a speed the engine turns at.
-    """
-    if override is not None:
-        return float(override)
+    """Crank speed imposed by an ideally locked clutch in ``row``'s wheel state."""
     wheel_omega = 0.5 * (row[longitudinal.RL_WHEEL_INDEX] + row[longitudinal.RR_WHEEL_INDEX])
     gear = int(gear_state[gearbox.GEAR_INDEX])
     ratio = (
@@ -632,7 +651,7 @@ def _ice_rpm(
         if gear >= 1
         else config.reverse_ratio * config.final_drive
     )
-    coupled_rpm = wheel_omega * ratio * _RPM_PER_RAD_S
+    coupled_rpm = abs(wheel_omega * ratio) * _RPM_PER_RAD_S
     return float(min(config.rev_limit_rpm, max(config.idle_rpm, coupled_rpm)))
 
 
@@ -1016,22 +1035,25 @@ def _checked_segment(
             f"got {int(segment.request)!r}"
         )
         raise ValueError(msg)
-    override = segment.ice_rpm_override
-    if override is not None:
+    initial_rpm = segment.ice_rpm_initial
+    if initial_rpm is not None:
         if (
-            isinstance(override, bool)
-            or not isinstance(override, (int, float))
-            or not math.isfinite(override)
+            isinstance(initial_rpm, bool)
+            or not isinstance(initial_rpm, (int, float))
+            or not math.isfinite(initial_rpm)
         ):
-            msg = f"{label}: ice_rpm_override must be finite, got {override!r}"
+            msg = f"{label}: ice_rpm_initial must be finite, got {initial_rpm!r}"
             raise ValueError(msg)
-        if not config.idle_rpm <= float(override) <= config.rev_limit_rpm:
+        if not config.idle_rpm <= float(initial_rpm) <= config.rev_limit_rpm:
             msg = (
-                f"{label}: ice_rpm_override must be within the configured idle..rev limit of "
-                f"{config.idle_rpm!r}..{config.rev_limit_rpm!r} rpm, got {override!r}. The engine "
-                "cannot be turning outside its own band, and quietly clamping a declared speed "
-                "would report a different engine speed than the caller asked for - the same lie "
-                "the override exists to remove"
+                f"{label}: ice_rpm_initial must be within the configured idle..rev limit of "
+                f"{config.idle_rpm!r}..{config.rev_limit_rpm!r} rpm, got {initial_rpm!r}. The "
+                "engine state must start inside its configured operating band"
+            )
+            raise ValueError(msg)
+        if not segment.grid_standing_start or segment.clutch >= 1.0:
+            msg = (
+                f"{label}: ice_rpm_initial is only valid for a grid-start segment with clutch slip"
             )
             raise ValueError(msg)
     for quantity, value in (
