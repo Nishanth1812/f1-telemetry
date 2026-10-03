@@ -693,7 +693,8 @@ tyres:
       set was added by P1: `b`, `c`, `e` and `mu` are conventional lateral shape, curvature
       and peak-friction values, and none of them is a regulation number. No public F1 Pacejka
       set has been read into this project, so all four are labelled placeholders for
-      calibration and carry no FIA authority. Together with `longitudinal_pacejka.mu` they set
+      calibration and carry no FIA authority. `b` is applied after channel slip angles are converted
+      from degrees to radians. Together with `longitudinal_pacejka.mu` they set
       the two friction limits the combined-slip ellipse is built from.
     load_sensitivity: >-
       Synthesised P2-T3 input, not a regulation number. `reference_load_n` is the vertical load
