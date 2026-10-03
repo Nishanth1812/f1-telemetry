@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pytest
@@ -94,8 +94,8 @@ def test_pure_lateral_slip_preserves_the_p2_t3_curve(
     )
 
 
-@pytest.mark.parametrize("load_n", [100.0, 1000.0, 4000.0, 12000.0, 40000.0])
-def test_normalized_force_stays_inside_the_load_dependent_ellipse(
+@pytest.mark.parametrize("load_n", [100.0, 1000.0, 4000.0, 12000.0, 40000.0, 50000.0])
+def test_finite_forces_stay_inside_the_axis_peak_envelope(
     config: KernelConfig, params: np.ndarray, load_n: float
 ) -> None:
     dx = config.pacejka_mu * load_n
@@ -170,6 +170,61 @@ def test_zero_and_negative_load_return_zero_on_both_axes(params: np.ndarray) -> 
         )
 
 
+def test_zero_lateral_peak_keeps_lateral_slip_in_the_shared_slip_radius(
+    config: KernelConfig,
+) -> None:
+    """Clamping one axis's peak must not hand its used grip back to the other axis."""
+    clamp_config = replace(
+        config,
+        load_sensitivity_peak=0.5,
+        load_sensitivity_stiffness=0.1,
+    )
+    parameters = combined_slip.prepare_combined_slip_parameters(clamp_config, "test")
+    cutoff_n = clamp_config.load_sensitivity_reference_n * (1.0 + 1.0 / 0.5)
+    below = combined_slip.combined_tyre_forces(0.35, 45.0, 0.0, cutoff_n - 0.1, parameters)
+    above = combined_slip.combined_tyre_forces(0.35, 45.0, 0.0, cutoff_n + 0.1, parameters)
+    assert abs(above[0] - below[0]) < 1.0
+    assert abs(below[1]) < 1.0
+    assert above[1] == 0.0
+
+
+def test_step_boundary_rejects_invalid_scalars_and_packed_parameter_buffers(
+    params: np.ndarray,
+) -> None:
+    assert combined_slip.step_combined_tyre_forces(0.2, 4.0, 0.0, 4000.0, params) == (
+        combined_slip.combined_tyre_forces(0.2, 4.0, 0.0, 4000.0, params)
+    )
+    invalid_calls: tuple[tuple[Any, Any, Any, Any], ...] = (
+        (True, 4.0, 0.0, 4000.0),
+        (0.2, math.nan, 0.0, 4000.0),
+        (0.2, 4.0, math.inf, 4000.0),
+        (0.2, 4.0, 0.0, math.nan),
+        ("0.2", 4.0, 0.0, 4000.0),
+    )
+    for slip_ratio, slip_angle_deg, camber_deg, load_n in invalid_calls:
+        with pytest.raises(ValueError):
+            combined_slip.step_combined_tyre_forces(
+                cast(Any, slip_ratio),
+                cast(Any, slip_angle_deg),
+                cast(Any, camber_deg),
+                cast(Any, load_n),
+                params,
+            )
+    for bad_parameters in (
+        np.zeros(combined_slip.PARAMETER_COUNT - 1, dtype=np.float64),
+        np.zeros(combined_slip.PARAMETER_COUNT, dtype=np.float32),
+        np.full(combined_slip.PARAMETER_COUNT, math.nan, dtype=np.float64),
+        np.zeros(combined_slip.PARAMETER_COUNT * 2, dtype=np.float64)[::2],
+    ):
+        with pytest.raises(ValueError, match="parameters"):
+            combined_slip.step_combined_tyre_forces(0.2, 4.0, 0.0, 4000.0, bad_parameters)
+
+
+def test_compiled_primitive_rejects_wrong_parameter_count(params: np.ndarray) -> None:
+    with pytest.raises(ValueError, match=str(combined_slip.PARAMETER_COUNT)):
+        combined_slip.combined_tyre_forces(0.2, 4.0, 0.0, 4000.0, params[:-1].copy())
+
+
 def test_zero_slip_returns_zero_and_opposite_slips_mirror(params: np.ndarray) -> None:
     assert combined_slip.combined_tyre_forces(0.0, 0.0, 0.0, 4000.0, params) == (
         0.0,
@@ -230,6 +285,21 @@ def test_peak_argument_is_the_exact_unit_peak_for_both_shapes(
         peak = combined_slip.peak_argument(shape, curvature)
         value = math.sin(shape * math.atan(peak - curvature * (peak - math.atan(peak))))
         assert value == pytest.approx(1.0, abs=2e-14)
+
+
+@pytest.mark.parametrize("shape", [1.05, 1.2, 1.5, 1.9, 2.0])
+@pytest.mark.parametrize("curvature", [-10.0, -1.0, 0.0, 0.5, 0.97])
+def test_peak_argument_grid_satisfies_the_derived_unit_peak(shape: float, curvature: float) -> None:
+    peak = combined_slip.peak_argument(shape, curvature)
+    value = math.sin(shape * math.atan(peak - curvature * (peak - math.atan(peak))))
+    assert value == pytest.approx(1.0, abs=2e-13)
+
+
+def test_peak_argument_rejects_boolean_coefficients() -> None:
+    with pytest.raises(ValueError, match="shape"):
+        combined_slip.peak_argument(True, 0.9)
+    with pytest.raises(ValueError, match="curvature"):
+        combined_slip.peak_argument(1.5, False)
 
 
 def test_combined_force_primitive_uses_the_project_numba_options(

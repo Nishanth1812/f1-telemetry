@@ -19,9 +19,10 @@ __all__ = [
     "combined_tyre_forces",
     "peak_argument",
     "prepare_combined_slip_parameters",
+    "step_combined_tyre_forces",
 ]
 
-PARAMETER_COUNT: Final[int] = 14
+PARAMETER_COUNT: Final[int] = 15
 _LONG_B: Final[int] = 0
 _LONG_C: Final[int] = 1
 _LONG_E: Final[int] = 2
@@ -36,6 +37,7 @@ _STIFFNESS_SENSITIVITY: Final[int] = 10
 _CAMBER_STIFFNESS: Final[int] = 11
 _LONG_PEAK_ARGUMENT: Final[int] = 12
 _LAT_PEAK_ARGUMENT: Final[int] = 13
+_REFERENCE_CORNERING_STIFFNESS: Final[int] = 14
 _RAD_PER_DEG: Final[float] = math.pi / 180.0
 
 
@@ -98,10 +100,43 @@ def prepare_combined_slip_parameters(config: KernelConfig, prefix: str) -> np.nd
             lateral["camber_stiffness_n_per_deg"],
             peak_argument(longitudinal["pacejka_c"], longitudinal["pacejka_e"]),
             peak_argument(lateral["lateral_pacejka_c"], lateral["lateral_pacejka_e"]),
+            tyres.reference_cornering_stiffness_n_per_deg(
+                lateral["lateral_pacejka_mu"],
+                lateral["lateral_pacejka_b"],
+                lateral["lateral_pacejka_c"],
+                lateral["load_sensitivity_reference_n"],
+            ),
         ],
         dtype=np.float64,
     )
     return np.ascontiguousarray(parameters)
+
+
+def step_combined_tyre_forces(
+    slip_ratio: float,
+    slip_angle_deg: float,
+    camber_deg: float,
+    load_n: float,
+    parameters: np.ndarray,
+) -> tuple[float, float]:
+    """Validate caller inputs before invoking the compiled combined-slip primitive.
+
+    Kernels validate and pack their configuration once, then call
+    :func:`combined_tyre_forces` directly. This Python composition is for
+    one-off callers and tests, where finite scalars and the exact contiguous
+    float64 parameter contract must be checked before Numba is entered.
+    """
+    values = tuple(
+        _checked_scalar(name, value)
+        for name, value in (
+            ("slip_ratio", slip_ratio),
+            ("slip_angle_deg", slip_angle_deg),
+            ("camber_deg", camber_deg),
+            ("load_n", load_n),
+        )
+    )
+    _checked_parameters(parameters)
+    return combined_tyre_forces(values[0], values[1], values[2], values[3], parameters)
 
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
@@ -118,11 +153,14 @@ def combined_tyre_forces(
     ``E`` and peak ``D``. Their slips are normalized by each curve's derived
     peak argument; the combined radius drives each axis's own Magic Formula
     shape, and direction cosines divide the resulting force between axes.
-    Thus pure-axis behavior is unchanged and the load-dependent force ellipse
-    follows from ``|sin| <= 1`` without clamping the resultant force.
+    Each axis reaches its unit peak at combined radius one, so both Magic
+    Formula magnitudes remain in [0, 1] and the orthogonal direction cosines
+    keep normalized force inside the ellipse without a post-hoc clamp.
     ``slip_angle_deg`` and ``camber_deg`` are degrees; ``slip_ratio`` is
     dimensionless and positive for drive; positive lateral force is leftward.
     """
+    if parameters.size != PARAMETER_COUNT:
+        raise ValueError(f"parameters must contain {PARAMETER_COUNT} float64 values")
     if load_n <= 0.0:
         return (0.0, 0.0)
 
@@ -140,14 +178,12 @@ def combined_tyre_forces(
     camber_stiffness = parameters[_CAMBER_STIFFNESS]
     z_x = parameters[_LONG_PEAK_ARGUMENT]
     z_y = parameters[_LAT_PEAK_ARGUMENT]
+    reference_cornering_stiffness = parameters[_REFERENCE_CORNERING_STIFFNESS]
 
     peak_x_n = mu_x * load_n
     effective_mu_y = tyres.lateral_peak_friction(load_n, mu_y, reference_load, peak_sensitivity)
     peak_y_n = effective_mu_y * load_n
     effective_b_y = tyres.lateral_slip_stiffness(load_n, b_y, reference_load, stiffness_sensitivity)
-    reference_cornering_stiffness = tyres.reference_cornering_stiffness_n_per_deg(
-        mu_y, b_y, c_y, reference_load
-    )
     camber_slip_deg = tyres.camber_equivalent_slip_deg(
         camber_deg, camber_stiffness, reference_cornering_stiffness
     )
@@ -155,9 +191,9 @@ def combined_tyre_forces(
 
     normalized_x = b_x * slip_ratio / z_x
     normalized_y = 0.0
-    if peak_y_n > 0.0 and effective_b_y > 0.0:
+    if effective_b_y > 0.0:
         normalized_y = effective_b_y * alpha_rad / z_y
-    combined_radius = math.sqrt(normalized_x * normalized_x + normalized_y * normalized_y)
+    combined_radius = math.hypot(normalized_x, normalized_y)
     if combined_radius == 0.0:
         return (0.0, 0.0)
 
@@ -169,3 +205,30 @@ def combined_tyre_forces(
         peak_x_n * shape_x * direction_x,
         peak_y_n * shape_y * direction_y,
     )
+
+
+def _checked_scalar(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite real number, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return number
+
+
+def _checked_parameters(parameters: object) -> np.ndarray:
+    if (
+        not isinstance(parameters, np.ndarray)
+        or parameters.dtype != np.float64
+        or parameters.ndim != 1
+        or parameters.size != PARAMETER_COUNT
+        or not parameters.flags.c_contiguous
+    ):
+        raise ValueError(
+            f"parameters must be a C-contiguous float64 vector of length {PARAMETER_COUNT}, "
+            f"got {type(parameters).__name__} of shape {getattr(parameters, 'shape', None)} "
+            f"and dtype {getattr(parameters, 'dtype', None)}"
+        )
+    if not np.isfinite(parameters).all():
+        raise ValueError("parameters must contain only finite values")
+    return parameters

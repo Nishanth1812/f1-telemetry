@@ -56,16 +56,15 @@ unambiguous to check (PLAN.md section 11, invariant 4):
   wheel spinning faster than the road is driving slip and a wheel turning slower is braking slip -
   which is the same convention the slip ratio uses, one product up.
 
-**What this package does not do.** No lateral force, no combined slip, and no load sensitivity or
-load *transfer*: those are P2's (P2-T2 owns the static axial split and the longitudinal transfer,
-P2-T3 the load sensitivity on ``D`` and ``B``, P2-T4 the similarity method). P1's load split is
-therefore the static one, unchanged by speed. No brake torque either - a wheel slows because the
-road pushes back on it, which is enough to decelerate a car but is not Article C11 - and no
-differential, traction control or ABS: C9.9.1, C9.1.2 and C11.4.1 are satisfied here by *not
-modelling* those systems rather than by modelling them. Nothing here reads a clock, a random source
-or a dict, and no number is written in Python that ``car_spec.yaml`` does not supply - the two
-symmetry assumptions (equal rear drive split, equal load inside an axle) are derived from the wheel
-count rather than configured, precisely so that they cannot be read as coefficients.
+**P2 primitives are not yet the integrated vehicle.** ``loads``, ``kinematics``, ``steering``,
+``tyres``, ``combined_slip`` and ``relaxation`` now provide tested pieces, but the P1 longitudinal
+kernel still uses static corner loads and does not advance lateral body motion. The assembled P2
+kernel and real steering scenarios remain open. Brake input is caller-supplied torque without a
+brake-capacity model; no differential, traction control or ABS is modeled (C9.9.1, C9.1.2 and
+C11.4.1). Nothing here reads a clock, a random source or a dict, and no number is written in Python
+that ``car_spec.yaml`` does not supply - the two symmetry assumptions (equal rear drive split, equal
+load inside an axle) are derived from the wheel count rather than configured, precisely so that
+they cannot be read as coefficients.
 
 **Layer isolation.** Nothing in ``analytics``, ``server`` or the web layer may import from here
 (PLAN.md section 3); ruff's banned-api list enforces it, and the tests that must import a kernel

@@ -2,9 +2,9 @@
 
 ``PLAN.md`` section 4 gives the lateral model its own Pacejka set, with load
 sensitivity on ``D`` and ``B`` and a camber response, and ``PHASES.md`` P2-T3
-asks for exactly that and nothing more. This module is that task's work and is
-deliberately nothing else: no combined-slip ellipse (Task 4), no relaxation
-state (Task 5), no chassis integration, no per-corner geometry. It answers one
+asks for exactly that and nothing more. This module provides the steady lateral
+axis; combined slip and relaxation have separate tested primitives, but the
+kernel does not yet compose them into a lateral chassis model. It answers one
 question - what steady lateral force does one contact patch produce for its
 slip angle, camber angle and vertical load - and it answers it as a pure
 function of those three inputs and the validated configuration.
