@@ -359,11 +359,31 @@ def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation
 
 
 def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 7: no uncommanded downshift across forward gears or reverse under throttle.
+    """Invariant 7: a gear change is one neighbouring gear, and no reverse under positive throttle.
 
-    Neutral is a legal driver-selected state between forward gears. The record does not retain
-    the driver's request, so neutral resets the forward progression check; reverse remains
-    forbidden under positive throttle regardless of the preceding gear.
+    **A downshift is legal.** :func:`~f1telemetry.physics.gearbox.step_requested_gear` answers a
+    ``DOWN`` paddle by stepping one forward gear down, so 6 -> 5 is a driver request the model
+    represents and C9.8.3's one change at a time still holds around it. An earlier version of this
+    checker rejected *every* decrease, which made any record containing an ordinary downshift a
+    failure - including the P1 acceleration record the moment a braking scenario was run through it.
+
+    **What is still illegal is a transition the gearbox cannot perform.** One request moves at most
+    one gear and only ever to a neighbour, so a change of two or more gears between two recorded
+    steps is an indexing or state bug, in either direction. That is the check, not monotonicity:
+    requiring a non-decreasing gear column would forbid the downshift the model is built to answer.
+
+    Neutral and reverse are absolute selections that apply from anywhere - ``NEUTRAL`` and
+    ``REVERSE`` are states rather than steps along the box, and ``UP`` from either re-enters at
+    first - so a record is not required to walk the whole ladder to reach one. Neutral therefore
+    resets the neighbour comparison, and no distance is checked across a selection. Reverse stays
+    forbidden under positive throttle regardless of the preceding gear, which is the other half of
+    the original contract and is unchanged.
+
+    The neighbour rule is read across adjacent *recorded* steps, so it assumes a record is sampled
+    finely enough that two shifts cannot complete inside one interval. The committed harness records
+    the drivetrain every 100 kernel steps (10 ms) against a 40 ms ``shift_time_s``, which leaves
+    that margin; a coarser record would need the rule weakened to "no skipped gear per interval at
+    the recorded rate".
     """
     issues: list[Violation] = []
     top = len(spec.gear_ratios)
@@ -382,15 +402,6 @@ def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Viol
         if gear == 0:
             previous = 0
             continue
-        if index > 0 and gear < previous:
-            issues.append(
-                Violation(
-                    where=f"step {index}",
-                    detail="gearbox went backwards",
-                    value=float(gear),
-                    limit=float(previous),
-                )
-            )
         if gear < 0 and step.throttle_pct > 0.0:
             issues.append(
                 Violation(
@@ -398,6 +409,22 @@ def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Viol
                     detail="reverse engaged under positive throttle",
                     value=step.throttle_pct,
                     limit=0.0,
+                )
+            )
+        if index > 0 and previous >= 1 and gear >= 1 and abs(gear - previous) > 1:
+            # Both ends are forward gears, so this is a skipped gear rather than a neutral or
+            # reverse selection, which are legal from anywhere and are not distance-checked.
+            descending = gear < previous
+            issues.append(
+                Violation(
+                    where=f"step {index}",
+                    detail=(
+                        "gearbox went backwards, skipping gears"
+                        if descending
+                        else "gearbox skipped gears going up"
+                    ),
+                    value=float(gear),
+                    limit=float(previous),
                 )
             )
         previous = gear

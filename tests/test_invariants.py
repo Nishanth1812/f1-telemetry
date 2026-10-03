@@ -8,7 +8,7 @@ Every test here does two things, and the second is the one that matters:
 
 Step 2 is what stops these from being ceremonial. An invariant that cannot be made to
 fail is not a test, and the mutations are small and specific - 250 N off one corner's
-load, 0.9x on one power term, one gear index going backwards.
+load, 0.9x on one power term, a gear column that jumps two gears at once.
 
 The fixtures are supplied values, not simulation output. Each result therefore records
 which phase turns the check into a physics-backed one; see
@@ -18,6 +18,7 @@ which phase turns the check into a physics-backed one; see
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import pytest
 
@@ -29,7 +30,7 @@ from f1telemetry.testing.invariants import (
     run_all,
 )
 from f1telemetry.testing.parquet_io import METADATA, serialise_frames
-from f1telemetry.testing.records import SampleRecord
+from f1telemetry.testing.records import SampleRecord, with_gear_sequence, with_step
 
 pytestmark = pytest.mark.invariant
 
@@ -154,17 +155,77 @@ def test_invariant_6_energy_balance(
 
 
 def test_invariant_7_gearbox_progression(straight: SampleRecord, spec: CarSpec) -> None:
-    """Monotonic progression, and no reverse under positive throttle. Backed from P1."""
+    """One neighbouring gear per step, and no reverse under throttle. Backed from P1."""
     result = _result(7, straight, spec)
     assert result.passed, result.summary()
 
     corrupted = _assert_detects(7, spec)
-    assert any("backwards" in violation.detail for violation in corrupted.violations)
+    assert all("gear" in violation.detail for violation in corrupted.violations)
+    assert any("skipped" in violation.detail for violation in corrupted.violations), (
+        "the mutation is a two-gear jump, so only the neighbour rule can be what caught it:\n"
+        f"{corrupted.summary()}"
+    )
 
     gears = [step.gear for step in straight.ground_truth]
-    assert gears == sorted(gears)
+    assert all(abs(next_gear - gear) <= 1 for gear, next_gear in pairwise(gears))
     assert min(gears) >= 1
     assert max(gears) <= len(spec.gear_ratios)
+
+
+def test_invariant_7_accepts_a_single_gear_downshift(straight: SampleRecord, spec: CarSpec) -> None:
+    """Regression: an ordinary 6->5 downshift is legal and must not be reported.
+
+    A downshift is a driver request the model answers - C9.8.3's one change at a time, with the
+    boost cut around it - so a record that contains one is a record of a gearbox working, not of a
+    gearbox failing. The checker used to reject *every* decrease, which made the P1 acceleration
+    record illegal the moment a braking or downshift scenario was run through it.
+    """
+    downshifting = with_gear_sequence(straight, (6, 6, 5, 5))
+    result = _result(7, downshifting, spec)
+    assert result.passed, result.summary()
+
+    # The top gear is a neighbour of the one below it in exactly the same way, so the walk down the
+    # whole box is accepted rather than only the 6->5 the report happened to name.
+    top = len(spec.gear_ratios)
+    walk_down = _result(7, with_gear_sequence(straight, (top, top - 1, top - 1, top - 2)), spec)
+    assert walk_down.passed, walk_down.summary()
+
+
+def test_invariant_7_rejects_a_transition_the_gearbox_cannot_make(
+    straight: SampleRecord, spec: CarSpec
+) -> None:
+    """The complementary half: a downshift that skips a gear is not a request, it is an index bug.
+
+    ``step_requested_gear`` moves exactly one forward gear per request and never past the ends, so
+    6->4 is not a driver action the model can represent. Accepting a single-gear downshift must not
+    have become accepting any decrease.
+    """
+    skipped = _result(7, with_gear_sequence(straight, (6, 6, 4, 4)), spec)
+    assert not skipped.passed, "invariant 7 accepted a downshift that skips a gear"
+    backwards = [violation for violation in skipped.violations if "backwards" in violation.detail]
+    assert backwards, (
+        f"the multi-gear downshift was reported for the wrong reason:\n{skipped.summary()}"
+    )
+    assert backwards[0].value == 4.0
+    assert backwards[0].limit == 6.0
+    assert backwards[0].where == "step 2"
+
+
+def test_invariant_7_still_forbids_reverse_under_positive_throttle(
+    straight: SampleRecord, spec: CarSpec
+) -> None:
+    """Relaxing the downshift rule must not relax C9.7's reverse guard."""
+    coasting = with_gear_sequence(straight, (-1, -1, -1, -1))
+    for index in range(len(coasting)):
+        coasting = with_step(coasting, index, throttle_pct=0.0)
+    powered = with_step(coasting, 1, throttle_pct=100.0)
+    result = _result(7, powered, spec)
+    assert not result.passed, "invariant 7 accepted reverse under positive throttle"
+    assert [violation.where for violation in result.violations] == ["step 1"]
+    assert "reverse engaged under positive throttle" in result.violations[0].detail
+
+    # The same run with the pedal closed is legal, which is why the throttle is part of the rule.
+    assert _result(7, coasting, spec).passed
 
 
 def test_invariant_8_determinism(straight: SampleRecord, spec: CarSpec) -> None:
