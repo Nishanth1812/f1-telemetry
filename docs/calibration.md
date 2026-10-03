@@ -640,8 +640,11 @@ section 6 has required all along:
 
 `tests/test_scenarios.py` reports both speed quantities separately and asserts that the transient
 maximum reaches the 325.8 km/h floor. The latest CI run of the previous 3 s deployment variant
-measured 308.0353 km/h and failed this floor. This revision extends the MGU-K request and corrects
-the recorded-rate tail-entry sample; the revised scenario still needs CI verification. The
+measured 308.0353 km/h and failed this floor. CI run 37095870013 passed on the revised 20 s request,
+including the transient-floor assertion. Pytest captured the successful test's printed measurements,
+so the Actions log confirms the gate but does not expose its exact speed value. The test now samples
+tail entry at the recorded rate rather than applying a recorded-step index to the kernel-rate trace.
+The revised 0–100 result still needs to be recorded. The
 `accelerate_to_speed` result is compared to the 2.32 s median only as a coarse, sampled reference
 from a ~3.7 Hz feed whose ±0.30 s is quantisation resolution — not a confidence interval or a
 pass/fail tolerance. A model inside ±0.30 s would show nothing more than the feed's resolution.
