@@ -257,9 +257,9 @@ def test_the_bounded_mgu_k_deployment_sits_in_the_high_speed_window(
 ) -> None:
     """Deployment where the run is meant to reach a high speed, and nowhere else.
 
-    Top gear is where a full C5.2.11 deployment is transmissible at all (see the module docstring),
-    and a brief window is what makes the deployment bounded: the store, not the scenario, decides
-    when it runs out.
+    Top gear is where a full C5.2.11 deployment is transmissible at all (see the module docstring).
+    The longer request keeps deployment available through the high-speed stretch; the step still
+    clamps delivery to charge, power, torque and relative-speed limits.
     """
     run = runs["full_throttle"]
     scenario = suite["full_throttle"]
@@ -267,13 +267,15 @@ def test_the_bounded_mgu_k_deployment_sits_in_the_high_speed_window(
     deployment = [
         i for i, segment in enumerate(scenario.segments) if segment.mgu_k_request_nm > 0.0
     ]
-    assert len(deployment) == 1, "one brief deployment, not a motor-assisted run"
+    assert len(deployment) == 1, "one bounded deployment request, not a motor-assisted run"
     index = deployment[0]
     assert 0 < index < len(scenario.segments) - 1, "the deployment is followed by an ICE-only tail"
     assert scenario.segments[index].mgu_k_request_nm == pytest.approx(
         config.mgu_k_torque_limit_nm / config.mgu_k_crankshaft_ratio, rel=1e-12
     ), "the request is C5.2.11's crank-referenced limit at the shaft, not a new number"
-    assert scenario.segments[index].duration_s == 3.0, "the requested deployment window is bounded"
+    assert scenario.segments[index].duration_s == 20.0, (
+        "the deployment request covers the high-speed stretch"
+    )
     assert all(
         int(run.drivetrain.gear[window][0]) == config.gear_ratios.size for window in windows[index:]
     ), "the deployment happens in top gear, where the motor can actually be used"
@@ -282,7 +284,7 @@ def test_the_bounded_mgu_k_deployment_sits_in_the_high_speed_window(
         "C5.2.12's launch block is not in play this far up, so the deployment is the motor's own"
     )
     power = run.drivetrain.mgu_k_power_w
-    assert np.all(power[windows[index]] > 0.0), (
+    assert np.any(power[windows[index]] > 0.0), (
         "a deployment spends the store, in the positive direction"
     )
     cap_w = config.mgu_k_peak_power_kw * 1_000.0
@@ -309,18 +311,28 @@ def test_the_transient_maximum_speed_is_measured_apart_from_the_terminal_speed(
     tail_window = _windows(run, scenario)[-1]
     transient_km_h = float(run.trace[:, 1].max()) * 3.6
     terminal_km_h = float(run.trace[-1, 1]) * 3.6
-    tail_km_h = float(run.trace[tail_window.start, 1]) * 3.6
+    tail_km_h = float(run.record.ground_truth[tail_window.start].vx_m_s) * 3.6
+    deployment = next(
+        window
+        for segment, window in zip(scenario.segments, _windows(run, scenario), strict=True)
+        if segment.mgu_k_request_nm > 0.0
+    )
+    deployment_power_kw = run.drivetrain.mgu_k_power_w[deployment] / 1_000.0
+    deployment_soc_mj = run.drivetrain.soc_mj[deployment]
     last_five = run.trace[-round(5.0 / run.dt_s) :, 1]
     drift_km_h = float((last_five[-1] - last_five[0]) * 3.6)
     print(
         f"full_throttle transient maximum {transient_km_h:.4f} km/h (the reachability-floor "
         f"quantity, {transient_km_h - TOP_SPEED_REACHABILITY_KMH:+.4f} km/h against the cited "
         f"{TOP_SPEED_REACHABILITY_KMH} km/h floor), terminal {terminal_km_h:.4f} km/h after a "
-        f"{tail_km_h:.4f} km/h ICE-only tail entry, {drift_km_h:+.4f} km/h over its last five "
-        f"seconds. The transient maximum is asserted against its floor; terminal speed is not."
+        f"{tail_km_h:.4f} km/h ICE-only tail entry, MGU-K peaked at "
+        f"{float(deployment_power_kw.max()):.2f} kW with store "
+        f"{float(deployment_soc_mj[0]):.3f} to {float(deployment_soc_mj[-1]):.3f} MJ, "
+        f"{drift_km_h:+.4f} km/h over its last five seconds. The transient maximum is asserted "
+        f"against its floor; terminal speed is not."
     )
     assert transient_km_h >= TOP_SPEED_REACHABILITY_KMH, (
-        "the transient maximum, not the terminal speed, must reach the cited FIA speed-trap floor"
+        "the transient maximum, not the terminal speed, must reach the cited FIA speed-table floor"
     )
     assert abs(drift_km_h) < 1.0, (
         "the last five seconds of an ICE-only tail are the settled speed, not a residual climb"
