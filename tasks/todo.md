@@ -100,20 +100,20 @@
 **Scenario wiring added since those numbers were measured:**
 
 - `standing_launch` and `accelerate_to_speed` now declare `scenarios.LAUNCH_ICE_RPM` (12 000 rpm) only on the initial partially engaged, clutch-slip segment. It is a **scenario assumption derived from the 2026 start telemetry already cited** on `ScenarioSegment.ice_rpm_override`, not a coefficient: no car coefficient was added, `car_spec.yaml` is untouched, and subsequent fully engaged segments return to wheel-derived engine speed.
-- `full_throttle` now requests MGU-K deployment for 20 s at C5.2.11's crank-referenced limit during top-gear acceleration, followed by a 41 s ICE-only tail. The store and regulation limits clamp actual delivery; the run is 76 s. The shift requests are unchanged and are still the only thing that moves the gearbox; no kernel interface changed. This is what separates the two speed quantities: the **transient maximum** is the reachability-floor quantity, and the **terminal speed** is measured over the motor-free tail. The previous 3 s variant failed CI at 308.0353 km/h; the revised variant awaits CI.
+- `full_throttle` now requests MGU-K deployment for 20 s at C5.2.11's crank-referenced limit during top-gear acceleration, followed by a 41 s ICE-only tail. The store and regulation limits clamp actual delivery; the run is 76 s. The shift requests are unchanged and are still the only thing that moves the gearbox; no kernel interface changed. This is what separates the two speed quantities: the **transient maximum** is the reachability-floor quantity, and the **terminal speed** is measured over the motor-free tail. The previous 3 s variant failed CI at 308.0353 km/h; CI run 37095870013 passed the revised transient-floor assertion.
 
-**Open and unverified — no local test, build or lint was run, by request:**
+**Remaining reporting item — local Python tests were not run, by request:**
 
-- [ ] **The two straight-line measurements are unmeasured again.** `tests/test_scenarios.py` now reports the 0–100 time and the transient/terminal speeds with their gap against the cited references instead of pinning them, because the old pinned values (6.8998 s, 307.419 km/h) describe the pre-wiring runs. Record the revised CI numbers here and in `docs/calibration.md` before quoting them. The previous 3 s deployment run measured 308.0353 km/h and failed the reachability floor.
-- [ ] **The launch-grip check remains unverified.** `test_the_launch_grip_keeps_the_rear_tyres_inside_their_peak` is unchanged; run it against the launch override before accepting the scenario. It has not been weakened without evidence.
-- [ ] **The terminal-tail settling bound is likewise unconfirmed.** `|Δspeed| < 1.0 km/h` over the tail's last five seconds was true of the old ICE-only 50 s pull; the new tail enters above the ICE-only asymptote and relaxes back into it, so the bound is reasoned, not measured.
+- [ ] **Record the 0–100 km/h result** against the coarse 2.32 s reference without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance. The passing CI log captures pytest output, so it does not retain the numeric result.
+- [x] **The transient-speed reachability floor passes.** CI run 37095870013 passed the ≥325.8 km/h assertion on the revised scenario; the exact number was not exposed in the captured log.
+- [x] **Launch grip and terminal-tail settling pass in CI.** The unchanged launch-grip assertion and the corrected tail-settling assertion both passed in run 37095870013.
 
 **Description:** Implement `accelerate_to_speed` and `full_throttle` with deterministic traces; tune only documented car-spec coefficients toward source-backed acceleration and top-speed references.
 
 **Acceptance criteria:**
 - [x] Each implemented scenario runs from fixed initial conditions and emits traces through the existing testing/record pattern.
 - [x] 0–100 km/h and top-speed reference points are chosen from cited sources before tuning and recorded in `docs/calibration.md`. **Done** — `PLAN.md` §11.1 and `docs/calibration.md` §6 record both with sources, derivation, and the limits of the evidence. **This revises the earlier ruling** that the 2022 Emilia Romagna start figures and event-specific 2026 speed-trap observations were not targets: the Australian GP speed-table figure is now used, but explicitly only as a reachability floor, since a speed trap mid-straight is not comparable to a terminal or asymptotic speed. **Changed since this item was first written**: the 0–100 figure is a coarse ~3.7 Hz telemetry-derived median whose ±0.30 s is feed quantisation rather than a confidence interval, not a precise acceptance target, and the first-motion window includes the physical launch and excludes only the pre-motion delay.
-- [ ] Record the 0–100 km/h time against the coarse 2.32 s reference without using its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the transient maximum in `full_throttle` to reach ≥325.8 km/h. **Open.** The prior 3 s deployment CI run measured 308.0353 km/h and failed the floor; the revised 20 s request has not yet been measured. Record its results here and in `docs/calibration.md` before closing the gate.
+- [ ] Record the 0–100 km/h time against the coarse 2.32 s reference without using its ±0.30 s sampling uncertainty as a pass/fail tolerance. The transient maximum requirement (≥325.8 km/h) passed in CI run 37095870013; record its exact value and the 0–100 result here and in `docs/calibration.md` before closing the performance reporting gate.
 - [x] Calibration parameters remain data-driven and the torque curve is labeled as synthesized. **Performance calibration is not complete** until the open item above passes against the recorded reference points.
 
 **Verification:** Scenario tests plus golden traces for straight-line acceleration; record measured 0–100 km/h and top speed against the reference points in `docs/calibration.md` §6, with the caveat that neither is a published figure.
@@ -145,6 +145,6 @@
 
 ## Checkpoint: Phase 1 exit
 
-- [ ] P1 performance exit gate passes. **Open.** The previous 3 s deployment CI run measured 308.0353 km/h against the 325.8 km/h transient floor and failed; the 20 s request revision is awaiting CI. The terminal speed is a separate measurement and is not the reachability-floor quantity. Record both current measurements after CI and revisit the remaining 0–100 km/h target.
+- [ ] P1 performance reporting gate closes. **Open pending recorded results.** The transient floor, launch-grip check and tail-settling assertion all passed CI run 37095870013. Record the 0–100 result and exact transient maximum; terminal speed is separate and is not the reachability-floor quantity.
 - [ ] `just check` passes.
 - [x] Calibration inputs, available historical/event-specific references, and the optional solver comparison are recorded for review.

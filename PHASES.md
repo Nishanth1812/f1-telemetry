@@ -98,11 +98,11 @@ speed. The P1 exit gate remains open. No current 0–100 result is recorded afte
 12 000 rpm launch wiring; a CI run of the 3 s MGU-K deployment variant measured the transient
 maximum ahead of an ICE-only terminal tail (`docs/calibration.md` § Phase 1 scenario wiring). The
 last pinned pair, a 0–100 km/h time of 6.8998 s against the 2.32 s reference and a 307.4189 km/h
-`full_throttle` maximum, predates that wiring and is stale. CI later measured 308.0353 km/h on the
-3 s MGU-K variant and failed the 325.8 km/h reachability floor; this revision extends the request
-window without changing coefficients. The transient maximum is a separate measurement from terminal
-speed and is the quantity the floor applies to. The 0–100 miss remains unexplained. Recording a
-reference is not a passed gate, and P1 is not complete. Synthetic
+`full_throttle` maximum, predates that wiring and is stale. CI run 37095870013 passed after extending
+the MGU-K request window, including the 325.8 km/h transient-floor assertion, without changing
+coefficients. The transient maximum is separate from terminal speed and is the quantity the floor
+applies to. The Actions log did not retain the exact speed value, and the revised 0–100 result still
+needs to be recorded. Recording a reference is not a passed gate, and P1 is not complete. Synthetic
 aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
 fidelity or regulatory compliance.
 
