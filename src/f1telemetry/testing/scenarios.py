@@ -341,7 +341,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
             initial_speed_m_s=12.0,
             description=(
                 "Rolling full-throttle run with one driver request for each upshift through "
-                "eighth gear, a brief bounded MGU-K deployment during the top-gear acceleration, "
+                "eighth gear, a store-bounded MGU-K deployment during the top-gear acceleration, "
                 "then a sustained ICE-only top-gear tail for the terminal-speed check. The "
                 "deployment and the tail are separate segments on purpose: the maximum speed the "
                 "run reaches and the speed it settles at are different quantities measured over "
@@ -354,7 +354,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     for _ in range(7)
                 ),
                 ScenarioSegment(6.0, throttle=1.0),
-                ScenarioSegment(3.0, throttle=1.0, mgu_k_request_nm=mgu_k_nm),
+                ScenarioSegment(20.0, throttle=1.0, mgu_k_request_nm=mgu_k_nm),
                 ScenarioSegment(41.0, throttle=1.0),
             ),
         ),
