@@ -351,3 +351,76 @@ def test_equivalent_int_and_float_ratio_inputs_share_one_answer(config: KernelCo
     a = steering.steering_angles_deg(config, 120)
     b = steering.steering_angles_deg(config, 120.0)
     np.testing.assert_array_equal(a, b)
+
+
+def test_step_matches_the_boundary_composition(config: KernelConfig) -> None:
+    """step_road_wheel_angles runs the same model as steering_angles_deg, in place."""
+    for steer_wheel_deg in (-320.0, -30.0, 0.0, 30.0, 320.0):
+        out = np.full(4, -1.0, dtype=np.float64)
+        result = steering.step_road_wheel_angles(config, steer_wheel_deg, out)
+        assert result is None
+        np.testing.assert_array_equal(out, steering.steering_angles_deg(config, steer_wheel_deg))
+
+
+def test_step_writes_the_caller_owned_buffer_in_place(config: KernelConfig) -> None:
+    """The caller's vector is updated, never replaced or reallocated."""
+    out = np.zeros(4, dtype=np.float64)
+    before = out
+    steering.step_road_wheel_angles(config, 120.0, out)
+    assert out is before
+    fl, fr, rl, rr = out
+    assert fl > fr > 0.0
+    assert (rl, rr) == (0.0, 0.0)
+
+
+def test_step_rejects_out_of_limit_and_nonfinite_scalars(config: KernelConfig) -> None:
+    """The scalar rules are the boundary's rules: refused, never clipped."""
+    out = np.zeros(4, dtype=np.float64)
+    limit = config.max_steering_wheel_angle_deg
+    steering.step_road_wheel_angles(config, limit, out)
+    steering.step_road_wheel_angles(config, -limit, out)
+    bad_values: tuple[Any, ...] = (
+        limit + 1e-9,
+        -(limit + 1e-9),
+        math.nan,
+        math.inf,
+        -math.inf,
+        True,
+        "120",
+        None,
+    )
+    for bad in bad_values:
+        with pytest.raises(ValueError):
+            steering.step_road_wheel_angles(config, bad, out)
+
+
+@pytest.mark.parametrize(
+    "bad_out",
+    [
+        np.zeros(4, dtype=np.float32),  # wrong dtype
+        np.zeros(3, dtype=np.float64),  # wrong length
+        np.zeros((2, 2), dtype=np.float64),  # wrong ndim
+        np.zeros(8, dtype=np.float64)[::2],  # non-contiguous
+        [0.0, 0.0, 0.0, 0.0],  # not an ndarray
+    ],
+    ids=["float32", "length-3", "2d", "strided", "list"],
+)
+def test_step_rejects_a_bad_output_buffer(config: KernelConfig, bad_out: Any) -> None:
+    """A wrong-shape, wrong-dtype, or strided buffer would silently write the wrong state."""
+    with pytest.raises(ValueError, match=r"float64|C-contiguous"):
+        steering.step_road_wheel_angles(config, 120.0, bad_out)
+
+
+def test_step_rejects_a_read_only_output_buffer(config: KernelConfig) -> None:
+    out = np.zeros(4, dtype=np.float64)
+    out.flags.writeable = False
+    with pytest.raises(ValueError, match="writable"):
+        steering.step_road_wheel_angles(config, 120.0, out)
+
+
+def test_step_reads_the_config_outside_the_loop(config: KernelConfig) -> None:
+    """Config validation happens on the boundary, not per compiled call."""
+    broken = replace(config, steering_ratio=0.0)
+    out = np.zeros(4, dtype=np.float64)
+    with pytest.raises(ValueError, match="steering_ratio"):
+        steering.step_road_wheel_angles(broken, 120.0, out)

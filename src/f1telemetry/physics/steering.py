@@ -85,6 +85,7 @@ __all__ = [
     "ideal_ackermann_front_angles_deg",
     "road_wheel_angles_deg",
     "steering_angles_deg",
+    "step_road_wheel_angles",
     "validated_steering_scalars",
 ]
 
@@ -262,6 +263,59 @@ def steering_angles_deg(config: KernelConfig, steer_wheel_deg: float) -> np.ndar
         out,
     )
     return out
+
+
+def step_road_wheel_angles(config: KernelConfig, steer_wheel_deg: float, out: np.ndarray) -> None:
+    """One road-wheel angle step, checked before it runs.
+
+    The Python-facing composition: a caller inside a kernel does not come
+    through here - it reads the configuration outside its loop through
+    :func:`validated_steering_scalars` and calls :func:`road_wheel_angles_deg`
+    directly, because this function's checks are Python and a compiled
+    loop cannot make them. The input is a steering-*wheel* angle in
+    degrees, positive left; ``out`` is the caller-owned ``float64``
+    vector of length four in ``FL, FR, RL, RR`` order that the angles
+    are written into in place, and nothing is returned or allocated.
+
+    The input must be a real, finite number within the configured
+    magnitude limit - refused, never clipped - and the buffer must be a
+    writable C-contiguous ``float64`` length-four vector: with bounds
+    checking off, a wrong length is an out-of-bounds write rather than
+    an error, and a strided or ``float32`` buffer compiles as the wrong
+    memory rather than failing. Equivalent ``int`` and ``float``
+    callers are narrowed to ``float`` so they share one compiled
+    specialisation.
+    """
+    values = validated_steering_scalars(config, "step_road_wheel_angles")
+    steer = _checked_float("steer_wheel_deg", steer_wheel_deg, prefix="step_road_wheel_angles")
+    limit = values["max_steering_wheel_angle_deg"]
+    if abs(steer) > limit:
+        raise ValueError(
+            f"step_road_wheel_angles: steer_wheel_deg magnitude {abs(steer)!r} exceeds "
+            f"config.max_steering_wheel_angle_deg {limit!r}; the limit rejects, it "
+            "does not clip"
+        )
+    if (
+        not isinstance(out, np.ndarray)
+        or out.dtype != np.float64
+        or out.ndim != 1
+        or out.size != _WHEEL_COUNT
+        or not out.flags.c_contiguous
+        or not out.flags.writeable
+    ):
+        raise ValueError(
+            f"step_road_wheel_angles: out must be a writable C-contiguous float64 vector of length "
+            f"{_WHEEL_COUNT}, got {type(out).__name__} of shape "
+            f"{getattr(out, 'shape', None)} and dtype {getattr(out, 'dtype', None)}"
+        )
+    road_wheel_angles_deg(
+        steer,
+        values["steering_ratio"],
+        values["wheelbase_m"],
+        values["front_track_m"],
+        values["ackermann_fraction"],
+        out,
+    )
 
 
 def _checked_float(label: str, value: object, *, prefix: str) -> float:
