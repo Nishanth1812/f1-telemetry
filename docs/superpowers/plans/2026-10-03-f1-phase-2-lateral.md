@@ -32,13 +32,17 @@
 ## Current State and P1 Issues to Carry
 
 **Implementation update (2026-10-03):** The P2 vehicle inputs are in `car_spec.yaml` and the
-validated `KernelConfig`. A tested `physics/loads.py` slice now calculates per-corner static,
-longitudinal and lateral loads plus quasi-static travel; it reports travel-limit flags and documents
-its geometric transfer, aero split and lack of roll-centre/unsprung-mass detail. A tested
-`physics/tyres.py` slice now provides steady lateral Magic Formula response with load sensitivity
-and camber; channel degrees are converted to radians for dimensionless `B`. These are primitives,
-not an integrated chassis: they are not wired into per-corner velocity, steering, combined slip,
-relaxation, or the kernel state. Pitch stiffness, camber gain and bump steer also remain unresolved.
+validated `KernelConfig`. Tested `physics/loads.py` calculates per-corner static, longitudinal and
+lateral loads plus quasi-static travel; it reports travel-limit flags and documents its geometric
+transfer, aero split and lack of roll-centre/unsprung-mass detail. Tested `physics/tyres.py` provides
+steady lateral Magic Formula response with load sensitivity and camber; channel degrees are
+converted to radians for dimensionless `B`. New `physics/kinematics.py` and
+`physics/relaxation.py` primitives now cover per-corner contact/wheel-frame slip angle and exact
+exponential longitudinal/lateral slip-state relaxation. Their focused suites pass (58 and 13 tests,
+respectively), along with Ruff and basedpyright checks. They are separate tested primitives, not an
+integrated chassis: combined slip, steering/Ackermann input, body-state integration, truth recording,
+and real steering scenarios remain open. Pitch stiffness, camber gain and bump steer also remain
+unresolved. Relaxation lengths and lateral tire coefficients remain synthesized, uncalibrated inputs.
 
 The scenario runner now advances ICE speed during clutch slip and shift cuts from crank torque,
 inertia and reflected load, then applies an ideal wheel-speed lock when the clutch is engaged. This
