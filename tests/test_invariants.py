@@ -30,7 +30,12 @@ from f1telemetry.testing.invariants import (
     run_all,
 )
 from f1telemetry.testing.parquet_io import METADATA, serialise_frames
-from f1telemetry.testing.records import SampleRecord, with_gear_sequence, with_step
+from f1telemetry.testing.records import (
+    SampleRecord,
+    with_gear_sequence,
+    with_step,
+    with_wheel,
+)
 
 pytestmark = pytest.mark.invariant
 
@@ -87,6 +92,37 @@ def test_invariant_2_friction_ellipse(cornering: SampleRecord, spec: CarSpec) ->
         ]
     )
     assert 0.0 < combined < 4 * 8
+
+
+def test_invariant_2_uses_separate_axis_peaks_and_accepts_zero_load(
+    cornering: SampleRecord, spec: CarSpec
+) -> None:
+    lateral_overuse = with_wheel(
+        cornering,
+        0,
+        "FL",
+        fz_n=4000.0,
+        fx_n=0.0,
+        fy_n=800.0,
+        mu=1.7,
+        mu_lateral=0.1,
+    )
+    assert not _result(2, lateral_overuse, spec).passed
+
+    unloaded = with_wheel(
+        cornering,
+        0,
+        "FL",
+        fz_n=0.0,
+        fx_n=0.0,
+        fy_n=0.0,
+        mu=1.7,
+        mu_lateral=1.55,
+    )
+    assert _result(2, unloaded, spec).passed
+
+    unloaded_with_force = with_wheel(unloaded, 0, "FL", fx_n=1.0)
+    assert not _result(2, unloaded_with_force, spec).passed
 
 
 def test_invariant_3_vertical_load_sum(

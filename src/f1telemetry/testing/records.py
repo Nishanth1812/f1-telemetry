@@ -42,7 +42,12 @@ def _unloaded_wheels() -> tuple[WheelTruth, WheelTruth, WheelTruth, WheelTruth]:
 
 @dataclass(frozen=True, slots=True)
 class WheelTruth:
-    """Per-corner physics state. Field names follow PLAN.md section 4's state vector."""
+    """Per-corner physics truth, including separate longitudinal and lateral grip peaks.
+
+    ``mu`` remains the longitudinal peak coefficient for existing P1 fixtures. ``mu_lateral``
+    is the load-adjusted lateral coefficient; ``None`` means a legacy fixture uses ``mu`` for
+    both axes.
+    """
 
     fz_n: float
     fx_n: float
@@ -51,6 +56,7 @@ class WheelTruth:
     kappa: float
     alpha_rad: float
     camber_deg: float
+    mu_lateral: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +145,7 @@ def with_wheel(
     fx_n: float | None = None,
     fy_n: float | None = None,
     mu: float | None = None,
+    mu_lateral: float | None = None,
     kappa: float | None = None,
     alpha_rad: float | None = None,
     camber_deg: float | None = None,
@@ -159,6 +166,7 @@ def with_wheel(
         kappa=_pick(kappa, current.kappa),
         alpha_rad=_pick(alpha_rad, current.alpha_rad),
         camber_deg=_pick(camber_deg, current.camber_deg),
+        mu_lateral=current.mu_lateral if mu_lateral is None else mu_lateral,
     )
     wheels = list(target.wheels)
     wheels[index] = merged

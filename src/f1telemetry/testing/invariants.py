@@ -37,7 +37,7 @@ __all__ = [
     "run_all",
 ]
 
-_FRICTION_TOLERANCE: Final[float] = 1.0
+_FRICTION_TOLERANCE: Final[float] = 1.0 + 1.0e-12
 _LOAD_RELATIVE_TOLERANCE: Final[float] = 1.0e-3
 _LOAD_ABSOLUTE_FLOOR_N: Final[float] = 1.0
 _ENERGY_RESIDUAL_LIMIT: Final[float] = 0.01
@@ -132,6 +132,9 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
                 ("fx_n", wheel.fx_n),
                 ("fy_n", wheel.fy_n),
                 ("mu", wheel.mu),
+                ("mu_lateral", wheel.mu_lateral)
+                if wheel.mu_lateral is not None
+                else ("mu_lateral", wheel.mu),
                 ("kappa", wheel.kappa),
                 ("alpha_rad", wheel.alpha_rad),
                 ("camber_deg", wheel.camber_deg),
@@ -160,32 +163,45 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
 
 
 def check_friction_ellipse(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 2: (Fx/muFz)^2 + (Fy/muFz)^2 <= 1 for every wheel, every step."""
+    """Invariant 2: each force is normalized by its own load-dependent peak."""
     found: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         for corner, wheel in zip(CORNERS, step.wheels, strict=True):
-            if wheel.fz_n <= 0.0:
+            if wheel.fz_n < 0.0:
                 found.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="non-positive vertical load leaves the friction limit undefined",
+                        detail="negative vertical load is invalid",
                         value=wheel.fz_n,
                         limit=0.0,
                     )
                 )
                 continue
-            if wheel.mu <= 0.0:
+            if wheel.fz_n == 0.0:
+                if wheel.fx_n != 0.0 or wheel.fy_n != 0.0:
+                    found.append(
+                        Violation(
+                            where=f"step {index} wheel {corner}",
+                            detail="unloaded wheel carries tire force",
+                            value=math.hypot(wheel.fx_n, wheel.fy_n),
+                            limit=0.0,
+                        )
+                    )
+                continue
+            mu_lateral = wheel.mu if wheel.mu_lateral is None else wheel.mu_lateral
+            if wheel.mu <= 0.0 or mu_lateral <= 0.0:
                 found.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="non-positive friction coefficient",
-                        value=wheel.mu,
+                        detail="non-positive friction coefficient on a loaded axis",
+                        value=min(wheel.mu, mu_lateral),
                         limit=0.0,
                     )
                 )
                 continue
-            limit = _friction_limit(wheel.mu, wheel.fz_n)
-            utilisation = (wheel.fx_n / limit) ** 2 + (wheel.fy_n / limit) ** 2
+            limit_x = _friction_limit(wheel.mu, wheel.fz_n)
+            limit_y = _friction_limit(mu_lateral, wheel.fz_n)
+            utilisation = (wheel.fx_n / limit_x) ** 2 + (wheel.fy_n / limit_y) ** 2
             if utilisation > _FRICTION_TOLERANCE:
                 found.append(
                     Violation(
