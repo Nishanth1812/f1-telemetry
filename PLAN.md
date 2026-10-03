@@ -145,13 +145,14 @@ Known cost: `@njit` cannot compile arbitrary Python. If a future coefficient is 
 something exotic, compute it *outside* the kernel and pass the result in, rather than reaching for a
 compiled extension.
 
-**State vector:**
-
-```text
-chassis    vx, vy, r, roll, pitch, heave, yaw_rate_blend, x, y, psi
-per wheel  omega, alpha_relax, kappa_relax, Fz, Fy, Fx, temp, pressure
-powertrain ice_rpm, mgu_k_rpm, gear, clutch, eso, boost_remaining
-```
+**P2 kernel state:** the first six columns preserve P1 as `[x, vx, omega_fl, omega_fr,
+omega_rl, omega_rr]`. Append `y, psi, vy, yaw_rate, roll, pitch, heave`, four lateral and four
+longitudinal tire-relaxation states, then previous-step `ax, ay, az` used by the explicit load
+transfer update. There is one yaw-rate value (`r` is its short name); there is no separate
+`yaw_rate_blend`. Roll, pitch and heave are quasi-static outputs derived from the load and
+suspension solution, while `vx, vy, yaw_rate, x, y, psi` are integrated. Per-wheel loads and forces
+are step diagnostics, not state. Temperature, pressure, and powertrain states remain in their
+existing caller-owned buffers and are outside this kernel vector.
 
 **Tire.** Pacejka Magic Formula, lateral and longitudinal, with the four properties without which F1
 behaviour is not believable:

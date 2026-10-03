@@ -42,14 +42,22 @@ exponential longitudinal/lateral slip-state relaxation. `physics/steering.py` va
 steering-wheel limit and maps the command to the Ackermann road-wheel pair. The new
 `physics/combined_slip.py` implements normalized-slip-vector similarity: each pure-axis curve keeps
 its own peak and shape, while the normalized combined radius drives the respective curve and its
-direction cosines allocate force. Its exact ellipse follows from the formula, not a force clamp.
-Focused combined-slip/contract/tire tests pass (403); Ruff and basedpyright pass. These are still
-separate tested primitives, not an integrated chassis: kernel relaxation state, body-state
-integration, truthful records, and real steering scenarios remain open. Pitch stiffness, camber gain
-and bump steer also remain unresolved. Relaxation lengths and lateral tire coefficients remain
-synthesized, uncalibrated inputs; the current lateral coefficient placeholder predicts a peak at an
-implausibly large slip angle and must be calibrated before any handling-performance gate is treated
-as meaningful.
+direction cosines allocate force. Its exact ellipse follows from both axes sharing the same peak
+radius, not a force clamp. A high-load discontinuity found in review is fixed: a lateral peak that
+has fallen to zero still consumes lateral slip in the shared radius, so longitudinal grip is not
+restored abruptly. The primitive now checks its packed parameter count, has a validated Python
+entry point, and computes the reference cornering stiffness once outside the hot loop. The focused
+combined-slip suite passes (135); Ruff and basedpyright pass. The P1 state prefix is preserved in a
+24-column state buffer with named planar, quasi-static body-output, relaxation and prior-acceleration
+indices; the old wheel-seeding and energy code now address only the four wheel-speed columns. This
+state expansion is scaffolding: the lateral body update, truthful force records, and steering
+scenarios are still open. Roll, pitch and heave are resolved as quasi-static derived outputs, not
+independent second-order states, consistent with PLAN.md §2. Relaxation lengths and lateral tire
+coefficients remain synthesized and uncalibrated; the current lateral coefficient placeholder
+predicts a peak at an implausibly large slip angle and must be calibrated before any handling-
+performance gate is treated as meaningful. The Magic Formula C/E validation is now stricter to
+support a finite, reachable normalized peak; older custom specs outside those bounds must be
+updated before using combined slip.
 
 The scenario runner now advances ICE speed during clutch slip and shift cuts from crank torque,
 inertia and reflected load, then applies an ideal wheel-speed lock when the clutch is engaged. This
@@ -111,13 +119,13 @@ The existing `tests/golden/cornering.json` and its record describe hand-supplied
 
 Before implementation, settle these once in the plan/spec and `car_spec.yaml` rather than letting each task invent them:
 
-- **Body state contract:** one yaw-rate state only. Remove the ambiguity between `r` and `yaw_rate_blend` in `PLAN.md` §4. Preserve the existing P1 state-column order where practical; add named indices for `x`, `y`, `psi`, `vx`, `vy`, yaw rate, roll/pitch/heave state and four wheel speeds. Specify whether each body quantity is an angle, rate or acceleration. Roll, pitch and heave are body states; suspension linkage/travel remains quasi-static.
+- **Body state contract:** preserve the P1 prefix `[x, vx, omega_fl, omega_fr, omega_rl, omega_rr]`; append named `y`, `psi`, `vy`, one yaw-rate state, quasi-static roll/pitch/heave outputs, four lateral relaxation angles, four longitudinal relaxation ratios and previous `ax/ay/az`. Integrate planar motion and yaw; derive roll, pitch and heave from the quasi-static load/suspension model, without adding body angular-rate states. Remove the duplicate `yaw_rate_blend` from `PLAN.md` §4. Suspension travel remains quasi-static.
 - **Force/load coupling:** load transfer depends on acceleration, while acceleration depends on tire force and tire force depends on load. Use the previous-step acceleration as an explicit input to the current 100 µs load calculation; seed it to zero and store the resulting acceleration for the next step. Test against a reference calculation and confirm total-load conservation. This fixed explicit update avoids a same-step algebraic loop without an iterative solve.
 - **Reference geometry:** define CG-relative front/rear axle distances, front/rear track, sprung-mass roll/pitch inertia, CG heights, static axle/corner load split and suspension roll/pitch stiffness distribution. The current spec only supplies wheelbase and a provisional front weight fraction, so all additions require provenance and validation.
 - **Tire input contract:** define lateral Pacejka parameters, load sensitivity for peak and stiffness, camber response, relaxation lengths, and the similarity-based combined-slip equations. State the zero-load behavior and the order in which relaxation, combined slip and force assembly occur.
-- **Steering contract:** scenario input is steering-wheel or road-wheel angle (choose one); if steering-wheel angle, declare steering ratio and steering limit in config. Define Ackermann geometry and positive-left sign once.
+- **Steering contract:** scenario input is steering-wheel angle in degrees, positive left; divide by the configured steering ratio, apply Ackermann geometry and validate the configured steering limit before kernel entry.
 - **Force/load contract:** corner order stays `FL, FR, RL, RR`; compute contact-patch velocities from body motion and yaw rate, rotate wheel-frame Fx/Fy into body axes, and calculate suspension/load transfer from previous-step acceleration before tire force. Positive `az` is upward in the z-up frame. Load redistribution must conserve total vertical load.
-- **Numeric calibration:** use PLAN.md's ~4.5–5.5 g as an order-of-magnitude high-downforce sanity band only until a source-backed P2 target and test condition (speed, aero mode/config, radius, surface) are recorded. The understeer check compares steering required at matched lateral acceleration/radius while changing only the front/rear aero split.
+- **Numeric calibration:** use PLAN.md's ~4.5–5.5 g as an order-of-magnitude high-downforce sanity band only until a source-backed P2 target and test condition (speed, aero mode/config, radius, surface) are recorded. The understeer check compares steering required at matched lateral acceleration/radius while changing only `roll_stiffness_front_fraction`; the current config has no front/rear aero-balance input.
 
 ## File Map
 
@@ -148,9 +156,9 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - [ ] Pin the advisory simulated `full_throttle` baseline and report its values before changing kernel behavior; identify that golden strict mode is disabled.
 - [ ] Align the energy invariant contract across `PHASES.md`, `tasks/todo.md`, scenario code and `docs/calibration.md` around the implemented wheel-boundary identity; remove the hard-coded final-interval zero before extending the boundary for P2 states.
 - [ ] Keep brake capacity outside P2 acceptance; label existing braking as caller-supplied torque/tire behavior only and remove it from physical brake-performance claims.
-- [ ] Resolve the state contract and model assumptions in “P2 Decisions and Interfaces”; update stale/duplicate `r` and `yaw_rate_blend` descriptions.
-- [ ] Resolve which body values are true integration states versus derived outputs; use the previous-step acceleration load-transfer contract above, keep suspension geometry quasi-static, and define travel-limit behavior (reject scenario vs report limit violation, never silently clamp).
-- [ ] Define positive/negative `az` in the existing z-up convention before connecting vertical acceleration to load or heave.
+- [x] Resolve the state contract and model assumptions in “P2 Decisions and Interfaces”; update stale/duplicate `r` and `yaw_rate_blend` descriptions.
+- [x] Resolve which body values are true integration states versus derived outputs: roll/pitch/heave are quasi-static; planar motion and yaw are integrated. Keep suspension geometry quasi-static and report travel-limit flags.
+- [x] Define positive/negative `az` in the existing z-up convention before connecting vertical acceleration to load or heave.
 - [ ] Do not tune P1 coefficients inside this task. If the P1 check or required scenario fails, fix and commit that P1 issue before advancing.
 
 **Done when:** P1 check status and advisory baselines are reproducible and recorded; ICE/power reporting and downshift invariants have regressions; the energy contract is internally consistent; the 0–100 gate is either supported by engine plus transfer behavior or remains explicitly open pending Task 2; every P2 state/config field has declared units, meaning and provenance.
@@ -206,9 +214,9 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/kernels/longitudinal.py`, `src/f1telemetry/physics/forces.py`, `tests/test_longitudinal_kernel.py`.
 
-- [ ] Pin the expanded state layout and named index constants; preserve existing P1 `vx` and wheel angular-speed semantics.
+- [x] Pin the expanded state layout and named index constants; preserve existing P1 `vx` and wheel angular-speed semantics.
 - [ ] Compute each patch's force in the wheel frame, transform to body axes, sum force and yaw moment using corner position, and integrate `vx`, `vy`, yaw rate, world position and heading.
-- [ ] Integrate the agreed roll/pitch/heave body states from the resolved model; calculate suspension motion quasi-statically rather than adding a multi-body linkage state.
+- [ ] Derive roll/pitch/heave from the quasi-static load/suspension solution and integrate only planar motion and yaw; calculate suspension motion without adding a multi-body linkage state.
 - [ ] Extend Python-side buffer/state/config validation for every new state column before calling the `boundscheck=False` kernel.
 - [ ] Add reference-step and determinism tests, plus zero-steer/zero-camber equivalence tests that show the P2 kernel reduces to the P1 longitudinal behavior within a stated tolerance.
 - [ ] Add a caller-owned P2 initializer for named body values, four wheel speeds and relaxation states; validate it through the same Python boundary as `simulate`.
@@ -236,7 +244,7 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - [ ] Check symmetry with mirrored left/right simulations; retain the zero-steer/zero-camber case as its own control rather than weakening it to accept legitimate corner asymmetry.
 - [ ] Add suspension travel checks at the configured extremes and under maximum tested aero/load; reject silent bottoming.
 - [ ] Define and record source-backed P2 calibration conditions before coefficient tuning. Measure peak lateral g in the constant-radius sweep and compare with the 4.5–5.5 g order-of-magnitude band only as a sanity check until a defensible target is selected.
-- [ ] Sweep front/rear aero split at matched radius/ay and assert steering demand changes monotonically in the expected direction; change no other parameter during the comparison.
+- [ ] Sweep `roll_stiffness_front_fraction` at matched radius/ay and assert steering demand changes monotonically in the expected direction; change no other parameter during the comparison. Re-scope the separate aero-balance gate if a front/rear aero input is added later.
 - [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize; regenerate invariant/detection reports through existing harnesses only.
 - [ ] Run `just check`, record the exact result, update only exit items supported by evidence, and capture the four-corner load-transfer demo plus steering-sensitivity curve.
 

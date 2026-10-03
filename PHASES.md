@@ -116,7 +116,7 @@ does not establish full F1-car fidelity or regulatory compliance.
 
 | ID | Task | Notes |
 |---|---|---|
-| P2-T1 | 6-DOF chassis: `vy`, `r`, `roll`, `pitch`, `heave` (P1 gave you `vx`) | Integrating heave and roll is what P2 buys over a 3-DOF model |
+| P2-T1 | Planar chassis `vy`, `r`, `x`, `y`, `psi`; derive roll, pitch and heave quasi-statically | One yaw-rate state; body/suspension outputs follow the quasi-static suspension contract in `PLAN.md` §2 |
 | P2-T2 | Vertical load transfer: static distribution + longitudinal + lateral, per corner | The core of F1 behaviour. Get the roll stiffness distribution right — it is the balance knob |
 | P2-T3 | Pacejka lateral, **with load sensitivity on D and B** | Non-proportional μ(Fz). A constant-μ tire understates high-speed downforce badly and will silently break P4 |
 | P2-T4 | Combined slip via the similarity method | So the friction ellipse *emerges* rather than being clamped. Needed for P4's speed profile |
@@ -131,7 +131,7 @@ does not establish full F1-car fidelity or regulatory compliance.
 - [ ] Constant-radius sweep reaches target peak lateral g
 - [ ] Friction ellipse never exceeded, all four corners, all steps
 - [ ] Symmetry holds at zero steer / zero camber / symmetric setup
-- [ ] Understeer gradient is monotonic in front/rear downforce split
+- [ ] Steering demand is monotonic in `roll_stiffness_front_fraction` at matched radius and lateral acceleration
 - [ ] Quasi-static suspension travel stays within mechanical limits across the load range (no bottoming out silently)
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four

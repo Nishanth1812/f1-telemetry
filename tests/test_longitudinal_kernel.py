@@ -395,14 +395,14 @@ def test_the_caller_owns_the_state_and_trace_buffers(config: KernelConfig) -> No
 def test_the_state_carries_four_wheel_angular_speeds_in_the_physysics_corner_order(
     config: KernelConfig,
 ) -> None:
-    """``STATE_SIZE`` grew to six, and the wheel columns are ``forces``' corners plus an offset.
+    """The P2 extension preserves the P1 prefix and its four wheel-speed columns.
 
     Asserted against the force model's own constants rather than against numbers written here, so
     the two cannot disagree about which column is which - a trace whose left wheel was driven and
     right wheel not would still be finite, still accelerate, and still pass every other test.
     ``PLAN.md`` section 4's state vector lists ``omega`` per wheel, and this is where that lands.
     """
-    assert longitudinal.STATE_SIZE == 6
+    assert longitudinal.STATE_SIZE == 24
     assert WHEEL_COLUMNS == (2, 3, 4, 5)
     assert WHEEL_COLUMNS[forces.FL_WHEEL_INDEX] == longitudinal.FL_WHEEL_INDEX
     assert WHEEL_COLUMNS[forces.FR_WHEEL_INDEX] == longitudinal.FR_WHEEL_INDEX
@@ -423,6 +423,67 @@ def test_the_state_carries_four_wheel_angular_speeds_in_the_physysics_corner_ord
     assert [float(seeded[column]) for column in WHEEL_COLUMNS] == pytest.approx(
         [rolling] * forces.WHEEL_COUNT
     )
+
+
+def test_p2_state_uses_named_columns_and_seeds_caller_owned_transient_states() -> None:
+    state = longitudinal.initial_state(
+        distance_m=12.0,
+        speed_m_s=30.0,
+        wheel_omega_rad_s=100.0,
+        y_m=-4.0,
+        heading_rad=0.25,
+        vy_m_s=2.0,
+        yaw_rate_rad_s=-0.1,
+        roll_rad=0.02,
+        pitch_rad=-0.01,
+        heave_m=0.04,
+        alpha_relax_deg=np.array([1.0, 2.0, 3.0, 4.0]),
+        kappa_relax=np.array([-0.1, -0.2, 0.3, 0.4]),
+        previous_acceleration_m_s2=(5.0, -6.0, 0.7),
+    )
+    assert state.shape == (longitudinal.STATE_SIZE,)
+    assert state[longitudinal.X_INDEX] == 12.0
+    assert state[longitudinal.VX_INDEX] == 30.0
+    assert state[longitudinal.Y_INDEX] == -4.0
+    assert state[longitudinal.PSI_INDEX] == 0.25
+    assert state[longitudinal.VY_INDEX] == 2.0
+    assert state[longitudinal.YAW_RATE_INDEX] == -0.1
+    assert state[longitudinal.ROLL_INDEX] == 0.02
+    assert state[longitudinal.PITCH_INDEX] == -0.01
+    assert state[longitudinal.HEAVE_INDEX] == 0.04
+    assert state[
+        longitudinal.ALPHA_RELAX_OFFSET : longitudinal.ALPHA_RELAX_OFFSET + 4
+    ] == pytest.approx([1.0, 2.0, 3.0, 4.0])
+    assert state[
+        longitudinal.KAPPA_RELAX_OFFSET : longitudinal.KAPPA_RELAX_OFFSET + 4
+    ] == pytest.approx([-0.1, -0.2, 0.3, 0.4])
+    assert state[
+        longitudinal.PREVIOUS_AX_INDEX : longitudinal.PREVIOUS_AZ_INDEX + 1
+    ] == pytest.approx([5.0, -6.0, 0.7])
+
+
+def test_p1_integrator_preserves_appended_p2_state_until_it_is_integrated(
+    config: KernelConfig,
+) -> None:
+    state = longitudinal.initial_state(
+        vy_m_s=1.25,
+        yaw_rate_rad_s=-0.5,
+        roll_rad=0.02,
+        pitch_rad=-0.04,
+        heave_m=0.06,
+    )
+    out = longitudinal.simulate(
+        config,
+        3,
+        state,
+        np.zeros(3, dtype=np.float64),
+        longitudinal.allocate(3),
+    )
+    assert np.array_equal(out[:, longitudinal.VY_INDEX], np.full(4, 1.25))
+    assert np.array_equal(out[:, longitudinal.YAW_RATE_INDEX], np.full(4, -0.5))
+    assert np.array_equal(out[:, longitudinal.ROLL_INDEX], np.full(4, 0.02))
+    assert np.array_equal(out[:, longitudinal.PITCH_INDEX], np.full(4, -0.04))
+    assert np.array_equal(out[:, longitudinal.HEAVE_INDEX], np.full(4, 0.06))
 
 
 def test_the_first_step_of_a_standing_launch_is_exactly_predictable(

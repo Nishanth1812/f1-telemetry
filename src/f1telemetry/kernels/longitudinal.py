@@ -5,13 +5,9 @@ first module that simulates a car, and it is deliberately almost the same shape:
 numeric kernel over preallocated ``float64`` arrays, written to the six rules of ``PLAN.md``
 section 4.1.
 
-**State.** Six scalars, in the fixed order
-``[distance_m, speed_m_s, omega_fl, omega_fr, omega_rl, omega_rr]`` and named by
-:data:`X_INDEX` / :data:`V_INDEX` / the four ``*_WHEEL_INDEX`` constants so a caller never indexes
-a raw column. ``speed_m_s`` is the longitudinal velocity - the ``vx`` of ``PLAN.md`` section 4's
-state vector, which is all a straight-line model has - so the two views line up when a task writes
-a real scenario. The four wheel angular speeds are ``PLAN.md`` section 4's per-wheel ``omega``,
-and :data:`STATE_SIZE` is the thing any further state has to update.
+**State.** The first six columns preserve the P1 order ``[x, vx, omega_fl, omega_fr, omega_rl,
+omega_rr]``. P2 body, relaxation and previous-acceleration state is appended and named by the
+indices below. ``STATE_SIZE`` is the one buffer contract for both models.
 
 The wheel columns are :data:`forces`' corner order plus :data:`WHEEL_STATE_OFFSET`, derived rather
 than written out: one module decides which wheel is left and which is rear, and the other asks it.
@@ -72,30 +68,55 @@ if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
 
 __all__ = [
+    "ALPHA_RELAX_OFFSET",
     "FL_WHEEL_INDEX",
     "FR_WHEEL_INDEX",
+    "HEAVE_INDEX",
+    "KAPPA_RELAX_OFFSET",
+    "PITCH_INDEX",
+    "PREVIOUS_AX_INDEX",
+    "PREVIOUS_AY_INDEX",
+    "PREVIOUS_AZ_INDEX",
+    "PSI_INDEX",
     "RL_WHEEL_INDEX",
+    "ROLL_INDEX",
     "RR_WHEEL_INDEX",
     "STATE_SIZE",
+    "VX_INDEX",
+    "VY_INDEX",
     "V_INDEX",
     "WHEEL_STATE_OFFSET",
     "X_INDEX",
+    "YAW_RATE_INDEX",
+    "Y_INDEX",
     "allocate",
     "initial_state",
     "simulate",
 ]
 
-# The chassis columns come first and the four wheel angular speeds follow them, in the corner order
-# `forces` numbers them. The offset is the one place the two modules are stitched together, so
-# widening the state on either side is a single edit rather than a search for every index.
+# Preserve the P1 prefix exactly: x, vx, then four wheel angular speeds in force corner order.
+# P2 state is appended so existing callers that use the named P1 columns remain valid.
 WHEEL_STATE_OFFSET: Final[int] = 2
-STATE_SIZE: Final[int] = WHEEL_STATE_OFFSET + forces.WHEEL_COUNT
 X_INDEX: Final[int] = 0
-V_INDEX: Final[int] = 1
+VX_INDEX: Final[int] = 1
+V_INDEX: Final[int] = VX_INDEX
 FL_WHEEL_INDEX: Final[int] = WHEEL_STATE_OFFSET + forces.FL_WHEEL_INDEX
 FR_WHEEL_INDEX: Final[int] = WHEEL_STATE_OFFSET + forces.FR_WHEEL_INDEX
 RL_WHEEL_INDEX: Final[int] = WHEEL_STATE_OFFSET + forces.RL_WHEEL_INDEX
 RR_WHEEL_INDEX: Final[int] = WHEEL_STATE_OFFSET + forces.RR_WHEEL_INDEX
+Y_INDEX: Final[int] = WHEEL_STATE_OFFSET + forces.WHEEL_COUNT
+PSI_INDEX: Final[int] = Y_INDEX + 1
+VY_INDEX: Final[int] = PSI_INDEX + 1
+YAW_RATE_INDEX: Final[int] = VY_INDEX + 1
+ROLL_INDEX: Final[int] = YAW_RATE_INDEX + 1
+PITCH_INDEX: Final[int] = ROLL_INDEX + 1
+HEAVE_INDEX: Final[int] = PITCH_INDEX + 1
+ALPHA_RELAX_OFFSET: Final[int] = HEAVE_INDEX + 1
+KAPPA_RELAX_OFFSET: Final[int] = ALPHA_RELAX_OFFSET + forces.WHEEL_COUNT
+PREVIOUS_AX_INDEX: Final[int] = KAPPA_RELAX_OFFSET + forces.WHEEL_COUNT
+PREVIOUS_AY_INDEX: Final[int] = PREVIOUS_AX_INDEX + 1
+PREVIOUS_AZ_INDEX: Final[int] = PREVIOUS_AY_INDEX + 1
+STATE_SIZE: Final[int] = PREVIOUS_AZ_INDEX + 1
 
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
@@ -151,6 +172,9 @@ def _integrate(
     """
     out[0, :] = state
     for index in range(steps):
+        # Carry all P2-owned states until the P2 force/integration path updates them. This keeps
+        # caller-seeded transients deterministic and prevents uninitialized output columns.
+        out[index + 1, :] = out[index, :]
         speed_m_s = out[index, V_INDEX]
         downforce_n, drag_n = forces.aero_forces(
             speed_m_s,
@@ -201,9 +225,25 @@ def initial_state(
     distance_m: float = 0.0,
     speed_m_s: float = 0.0,
     wheel_omega_rad_s: float = 0.0,
+    *,
+    y_m: float = 0.0,
+    heading_rad: float = 0.0,
+    vy_m_s: float = 0.0,
+    yaw_rate_rad_s: float = 0.0,
+    roll_rad: float = 0.0,
+    pitch_rad: float = 0.0,
+    heave_m: float = 0.0,
+    alpha_relax_deg: np.ndarray | None = None,
+    kappa_relax: np.ndarray | None = None,
+    previous_acceleration_m_s2: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> np.ndarray:
-    """Caller-owned float64 state buffer,
-    ``[distance, speed, omega_fl, omega_fr, omega_rl, omega_rr]``.
+    """Caller-owned float64 state buffer with the P1 prefix and named P2 state appended.
+
+    The stable first six columns are ``[x, vx, omega_fl, omega_fr, omega_rl, omega_rr]``.
+    The appended columns are ``y, psi, vy, yaw_rate, roll, pitch, heave, alpha_relax[4],
+    kappa_relax[4], previous_acceleration_xyz``. Roll, pitch and heave are quasi-static body
+    outputs; suspension travel is computed from load and ride rate. Positions are metres, angles
+    radians, velocities m/s or rad/s as named, and acceleration m/s².
 
     **One number for all four wheels, on purpose.** P1 has no lateral dynamics, so the only wheel
     asymmetry it can express is the difference a differential would make - and there is not one
@@ -226,8 +266,20 @@ def initial_state(
     state = np.zeros(STATE_SIZE, dtype=np.float64)
     state[X_INDEX] = distance_m
     state[V_INDEX] = speed_m_s
-    for column in range(WHEEL_STATE_OFFSET, STATE_SIZE):
-        state[column] = wheel_omega_rad_s
+    for wheel in range(forces.WHEEL_COUNT):
+        state[WHEEL_STATE_OFFSET + wheel] = wheel_omega_rad_s
+    state[Y_INDEX] = y_m
+    state[PSI_INDEX] = heading_rad
+    state[VY_INDEX] = vy_m_s
+    state[YAW_RATE_INDEX] = yaw_rate_rad_s
+    state[ROLL_INDEX] = roll_rad
+    state[PITCH_INDEX] = pitch_rad
+    state[HEAVE_INDEX] = heave_m
+    if alpha_relax_deg is not None:
+        state[ALPHA_RELAX_OFFSET : ALPHA_RELAX_OFFSET + forces.WHEEL_COUNT] = alpha_relax_deg
+    if kappa_relax is not None:
+        state[KAPPA_RELAX_OFFSET : KAPPA_RELAX_OFFSET + forces.WHEEL_COUNT] = kappa_relax
+    state[PREVIOUS_AX_INDEX : PREVIOUS_AZ_INDEX + 1] = previous_acceleration_m_s2
     return state
 
 

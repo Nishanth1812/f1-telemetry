@@ -813,7 +813,10 @@ def _energy_residual_fraction(
         start = trace.shape[0] - 1 - count
     initial = trace[start]
     final = trace[start + count]
-    wheel_columns = range(longitudinal.WHEEL_STATE_OFFSET, longitudinal.STATE_SIZE)
+    wheel_columns = range(
+        longitudinal.WHEEL_STATE_OFFSET,
+        longitudinal.WHEEL_STATE_OFFSET + forces.WHEEL_COUNT,
+    )
     kinetic_change = (
         0.5
         * config.mass_kg

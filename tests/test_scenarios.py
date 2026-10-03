@@ -134,7 +134,10 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
         * values["wheel_inertia_kg_m2"]
         * math.fsum(
             float(trace[start + count, column] ** 2 - trace[start, column] ** 2)
-            for column in range(longitudinal.WHEEL_STATE_OFFSET, longitudinal.STATE_SIZE)
+            for column in range(
+                longitudinal.WHEEL_STATE_OFFSET,
+                longitudinal.WHEEL_STATE_OFFSET + forces.WHEEL_COUNT,
+            )
         )
     )
     torque_work = 0.0
@@ -198,7 +201,10 @@ def _clutch_transmitted_power(run: ScenarioRun, window: slice) -> np.ndarray:
     rows = np.arange(window.start, window.stop) * run.control_steps
     transmitted_w = np.empty(rows.size)
     for index, row in enumerate(rows):
-        omega = run.trace[row, longitudinal.WHEEL_STATE_OFFSET : longitudinal.STATE_SIZE]
+        omega = run.trace[
+            row,
+            longitudinal.WHEEL_STATE_OFFSET : longitudinal.WHEEL_STATE_OFFSET + forces.WHEEL_COUNT,
+        ]
         transmitted_w[index] = math.fsum(
             float(forces.wheel_drive_torque_nm(wheel, float(run.drive_torque_nm[row])))
             * float(omega[wheel])
