@@ -111,8 +111,9 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
     The identity the scenario module documents - the change in chassis and wheel kinetic
     energy against the work of the wheel torques, aerodynamic drag and tyre slip, each
     term at midpoint velocity and wheel speed - recomputed here straight from the run's own
-    trace and torque histories rather than through the runner's helper, so the recorded
-    final-row value is checked against the documented quantities and not against itself.
+    trace, torque histories and applied kernel forces rather than through the runner's
+    helper, so the recorded final-row value is checked against the documented quantities
+    and not against itself.
 
     The interval is the last complete one: ``[steps - control_steps, steps]``, which ends
     on the run's terminal state, because no interval starts there.
@@ -143,12 +144,11 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
     torque_work = 0.0
     drag_work = 0.0
     tyre_slip_work = 0.0
-    weight_n = config.mass_kg * config.gravity_m_s2
     for index in range(start, start + count):
         before = trace[index]
         after = trace[index + 1]
         speed_mid = 0.5 * (float(before[longitudinal.V_INDEX]) + float(after[longitudinal.V_INDEX]))
-        downforce_n, drag_n = forces.aero_forces(
+        _downforce_n, drag_n = forces.aero_forces(
             float(before[longitudinal.V_INDEX]),
             values["air_density_kg_m3"],
             values["reference_area_m2"],
@@ -168,21 +168,10 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
                 * omega_mid
                 * config.dt_s
             )
-            load_n = forces.static_wheel_load_n(weight_n, values["front_weight_fraction"], wheel)
-            load_n += downforce_n / forces.WHEEL_COUNT
-            fx_n = forces.wheel_tyre_force_n(
-                float(before[longitudinal.V_INDEX]),
-                float(before[column]),
-                load_n,
-                values["rolling_radius_m"],
-                values["slip_ratio_min_speed_m_s"],
-                values["pacejka_b"],
-                values["pacejka_c"],
-                values["pacejka_e"],
-                values["pacejka_mu"],
-            )
             tyre_slip_work += (
-                fx_n * (omega_mid * values["rolling_radius_m"] - speed_mid) * config.dt_s
+                float(run.step_outputs.force_x_n[index, wheel])
+                * (omega_mid * values["rolling_radius_m"] - speed_mid)
+                * config.dt_s
             )
     accounted_work = torque_work + drag_work - tyre_slip_work
     scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
@@ -889,6 +878,29 @@ def test_a_record_is_an_even_decimation_of_the_kernel_trace(
         assert run.trace.shape == (run.steps + 1, run.trace.shape[1])
         assert [step.t_s for step in run.record.ground_truth] == pytest.approx(
             [index * run.record.dt_s for index in range(len(run.record))]
+        )
+
+
+def test_scenario_truth_records_applied_load_force_and_travel(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    """Recorded corner truth comes from the applied kernel step, including terminal hold."""
+    run = runs["standing_launch"]
+    for record_index in (0, 1, len(run.record) - 1):
+        step = run.record.ground_truth[record_index]
+        trace_row = record_index * run.control_steps
+        output_row = min(trace_row, run.steps - 1)
+        assert tuple(wheel.fz_n for wheel in step.wheels) == tuple(
+            float(value) for value in run.step_outputs.load_n[output_row]
+        )
+        assert tuple(wheel.fx_n for wheel in step.wheels) == tuple(
+            float(value) for value in run.step_outputs.force_x_n[output_row]
+        )
+        assert step.suspension_travel_m == tuple(
+            float(value) for value in run.step_outputs.travel_m[output_row]
+        )
+        assert step.travel_limited == tuple(
+            bool(value) for value in run.step_outputs.travel_limited[output_row]
         )
 
 

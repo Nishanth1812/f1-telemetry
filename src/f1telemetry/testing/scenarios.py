@@ -244,8 +244,12 @@ class ScenarioRun:
     """A completed run: the kernel's own trace, the drivetrain's, and the record built from them.
 
     ``trace`` is the kernel buffer exactly as ``simulate`` left it - the raw, unsummed artefact a
-    determinism claim is about. The caller-owned wheel torque histories stay at kernel rate for
-    the discrete energy balance and because a shift cut is a 40 ms event while records are 10 ms.
+    determinism claim is about. ``step_outputs`` is the caller-owned kernel output buffer the
+    run wrote through: one row per kernel step, carrying the vertical loads, longitudinal tyre
+    forces, suspension travels and travel-limit flags the kernel actually applied. The record
+    reads those applied values rather than recomputing a second set of numbers. The caller-owned
+    wheel torque histories stay at kernel rate for the discrete energy balance and because a
+    shift cut is a 40 ms event while records are 10 ms.
     """
 
     name: str
@@ -258,6 +262,7 @@ class ScenarioRun:
     brake_torque_nm: np.ndarray
     drivetrain: DrivetrainTrace
     record: SampleRecord
+    step_outputs: longitudinal.StepOutputs
 
     @property
     def record_dt_s(self) -> float:
@@ -475,6 +480,7 @@ def run_scenario(
     total = sum(counts)
 
     trace = np.zeros((total + 1, longitudinal.STATE_SIZE), dtype=np.float64)
+    step_outputs = longitudinal.allocate_step_outputs(total)
     drive = np.zeros(total, dtype=np.float64)
     brake_torque = np.zeros((total, forces.WHEEL_COUNT), dtype=np.float64)
     rpm = np.zeros(total, dtype=np.float64)
@@ -579,6 +585,7 @@ def run_scenario(
                 torque,
                 longitudinal.allocate(control_steps),
                 brake[interval : interval + control_steps],
+                step_outputs=_step_output_view(step_outputs, interval_start, control_steps),
             )
             trace[interval_start + 1 : interval_start + control_steps + 1] = out[1:]
             state = out[control_steps].copy()
@@ -624,7 +631,28 @@ def run_scenario(
         drive_torque_nm=drive,
         brake_torque_nm=brake_torque,
         drivetrain=drivetrain,
-        record=_build_record(plan, config, trace, drivetrain, drive, brake_torque, control_steps),
+        record=_build_record(
+            plan, config, trace, drivetrain, drive, brake_torque, control_steps, step_outputs
+        ),
+        step_outputs=step_outputs,
+    )
+
+
+def _step_output_view(
+    step_outputs: longitudinal.StepOutputs, start: int, count: int
+) -> longitudinal.StepOutputs:
+    """The ``count``-row block of the run's step outputs starting at trace row ``start``.
+
+    Every row the kernel writes through the returned object is the same memory as the run's
+    retained buffer, so the block the kernel fills on one control-interval call is the one
+    :attr:`ScenarioRun.step_outputs` keeps for the whole run.
+    """
+    stop = start + count
+    return longitudinal.StepOutputs(
+        load_n=step_outputs.load_n[start:stop],
+        force_x_n=step_outputs.force_x_n[start:stop],
+        travel_m=step_outputs.travel_m[start:stop],
+        travel_limited=step_outputs.travel_limited[start:stop],
     )
 
 
@@ -676,22 +704,28 @@ def _build_record(
     drive_torque_nm: np.ndarray,
     brake_torque_nm: np.ndarray,
     control_steps: int,
+    step_outputs: longitudinal.StepOutputs,
 ) -> SampleRecord:
     """Assemble the :class:`SampleRecord` a scenario produces, decimated to the recorded rate.
 
-    The per-corner numbers are recomputed through the same public primitives the kernel loop
-    calls, at the state each recorded row holds - so the record agrees with the trace it was built
-    from rather than describing a second, slightly different run. ``vy``, ``ay``, ``az``,
-    ``steer_rad``, ``alpha_rad``, ``fy_n`` and ``camber_deg`` are exactly zero: this slice has no
-    lateral or vertical dynamics to report, and a fabricated value for any of them would make the
-    record claim something the model did not compute.
+    The per-corner loads, longitudinal tyre forces, suspension travels and travel-limit
+    flags are the values the kernel actually applied, read from ``step_outputs`` at the row
+    of the step that starts at each recorded trace row - so the record agrees with the run
+    rather than describing a second, slightly different set of numbers. ``slip_ratio``
+    shares that row's state. ``vy``, ``ay``, ``az``, ``steer_rad``, ``alpha_rad``,
+    ``fy_n`` and ``camber_deg`` are exactly zero: this slice has no lateral or vertical
+    dynamics to report, and a fabricated value for any of them would make the record claim
+    something the model did not compute.
     """
     values = forces.validated_config_scalars(config, "scenarios")
-    weight_n = config.mass_kg * config.gravity_m_s2
     steps: list[GroundTruthStep] = []
     frames: list[SensorFrame] = []
+    # No kernel step starts at the terminal trace row, so it carries the outputs of the
+    # last step, the same repeat `_held` applies to the per-step columns above.
+    last_step_row = step_outputs.load_n.shape[0] - 1
     for index in range(len(drivetrain.gear)):
         row = index * control_steps
+        step_row = row if row < step_outputs.load_n.shape[0] else last_step_row
         speed = float(trace[row, longitudinal.V_INDEX])
         downforce_n, drag_n = forces.aero_forces(
             speed,
@@ -704,10 +738,6 @@ def _build_record(
         wheels: list[WheelTruth] = []
         for wheel in range(forces.WHEEL_COUNT):
             omega = float(trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel])
-            load_n = (
-                forces.static_wheel_load_n(weight_n, values["front_weight_fraction"], wheel)
-                + downforce_n / forces.WHEEL_COUNT
-            )
             kappa = forces.slip_ratio(
                 omega * values["rolling_radius_m"],
                 speed,
@@ -715,18 +745,8 @@ def _build_record(
             )
             wheels.append(
                 WheelTruth(
-                    fz_n=load_n,
-                    fx_n=forces.wheel_tyre_force_n(
-                        speed,
-                        omega,
-                        load_n,
-                        values["rolling_radius_m"],
-                        values["slip_ratio_min_speed_m_s"],
-                        values["pacejka_b"],
-                        values["pacejka_c"],
-                        values["pacejka_e"],
-                        values["pacejka_mu"],
-                    ),
+                    fz_n=float(step_outputs.load_n[step_row, wheel]),
+                    fx_n=float(step_outputs.force_x_n[step_row, wheel]),
                     fy_n=0.0,
                     mu=values["pacejka_mu"],
                     kappa=kappa,
@@ -734,6 +754,18 @@ def _build_record(
                     camber_deg=0.0,
                 )
             )
+        suspension_travel_m = (
+            float(step_outputs.travel_m[step_row, 0]),
+            float(step_outputs.travel_m[step_row, 1]),
+            float(step_outputs.travel_m[step_row, 2]),
+            float(step_outputs.travel_m[step_row, 3]),
+        )
+        travel_limited = (
+            bool(step_outputs.travel_limited[step_row, 0]),
+            bool(step_outputs.travel_limited[step_row, 1]),
+            bool(step_outputs.travel_limited[step_row, 2]),
+            bool(step_outputs.travel_limited[step_row, 3]),
+        )
         accel = float(drivetrain.accel_m_s2[index])
         step = GroundTruthStep(
             t_s=index * config.dt_s * control_steps,
@@ -758,8 +790,11 @@ def _build_record(
                 control_steps,
                 config,
                 values,
+                step_outputs,
             ),
             wheels=(wheels[0], wheels[1], wheels[2], wheels[3]),
+            suspension_travel_m=suspension_travel_m,
+            travel_limited=travel_limited,
         )
         steps.append(step)
         frames.append(
@@ -773,8 +808,8 @@ def _build_record(
         dt_s=config.dt_s * control_steps,
         description=(
             f"{plan.description} Produced by f1telemetry.testing.scenarios at the "
-            f"{config.dt_s * control_steps!r} s record rate; every value is recomputed from the "
-            "kernel trace at the row it describes."
+            f"{config.dt_s * control_steps!r} s record rate; every value is read from the "
+            "kernel trace and the kernel step outputs at the row it describes."
         ),
         ground_truth=tuple(steps),
         frames=tuple(frames),
@@ -789,12 +824,15 @@ def _energy_residual_fraction(
     count: int,
     config: KernelConfig,
     values: Mapping[str, float],
+    step_outputs: longitudinal.StepOutputs,
 ) -> float:
     """Discrete energy residual for the closed chassis and four-wheel loop.
 
     Work uses midpoint velocity and wheel speed, matching the explicit Euler update exactly.
-    Wheel torque supplies energy; aero drag and tyre slip remove it. ICE/MGU-K crank power is
-    intentionally excluded because P1 has no engine or driveline rotational state.
+    Wheel torque supplies energy; aero drag and tyre slip remove it. Tyre slip work uses the
+    longitudinal forces the kernel actually applied for each step, read from ``step_outputs``,
+    rather than a second recomputation. ICE/MGU-K crank power is intentionally excluded
+    because P1 has no engine or driveline rotational state.
 
     The interval is ``[start, start + count)``. The run's final recorded row sits on the
     terminal state, where no interval starts, so it reports the residual of the final
@@ -836,7 +874,7 @@ def _energy_residual_fraction(
         before = trace[index]
         after = trace[index + 1]
         speed_mid = 0.5 * (before[longitudinal.V_INDEX] + after[longitudinal.V_INDEX])
-        downforce_n, drag_n = forces.aero_forces(
+        _downforce_n, drag_n = forces.aero_forces(
             float(before[longitudinal.V_INDEX]),
             values["air_density_kg_m3"],
             values["reference_area_m2"],
@@ -856,24 +894,11 @@ def _energy_residual_fraction(
                 * omega_mid
                 * dt_s
             )
-            load_n = forces.static_wheel_load_n(
-                config.mass_kg * config.gravity_m_s2,
-                values["front_weight_fraction"],
-                wheel,
+            tyre_slip_work += (
+                float(step_outputs.force_x_n[index, wheel])
+                * (omega_mid * values["rolling_radius_m"] - speed_mid)
+                * dt_s
             )
-            load_n += downforce_n / forces.WHEEL_COUNT
-            fx_n = forces.wheel_tyre_force_n(
-                float(before[longitudinal.V_INDEX]),
-                float(before[column]),
-                load_n,
-                values["rolling_radius_m"],
-                values["slip_ratio_min_speed_m_s"],
-                values["pacejka_b"],
-                values["pacejka_c"],
-                values["pacejka_e"],
-                values["pacejka_mu"],
-            )
-            tyre_slip_work += fx_n * (omega_mid * values["rolling_radius_m"] - speed_mid) * dt_s
     accounted_work = torque_work + drag_work - tyre_slip_work
     scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
     return abs(kinetic_change - accounted_work) / scale

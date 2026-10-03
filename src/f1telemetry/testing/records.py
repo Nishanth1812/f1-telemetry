@@ -92,6 +92,12 @@ class GroundTruthStep:
     wheels: tuple[WheelTruth, WheelTruth, WheelTruth, WheelTruth] = field(
         default_factory=_unloaded_wheels
     )
+    yaw_rate_rad_s: float = 0.0
+    roll_rad: float = 0.0
+    pitch_rad: float = 0.0
+    heave_m: float = 0.0
+    suspension_travel_m: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    travel_limited: tuple[bool, bool, bool, bool] = (False, False, False, False)
 
     @property
     def wheel(self) -> dict[str, WheelTruth]:
@@ -189,6 +195,12 @@ def with_step(
     drag_w: float | None = None,
     downforce_n: float | None = None,
     steer_rad: float | None = None,
+    yaw_rate_rad_s: float | None = None,
+    roll_rad: float | None = None,
+    pitch_rad: float | None = None,
+    heave_m: float | None = None,
+    suspension_travel_m: tuple[float, float, float, float] | None = None,
+    travel_limited: tuple[bool, bool, bool, bool] | None = None,
 ) -> SampleRecord:
     """Return a copy of `record` with one ground-truth step's scalars replaced."""
     target = record.ground_truth[step]
@@ -206,6 +218,14 @@ def with_step(
         drag_w=_pick(drag_w, target.drag_w),
         downforce_n=_pick(downforce_n, target.downforce_n),
         steer_rad=_pick(steer_rad, target.steer_rad),
+        yaw_rate_rad_s=_pick(yaw_rate_rad_s, target.yaw_rate_rad_s),
+        roll_rad=_pick(roll_rad, target.roll_rad),
+        pitch_rad=_pick(pitch_rad, target.pitch_rad),
+        heave_m=_pick(heave_m, target.heave_m),
+        suspension_travel_m=(
+            target.suspension_travel_m if suspension_travel_m is None else suspension_travel_m
+        ),
+        travel_limited=target.travel_limited if travel_limited is None else travel_limited,
     )
     return _with_ground_truth(record, step, updated)
 
