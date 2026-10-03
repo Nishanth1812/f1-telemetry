@@ -20,11 +20,33 @@ drag onto the car, and advances four wheel speeds and a chassis. Nothing interve
 control, no differential, no ABS (C9.1.2, C9.9.1, C11.4.1), so wheelspin and lock are states the
 loop reaches on its own.
 
+**What a tyre is asked about, and where it came from.** Each wheel's vertical load used to be
+``forces.static_wheel_load_n`` plus a quarter of the downforce - a P1 approximation that could not
+express a load transfer, because transfer depends on acceleration and acceleration depends on tyre
+force. The kernel now calls :func:`~f1telemetry.physics.loads.corner_loads_n` and
+:func:`~f1telemetry.physics.loads.clamp_travel_to_limits` instead, reading the **previous** step's
+``ax``, ``ay`` and ``az`` out of the three state columns the loop writes at the end of each step.
+That is the plan's explicit answer to the algebraic loop, and it is stated rather than hidden: the
+load a tyre is asked about is one 100 us step behind the force it produced. Two consequences are
+deliberate and visible in the tests. The aerodynamic load now follows the same CG share as the
+weight rather than being spread a quarter per patch, and the total still sums to weight plus
+downforce. And the diagonal is *closed*: a run seeds the coupling to zero through
+:func:`initial_state`, and every step after that feeds its own resolved acceleration forward, so the
+transfer is a result of the run rather than an input a caller has to keep supplying.
+
+**Diagnostics are optional and caller-owned.** :class:`StepOutputs` is four ``(steps, 4)`` buffers -
+load, longitudinal force, suspension travel and the travel-limit flag - filled per step when a
+caller asks for them and left alone when it does not. They are an *output*, not a state: the
+loads are computed either way, because they are an input to the tyre model, so omitting them cannot
+change a byte of the trace. That is what lets them stay optional rather than becoming part of
+the trace itself, and it is asserted rather than assumed.
+
 That closing is why this kernel now reads the configuration so much more of. Every coefficient is
 still read **once, in Python, outside the loop** - ``PLAN.md`` section 4.1 rule 3 - and the compiled
 loop is handed nothing but numbers: no config object, no YAML document, no keyword argument. It is
-handed them through :func:`~f1telemetry.physics.forces.validated_config_scalars` and
-:func:`~f1telemetry.physics.forces.validate_aero_arrays`, which is also why the boundary has to
+handed them through :func:`~f1telemetry.physics.forces.validated_config_scalars`,
+:func:`~f1telemetry.physics.forces.validate_aero_arrays` and
+:func:`~f1telemetry.physics.loads.validated_load_scalars`, which is also why the boundary has to
 grow: the loop divides by the wheel inertia and the rolling radius and indexes the aero curves
 with ``boundscheck=False``, so a configuration it cannot use has to be refused before it starts.
 
@@ -45,24 +67,27 @@ can be safe is for there to be exactly one way in. :func:`simulate` is that way.
 boundary - the one-way ``@njit`` boundary ``PHASES.md`` asks for - and it refuses a nonfinite or
 nonpositive ``dt_s`` or ``mass_kg``, a step count that is not an integer, a seeded state carrying
 a nonfinite wheel speed, and any buffer that is not a C-contiguous ``float64`` ``ndarray`` of
-exactly the size the run needs. A mistake surfaces as a :class:`ValueError` naming the buffer
-instead of as a silent write past the end of an array.
+exactly the size the run needs. The optional :class:`StepOutputs` buffers are held to the same
+rules,
+and to one extra: all four are validated or none of them is used. A mistake surfaces as a
+:class:`ValueError` naming the buffer instead of as a silent write past the end of an array.
 """
 
 from __future__ import annotations
 
 import math
 import operator
-from typing import TYPE_CHECKING, Final
+from itertools import combinations
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 from numba import njit
 
-# The compiled loop calls the force model's primitives - the same direction as `PLAN.md` section 6's
-# `torque_curve -> gearbox -> clutch -> differential -> wheels`, read as models feeding the
-# integrator rather than the other way round. Layer isolation exists to keep analytics, the server
-# and the web layer out of the physics core; a kernel composing the core is the composition.
-from f1telemetry.physics import forces  # noqa: TID251 -- the kernel is what composes the models
+# The compiled loop calls the force and load models' primitives - the same direction as `PLAN.md`
+# section 6's `torque_curve -> gearbox -> clutch -> differential -> wheels`, read as models feeding
+# the integrator rather than the other way round. Layer isolation exists to keep analytics, the
+# server and the web layer out of the physics core; a kernel composing the core is the composition.
+from f1telemetry.physics import forces, loads  # noqa: TID251 -- the kernel composes the models
 
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
@@ -89,7 +114,9 @@ __all__ = [
     "X_INDEX",
     "YAW_RATE_INDEX",
     "Y_INDEX",
+    "StepOutputs",
     "allocate",
+    "allocate_step_outputs",
     "initial_state",
     "simulate",
 ]
@@ -118,13 +145,50 @@ PREVIOUS_AY_INDEX: Final[int] = PREVIOUS_AX_INDEX + 1
 PREVIOUS_AZ_INDEX: Final[int] = PREVIOUS_AY_INDEX + 1
 STATE_SIZE: Final[int] = PREVIOUS_AZ_INDEX + 1
 
+# The per-step diagnostics, as names, in the order `StepOutputs` declares them. Written as data so
+# the validation loop and the error messages cannot disagree about which buffer is which, and so a
+# field added to the group is one line rather than four.
+STEP_OUTPUT_FLOAT_FIELDS: Final[tuple[str, ...]] = ("load_n", "force_x_n", "travel_m")
+STEP_OUTPUT_FLAG_FIELD: Final[str] = "travel_limited"
+STEP_OUTPUT_FIELDS: Final[tuple[str, ...]] = (*STEP_OUTPUT_FLOAT_FIELDS, STEP_OUTPUT_FLAG_FIELD)
+FLOAT64_DTYPE: Final = np.dtype(np.float64)
+
+
+class StepOutputs(NamedTuple):
+    """The caller's per-step corner diagnostics: four ``(steps, 4)`` buffers, one per quantity.
+
+    **A named group of buffers, not a fourth return value.** A ``(steps, 4)`` load and a
+    ``(steps, 4)`` longitudinal force are the same shape and the same dtype, so four loose
+    arguments would be one refactor away from silently swapped - and a caller that swapped them
+    would get a trace that looks finished. Naming them means the kernel and the caller agree on what
+    each one holds, and :func:`simulate` can refuse a group that is not this type at all.
+
+    Three ``float64`` fields and one ``int64``: ``travel_limited`` is a 0/1 report about the
+    configured mechanical limit rather than a measurement, and a float field would say otherwise
+    through its dtype.
+
+    Every buffer is the caller's, and every one is C-contiguous and writeable because
+    ``boundscheck=False`` writes into it: a short row count, a missing wheel column, a strided view
+    or a read-only buffer is an out-of-bounds write rather than an error. All four are validated
+    before the loop starts - see :func:`simulate`.
+
+    Row ``n`` is the step that *started* at trace row ``n`` and produced trace row ``n + 1``, so the
+    diagnostics and the trace can be read side by side without an off-by-one: the loads in row ``n``
+    are the ones the tyre forces in row ``n`` were computed from.
+    """
+
+    load_n: np.ndarray
+    force_x_n: np.ndarray
+    travel_m: np.ndarray
+    travel_limited: np.ndarray
+
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
 def _integrate(
     steps: int,
     dt_s: float,
     mass_kg: float,
-    weight_n: float,
+    gravity_m_s2: float,
     drive_torque_nm: np.ndarray,
     brake_torque_nm: np.ndarray,
     state: np.ndarray,
@@ -141,7 +205,18 @@ def _integrate(
     slip_ratio_min_speed_m_s: float,
     rolling_radius_m: float,
     wheel_inertia_kg_m2: float,
-    front_weight_fraction: float,
+    cg_to_front_axle_m: float,
+    cg_to_rear_axle_m: float,
+    cg_height_m: float,
+    axle_track_m: np.ndarray,
+    roll_stiffness_front_fraction: float,
+    axle_ride_rate_n_per_m: np.ndarray,
+    axle_travel_limit_m: np.ndarray,
+    load_n_diagnostics: np.ndarray,
+    force_x_n_diagnostics: np.ndarray,
+    travel_m_diagnostics: np.ndarray,
+    travel_limited_diagnostics: np.ndarray,
+    record_diagnostics: bool,
 ) -> np.ndarray:
     """Run ``steps`` fixed steps into caller-owned ``out``, shape ``(steps + 1, STATE_SIZE)``.
 
@@ -171,9 +246,16 @@ def _integrate(
     module docstring - so it must only ever be reached through :func:`simulate`.
     """
     out[0, :] = state
+    # The four-wheel scratch the load model writes, allocated once here and reused by every step.
+    # A compiled loop owns no buffers, and `corner_loads_n`/`clamp_travel_to_limits` both take
+    # caller-owned vectors precisely so this can live here rather than on the allocator: four small
+    # vectors once beats 3 allocations per step times a hundred thousand steps.
+    load_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
+    base_load_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
+    travel_limited_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.int64)
     for index in range(steps):
-        # Carry all P2-owned states until the P2 force/integration path updates them. This keeps
-        # caller-seeded transients deterministic and prevents uninitialized output columns.
+        # Carry the P2-owned states this step does not integrate until a later task owns them. This
+        # keeps caller-seeded transients deterministic and prevents uninitialized output columns.
         out[index + 1, :] = out[index, :]
         speed_m_s = out[index, V_INDEX]
         downforce_n, drag_n = forces.aero_forces(
@@ -184,16 +266,52 @@ def _integrate(
             cl,
             cd,
         )
+        # **The corner loads, from the acceleration the previous step resolved.** The load a tyre
+        # is asked about is one 100 us step behind the force it produced, which is the plan's
+        # explicit answer to the load/force algebraic loop: the same `previous_acceleration_m_s2`
+        # argument `loads.step_loads` takes as a keyword, read here out of the state columns the
+        # kernel writes at the end of each step. A run therefore seeds the coupling to zero through
+        # `initial_state` and carries it forward itself, and the aero load is distributed by the
+        # same CG share as the weight rather than a quarter on each patch - P2-T2's deliberate
+        # change of convention, and the reason the loads no longer come from
+        # `forces.static_wheel_load_n` at all.
+        loads.corner_loads_n(
+            load_scratch_n,
+            base_load_scratch_n,
+            mass_kg,
+            gravity_m_s2,
+            downforce_n,
+            out[index, PREVIOUS_AZ_INDEX],
+            out[index, PREVIOUS_AX_INDEX],
+            out[index, PREVIOUS_AY_INDEX],
+            cg_to_front_axle_m,
+            cg_to_rear_axle_m,
+            cg_height_m,
+            axle_track_m,
+            roll_stiffness_front_fraction,
+        )
+        # Clamping is a result, not a decision: a corner that ran out of travel is put on its stop
+        # and flagged, and the load the clamp removed is shared over the corners that still have
+        # room so the four still sum to the car's total. Both the flag and the clamped travel are
+        # reported rather than folded away.
+        loads.clamp_travel_to_limits(
+            load_scratch_n,
+            base_load_scratch_n,
+            axle_ride_rate_n_per_m,
+            axle_travel_limit_m,
+            travel_limited_scratch_n,
+        )
         drivetrain_torque_nm = drive_torque_nm[index]
         # Drag is signed along +x and is negative going forward, so it starts the sum rather than
         # being subtracted; adding it keeps one sign convention instead of two.
         net_force_n = drag_n
         for wheel in range(forces.WHEEL_COUNT):
             column = WHEEL_STATE_OFFSET + wheel
-            load_n = (
-                forces.static_wheel_load_n(weight_n, front_weight_fraction, wheel)
-                + downforce_n / forces.WHEEL_COUNT
-            )
+            # The axle a corner belongs to, in the same FL, FR, RL, RR order the load model reads:
+            # an axle is the two adjacent corners, so the mapping is derived from the wheel count
+            # per axle rather than restated. It is what picks this corner's ride rate below.
+            axle = wheel // forces.WHEELS_PER_AXLE_COUNT
+            load_n = load_scratch_n[wheel]
             tyre_fx_n = forces.wheel_tyre_force_n(
                 speed_m_s,
                 out[index, column],
@@ -205,6 +323,16 @@ def _integrate(
                 pacejka_e,
                 pacejka_mu,
             )
+            if record_diagnostics:
+                # Row `index` is the step that started at trace row `index`, so the diagnostics and
+                # the trace line up row for row: these are the loads the force below was computed
+                # from, not the loads the row that comes out was integrated with.
+                load_n_diagnostics[index, wheel] = load_n
+                force_x_n_diagnostics[index, wheel] = tyre_fx_n
+                travel_m_diagnostics[index, wheel] = loads.suspension_travel_m(
+                    load_n, base_load_scratch_n[wheel], axle_ride_rate_n_per_m[axle]
+                )
+                travel_limited_diagnostics[index, wheel] = travel_limited_scratch_n[wheel]
             net_force_n += tyre_fx_n
             drive_nm = forces.wheel_drive_torque_nm(wheel, drivetrain_torque_nm)
             alpha_rad_s2 = forces.wheel_angular_acceleration_rad_s2(
@@ -218,6 +346,15 @@ def _integrate(
         acceleration_m_s2 = net_force_n / mass_kg
         out[index + 1, V_INDEX] = speed_m_s + acceleration_m_s2 * dt_s
         out[index + 1, X_INDEX] = out[index, X_INDEX] + out[index + 1, V_INDEX] * dt_s
+        # **Close the load lag with what this step actually resolved.** Only the longitudinal
+        # component exists in this kernel: there is no lateral force and no heave state yet, so
+        # `ay` and `az` are written zero rather than left holding a caller seed the loop would keep
+        # re-reading forever. Writing the zero is the honest value - a body that is not accelerating
+        # sideways or vertically carries no `m * ay` or `m * az` term - and it means a lateral task
+        # only has to start writing its own column.
+        out[index + 1, PREVIOUS_AX_INDEX] = acceleration_m_s2
+        out[index + 1, PREVIOUS_AY_INDEX] = 0.0
+        out[index + 1, PREVIOUS_AZ_INDEX] = 0.0
     return out
 
 
@@ -289,6 +426,28 @@ def allocate(steps: int) -> np.ndarray:
     return np.zeros((count + 1, STATE_SIZE), dtype=np.float64)
 
 
+def allocate_step_outputs(steps: int) -> StepOutputs:
+    """Caller-owned per-step corner diagnostics for a run of ``steps``, ready to pass to simulate.
+
+    Zero-initialised rather than empty, because a caller that passes these and then reads a row the
+    run did not reach gets a number that says "nothing happened" instead of a number that says
+    "nothing was written". A zero step count is legal and gives four zero-row buffers, which is the
+    degenerate case of the same rule rather than a special one.
+
+    Allocated here rather than inside the kernel because a compiled loop must not allocate, and
+    allocated by the caller rather than by :func:`simulate` because a run that does not ask for the
+    diagnostics should not pay for them.
+    """
+    count = _checked_steps(steps)
+    shape = (count, forces.WHEEL_COUNT)
+    return StepOutputs(
+        load_n=np.zeros(shape, dtype=np.float64),
+        force_x_n=np.zeros(shape, dtype=np.float64),
+        travel_m=np.zeros(shape, dtype=np.float64),
+        travel_limited=np.zeros(shape, dtype=np.int64),
+    )
+
+
 def simulate(
     config: KernelConfig,
     steps: int,
@@ -296,6 +455,8 @@ def simulate(
     drive_torque_nm: np.ndarray,
     out: np.ndarray,
     brake_torque_nm: np.ndarray | None = None,
+    *,
+    step_outputs: StepOutputs | None = None,
 ) -> np.ndarray:
     """Run a straight-line scenario from a validated :class:`KernelConfig`, in fixed steps.
 
@@ -327,6 +488,16 @@ def simulate(
     ``brake_torque_nm`` is an optional caller-owned signed per-wheel torque history with shape
     ``(steps, 4)``. Negative values brake forward rotation; it has no ABS or force transfer.
     Omitted input means zero brake torque.
+
+    ``step_outputs`` is the optional :class:`StepOutputs` group from
+    :func:`allocate_step_outputs`, and it is optional for the same reason the load diagnostics are
+    not part of the trace: most callers want the state history, not four per-step corner
+    quantities. It is keyword-only because a seventh positional argument would be indistinguishable
+    from a future input buffer. All four of its buffers are validated here, before the loop, exactly
+    like every other buffer - and unlike the others they are optional, so *all* of the group is
+    validated or none of it is used. Omitting it changes nothing about the run: the trace is
+    byte-identical, and the loads the tyre model needs are computed either way, because they are an
+    input to the physics rather than an output of it.
     """
     count = _checked_steps(steps)
     for name, value in (
@@ -337,15 +508,17 @@ def simulate(
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(
                 f"simulate: config.{name} must be finite and > 0, got {value!r}. The kernel "
-                "divides by mass_kg and multiplies by dt_s, and the static axle loads are a "
-                "fraction of mass_kg * gravity_m_s2, so none of the three is checked for you once "
-                "the loop starts"
+                "divides by mass_kg and multiplies by dt_s, and the corner loads are built from "
+                "mass_kg * gravity_m_s2, so none of the three is checked for you once the loop "
+                "starts"
             )
-    # The rest of the configuration, through the force model's own shared validator: one list of
+    # The rest of the configuration, through the two models' own shared validators: one list of
     # names and one set of sign rules for `simulate`, `step_forces` and `step_wheel` rather than
-    # three copies that could disagree. The aero curves are checked here for the same reason -
+    # three copies that could disagree, and one validated form of every CG, track, ride-rate and
+    # travel-limit scalar for the load model. The aero curves are checked here for the same reason -
     # the loop indexes them with `boundscheck=False`.
     values = forces.validated_config_scalars(config, "simulate")
+    geometry = loads.validated_load_scalars(config, "simulate")
     forces.validate_aero_arrays(config, "simulate")
 
     _check_buffer("state", state, (STATE_SIZE,), writable=False)
@@ -361,11 +534,21 @@ def simulate(
             "simulate: state must be finite. A NaN wheel speed is not a slow wheel: it reaches the "
             "slip ratio, from there the tyre force, and from there every later row of the trace"
         )
+    if step_outputs is None:
+        # One row of each buffer, allocated here rather than inside the loop, so the compiled
+        # signature stays the same whether or not the caller asked for diagnostics. `record` is
+        # false, so the loop never writes to them - and a single row keeps a stray write inside the
+        # allocation rather than past it.
+        diagnostics = _discarded_step_outputs()
+        record_diagnostics = False
+    else:
+        diagnostics = _checked_step_outputs(step_outputs, count)
+        record_diagnostics = True
     return _integrate(
         count,
         config.dt_s,
         config.mass_kg,
-        config.mass_kg * config.gravity_m_s2,
+        geometry.gravity_m_s2,
         drive_torque_nm,
         brake_torque_nm,
         state,
@@ -382,8 +565,81 @@ def simulate(
         values["slip_ratio_min_speed_m_s"],
         values["rolling_radius_m"],
         values["wheel_inertia_kg_m2"],
-        values["front_weight_fraction"],
+        geometry.cg_to_front_axle_m,
+        geometry.cg_to_rear_axle_m,
+        geometry.cg_height_m,
+        geometry.axle_track_m,
+        geometry.roll_stiffness_front_fraction,
+        geometry.axle_ride_rate_n_per_m,
+        geometry.axle_travel_limit_m,
+        diagnostics.load_n,
+        diagnostics.force_x_n,
+        diagnostics.travel_m,
+        diagnostics.travel_limited,
+        record_diagnostics,
     )
+
+
+def _discarded_step_outputs() -> StepOutputs:
+    """A one-row stand-in for a :class:`StepOutputs` the caller did not ask for.
+
+    The compiled loop takes four diagnostic arrays whether or not anyone wants them, because a
+    signature that changed shape depending on a Python-level ``if`` would compile two
+    specialisations
+    of the same integrator and the byte-identity claim would become version-dependent. One row each,
+    never written, allocated once per run outside the loop: four tiny Python allocations against a
+    kernel that makes thousands of steps.
+    """
+    shape = (1, forces.WHEEL_COUNT)
+    return StepOutputs(
+        load_n=np.zeros(shape, dtype=np.float64),
+        force_x_n=np.zeros(shape, dtype=np.float64),
+        travel_m=np.zeros(shape, dtype=np.float64),
+        travel_limited=np.zeros(shape, dtype=np.int64),
+    )
+
+
+def _checked_step_outputs(step_outputs: object, count: int) -> StepOutputs:
+    """Four diagnostic buffers the kernel can write into, or a :class:`ValueError` naming the field.
+
+    Every rule :func:`simulate` applies to the buffers it has always checked applies here too, for
+    the same reason: the loop writes into these with ``boundscheck=False``, so a wrong shape, a
+    strided view or a read-only buffer is an out-of-bounds write rather than an error. The flags
+    are checked for ``int64`` rather than ``float64`` because a differently-typed buffer compiles as
+    a differently-typed kernel and writes the wrong number of bytes.
+
+    The group itself has to be a :class:`StepOutputs`, and the four may not share memory. Three
+    ``(steps, 4)`` float64 buffers passed as loose arguments are one refactor away from being
+    swapped, and two of them aliased would produce a run that looks finished with one corner
+    quantity quietly overwritten by another - which is exactly the failure this boundary exists to
+    refuse.
+    """
+    if not isinstance(step_outputs, StepOutputs):
+        raise ValueError(
+            f"simulate: step_outputs must be a StepOutputs from allocate_step_outputs, got "
+            f"{type(step_outputs).__name__}. The four buffers are named in the contract and passed "
+            "as one group, because a (steps, 4) load and a (steps, 4) longitudinal force have the "
+            "same shape and the same dtype and are otherwise indistinguishable at the call site"
+        )
+    shape = (count, forces.WHEEL_COUNT)
+    for name in STEP_OUTPUT_FIELDS:
+        dtype = np.dtype(np.int64 if name == STEP_OUTPUT_FLAG_FIELD else np.float64)
+        _check_buffer(
+            f"step_outputs.{name}",
+            getattr(step_outputs, name),
+            shape,
+            writable=True,
+            dtype=dtype,
+        )
+    for first, second in combinations(STEP_OUTPUT_FIELDS, 2):
+        if np.shares_memory(getattr(step_outputs, first), getattr(step_outputs, second)):
+            raise ValueError(
+                f"simulate: step_outputs.{first} must not share memory with step_outputs.{second}. "
+                "Each is a separate destination the kernel writes on the same step, so a shared "
+                "buffer would leave one corner quantity overwritten by another in a run that looks "
+                "finished"
+            )
+    return step_outputs
 
 
 def _checked_steps(steps: int) -> int:
@@ -407,14 +663,24 @@ def _checked_steps(steps: int) -> int:
     return count
 
 
-def _check_buffer(name: str, array: object, shape: tuple[int, ...], *, writable: bool) -> None:
+def _check_buffer(
+    name: str,
+    array: object,
+    shape: tuple[int, ...],
+    *,
+    writable: bool,
+    dtype: np.dtype = FLOAT64_DTYPE,
+) -> None:
     """Refuse a buffer the kernel would read out of bounds or quietly re-quantise.
 
     ``state`` and ``drive_torque_nm`` are read-only as far as the kernel is concerned, so a caller
-    may hand over a buffer it does not want written; ``out`` is the kernel's only destination and
-    must be writable. Contiguity is part of the contract in ``car_spec.KernelConfig`` and in
-    ``PLAN.md`` section 4.1, and a strided buffer would compile as a differently-typed kernel
-    rather than being rejected.
+    may hand over a buffer it does not want written; ``out`` and the diagnostic buffers are the
+    kernel's destinations and must be writable. Contiguity is part of the contract in
+    ``car_spec.KernelConfig`` and in ``PLAN.md`` section 4.1, and a strided buffer would compile
+    as a
+    differently-typed kernel rather than being rejected. ``dtype`` is a parameter rather than a
+    constant because the ``travel_limited`` flags are ``int64`` - a 0/1 report, not a measurement -
+    and a ``float64`` buffer for them would write the wrong bytes into the wrong kernel.
     """
     if not isinstance(array, np.ndarray):
         raise ValueError(
@@ -422,10 +688,11 @@ def _check_buffer(name: str, array: object, shape: tuple[int, ...], *, writable:
             "else would be copied into the kernel, so the buffer the caller holds is not the "
             "one the run writes"
         )
-    if array.dtype != np.float64:
+    if array.dtype != dtype:
         raise ValueError(
-            f"simulate: {name} buffer must be float64, got {array.dtype}. The kernel is "
-            "float64 end to end and a narrower buffer would re-quantise the trace"
+            f"simulate: {name} buffer must be {dtype.name}, got {array.dtype}. The kernel is "
+            f"{dtype.name} end to end and anything else re-quantises the trace or compiles as a "
+            "differently-typed kernel"
         )
     if array.shape != shape:
         raise ValueError(f"simulate: {name} buffer must have shape {shape}, got {array.shape}")
