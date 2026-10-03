@@ -1034,3 +1034,337 @@ def test_the_audit_rejects_a_spec_claiming_to_be_calibrated(tmp_path: Path, repo
         "spec: calibration_status is 'calibrated'; this phase must not ship a car spec that claims "
         "to be calibrated"
     ]
+
+
+# --- P2 (lateral + load transfer) configuration contract -------------------------------
+#
+# P2-T1 owns the *inputs* the P2 kernel work consumes: CG-relative geometry and body
+# inertias, the per-axle suspension/load-transfer coefficients, the steering contract,
+# the lateral/combined-slip tyre data and the relaxation lengths. Nothing in this block is
+# an FIA regulation number, and these tests assert that: the whole contract reaches the
+# kernel with no clause attached, so a synthesised value can never be read as a limit.
+
+P2_SECTIONS = ("suspension", "steering")
+
+# Every dotted path P2 adds that must *not* appear in ``CarSpec.citations()``.
+P2_UNCITED_PATHS = (
+    "chassis.front_track_m",
+    "chassis.rear_track_m",
+    "chassis.cg_height_m",
+    "chassis.unsprung_mass_kg",
+    "chassis.roll_inertia_kg_m2",
+    "chassis.pitch_inertia_kg_m2",
+    "chassis.yaw_inertia_kg_m2",
+    "suspension.roll_stiffness_front_fraction",
+    "suspension.pitch_stiffness_front_fraction",
+    "suspension.front_ride_rate_n_per_m",
+    "suspension.rear_ride_rate_n_per_m",
+    "suspension.front_camber_gain_deg_per_m",
+    "suspension.rear_camber_gain_deg_per_m",
+    "suspension.front_static_camber_deg",
+    "suspension.rear_static_camber_deg",
+    "suspension.front_bump_steer_deg_per_m",
+    "suspension.rear_bump_steer_deg_per_m",
+    "suspension.front_travel_limit_m",
+    "suspension.rear_travel_limit_m",
+    "steering.steering_ratio",
+    "steering.max_steering_wheel_angle_deg",
+    "steering.ackermann_fraction",
+    "tyres.lateral_pacejka",
+    "tyres.load_sensitivity",
+    "tyres.camber_stiffness_n_per_deg",
+    "tyres.relaxation",
+    # P2-T1 carries the Task 0 P1 prerequisite too: the ICE rotational state needs an
+    # inertia, and it is a synthesised value with no clause behind it.
+    "powertrain.ice.ice_inertia_kg_m2",
+)
+
+
+def test_the_ice_rotational_inertia_reaches_the_kernel_config(spec: CarSpec) -> None:
+    """Task 0's ICE speed state divides by an inertia no clause states.
+
+    The P1 ICE has no rotational state, so rpm is derived from wheel speed and floored at
+    idle. Adding that state needs an engine-plus-flywheel inertia, which is a synthesised
+    input exactly like ``wheel_inertia_kg_m2``. It is carried here so the state can be
+    integrated without a hardcoded constant in the kernel; no integration is implemented in
+    this task.
+    """
+    config = spec.kernel_config()
+    claim = _at(spec.raw, ("powertrain", "ice"))
+    assert config.ice_inertia_kg_m2 == claim["ice_inertia_kg_m2"] > 0.0
+    reason = _at(spec.raw, ("powertrain", "ice", "not_regulated", "ice_inertia_kg_m2"))
+    assert "not a regulation" in reason.lower()
+    assert "synthetic" in reason.lower() or "synthesised" in reason.lower()
+
+
+def test_the_p2_geometry_reaches_the_kernel_config(spec: CarSpec) -> None:
+    """The corner positions and body inertias the load-transfer model divides by."""
+    config = spec.kernel_config()
+    chassis = _at(spec.raw, ("chassis",))
+    assert config.cg_height_m == chassis["cg_height_m"] > 0.0
+    assert config.unsprung_mass_kg == chassis["unsprung_mass_kg"] > 0.0
+    assert config.sprung_mass_kg == pytest.approx(config.mass_kg - config.unsprung_mass_kg)
+    assert config.sprung_mass_kg > 0.0
+    assert config.roll_inertia_kg_m2 == chassis["roll_inertia_kg_m2"] > 0.0
+    assert config.pitch_inertia_kg_m2 == chassis["pitch_inertia_kg_m2"] > 0.0
+    assert config.yaw_inertia_kg_m2 == chassis["yaw_inertia_kg_m2"] > 0.0
+    assert list(config.axle_track_m) == [chassis["front_track_m"], chassis["rear_track_m"]]
+
+
+def test_the_derived_cg_arms_follow_the_static_axle_split(spec: CarSpec) -> None:
+    """The two CG-relative arms are derived, not configured twice.
+
+    The static front share *is* the fraction of the wheelbase behind the CG, so
+    ``cg_to_rear = wheelbase * front_weight_fraction`` and the front arm is its complement.
+    Storing them as independent YAML values would let a reader tune the split and the arms
+    into disagreement; deriving them is the one-consistent-input rule the phase asks for.
+    """
+    config = spec.kernel_config()
+    assert config.cg_to_front_axle_m + config.cg_to_rear_axle_m == pytest.approx(config.wheelbase_m)
+    assert config.cg_to_rear_axle_m == pytest.approx(
+        config.wheelbase_m * config.front_weight_fraction
+    )
+    assert config.cg_to_front_axle_m == pytest.approx(
+        config.wheelbase_m * (1.0 - config.front_weight_fraction)
+    )
+    assert config.cg_to_front_axle_m > 0.0
+    assert config.cg_to_rear_axle_m > 0.0
+
+
+def test_the_p2_suspension_and_steering_reach_the_kernel_config(spec: CarSpec) -> None:
+    config = spec.kernel_config()
+    suspension = _at(spec.raw, ("suspension",))
+    steering = _at(spec.raw, ("steering",))
+
+    assert config.roll_stiffness_front_fraction == suspension["roll_stiffness_front_fraction"]
+    assert config.pitch_stiffness_front_fraction == suspension["pitch_stiffness_front_fraction"]
+    assert 0.0 < config.roll_stiffness_front_fraction < 1.0
+    assert 0.0 < config.pitch_stiffness_front_fraction < 1.0
+
+    assert list(config.axle_ride_rate_n_per_m) == [
+        suspension["front_ride_rate_n_per_m"],
+        suspension["rear_ride_rate_n_per_m"],
+    ]
+    assert list(config.axle_camber_gain_deg_per_m) == [
+        suspension["front_camber_gain_deg_per_m"],
+        suspension["rear_camber_gain_deg_per_m"],
+    ]
+    assert list(config.axle_static_camber_deg) == [
+        suspension["front_static_camber_deg"],
+        suspension["rear_static_camber_deg"],
+    ]
+    assert list(config.axle_bump_steer_deg_per_m) == [
+        suspension["front_bump_steer_deg_per_m"],
+        suspension["rear_bump_steer_deg_per_m"],
+    ]
+    assert list(config.axle_travel_limit_m) == [
+        suspension["front_travel_limit_m"],
+        suspension["rear_travel_limit_m"],
+    ]
+
+    assert config.steering_ratio == steering["steering_ratio"] > 0.0
+    assert config.max_steering_wheel_angle_deg == steering["max_steering_wheel_angle_deg"] > 0.0
+    assert config.ackermann_fraction == steering["ackermann_fraction"]
+    assert 0.0 <= config.ackermann_fraction <= 1.0
+
+
+def test_the_p2_per_axle_values_are_float64_vectors_of_two_axles(spec: CarSpec) -> None:
+    """The per-axle contract is one array per quantity, front first, exactly two entries.
+
+    A per-axle array that disagreed in length with another would index the wrong axle inside
+    a ``boundscheck=False`` kernel, so the shared length is checked here rather than trusted.
+    """
+    config = spec.kernel_config()
+    arrays = {
+        "axle_track_m": config.axle_track_m,
+        "axle_ride_rate_n_per_m": config.axle_ride_rate_n_per_m,
+        "axle_camber_gain_deg_per_m": config.axle_camber_gain_deg_per_m,
+        "axle_static_camber_deg": config.axle_static_camber_deg,
+        "axle_bump_steer_deg_per_m": config.axle_bump_steer_deg_per_m,
+        "axle_travel_limit_m": config.axle_travel_limit_m,
+    }
+    lengths = set()
+    for name, array in arrays.items():
+        assert array.dtype == np.float64, name
+        assert array.ndim == 1, name
+        assert array.flags["C_CONTIGUOUS"], name
+        assert array.flags["WRITEABLE"], name
+        assert np.all(np.isfinite(array)), name
+        lengths.add(array.shape)
+    assert lengths == {(2,)}
+
+
+def test_the_lateral_tyre_and_relaxation_contract_reaches_the_kernel_config(spec: CarSpec) -> None:
+    config = spec.kernel_config()
+    lateral = _at(spec.raw, ("tyres", "lateral_pacejka"))
+    sensitivity = _at(spec.raw, ("tyres", "load_sensitivity"))
+    relaxation = _at(spec.raw, ("tyres", "relaxation"))
+
+    assert config.lateral_pacejka_b == lateral["b"] > 0.0
+    assert config.lateral_pacejka_c == lateral["c"] > 0.0
+    assert config.lateral_pacejka_e == lateral["e"]
+    assert config.lateral_pacejka_mu == lateral["mu"] > 0.0
+
+    assert config.load_sensitivity_reference_n == sensitivity["reference_load_n"] > 0.0
+    assert config.load_sensitivity_peak == sensitivity["peak"]
+    assert config.load_sensitivity_stiffness == sensitivity["stiffness"]
+    assert 0.0 <= config.load_sensitivity_peak < 1.0
+    assert 0.0 <= config.load_sensitivity_stiffness < 1.0
+
+    assert (
+        config.camber_stiffness_n_per_deg == _at(spec.raw, ("tyres",))["camber_stiffness_n_per_deg"]
+    )
+    assert config.camber_stiffness_n_per_deg > 0.0
+
+    assert config.relaxation_length_lateral_m == relaxation["lateral_length_m"] > 0.0
+    assert config.relaxation_length_longitudinal_m == relaxation["longitudinal_length_m"] > 0.0
+    assert config.relaxation_min_speed_m_s == relaxation["min_speed_m_s"] > 0.0
+
+
+def test_no_p2_value_is_claimed_to_an_fia_clause(spec: CarSpec) -> None:
+    """P2 adds only synthesised inputs, and the citation table must say so."""
+    citations = spec.citations()
+    for path in P2_UNCITED_PATHS:
+        assert path not in citations, path
+    for section in P2_SECTIONS:
+        block = _at(spec.raw, (section,))
+        assert "regulation" not in block, section
+        assert block["provenance"] == "synthesised", section
+
+
+def test_the_p2_values_are_explained_as_not_regulated(spec: CarSpec) -> None:
+    """Every synthesised P2 value carries a reason, and the whole audit still passes."""
+    assert provenance_audit(spec.raw) == []
+    for section in P2_SECTIONS:
+        claims = _at(spec.raw, (section, "not_regulated"))
+        assert claims, section
+        for key, value in claims.items():
+            assert isinstance(value, str) and value.strip(), (section, key)
+        joined = " ".join(str(value) for value in claims.values()).lower()
+        assert "not a regulation" in joined, section
+        assert "synthetic" in joined or "synthesised" in joined, section
+
+
+def test_editing_the_p2_yaml_changes_the_kernel_config(tmp_path: Path, repo: Path) -> None:
+    """P2 calibration is a data edit, exactly as P1's was."""
+    root = _root(repo)
+    before = load_car_spec(_write(root, tmp_path)).kernel_config()
+
+    _at(root, ("chassis",))["front_track_m"] = 1.55
+    _at(root, ("chassis",))["cg_height_m"] = 0.28
+    _at(root, ("suspension",))["roll_stiffness_front_fraction"] = 0.62
+    _at(root, ("steering",))["steering_ratio"] = 14.0
+    _at(root, ("tyres", "lateral_pacejka"))["mu"] = 1.62
+    _at(root, ("tyres", "relaxation"))["lateral_length_m"] = 0.6
+    after = load_car_spec(_write(root, tmp_path)).kernel_config()
+
+    assert before.axle_track_m[0] != 1.55
+    assert after.axle_track_m[0] == 1.55
+    assert after.cg_height_m == 0.28
+    assert after.roll_stiffness_front_fraction == 0.62
+    assert after.steering_ratio == 14.0
+    assert after.lateral_pacejka_mu == 1.62
+    assert after.relaxation_length_lateral_m == 0.6
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("chassis", "front_track_m"), 0.0, "front_track_m"),
+        (("chassis", "front_track_m"), -1.0, "front_track_m"),
+        (("chassis", "rear_track_m"), 0.0, "rear_track_m"),
+        (("chassis", "cg_height_m"), 0.0, "cg_height_m"),
+        (("chassis", "unsprung_mass_kg"), 0.0, "unsprung_mass_kg"),
+        (("chassis", "unsprung_mass_kg"), 900.0, "unsprung_mass_kg"),
+        (("chassis", "roll_inertia_kg_m2"), 0.0, "roll_inertia_kg_m2"),
+        (("chassis", "pitch_inertia_kg_m2"), -1.0, "pitch_inertia_kg_m2"),
+        (("chassis", "yaw_inertia_kg_m2"), 0.0, "yaw_inertia_kg_m2"),
+        (("suspension", "roll_stiffness_front_fraction"), 0.0, "roll_stiffness_front_fraction"),
+        (("suspension", "roll_stiffness_front_fraction"), 1.0, "roll_stiffness_front_fraction"),
+        (("suspension", "pitch_stiffness_front_fraction"), 1.5, "pitch_stiffness_front_fraction"),
+        (("suspension", "front_ride_rate_n_per_m"), 0.0, "front_ride_rate_n_per_m"),
+        (("suspension", "rear_ride_rate_n_per_m"), -1.0, "rear_ride_rate_n_per_m"),
+        (("suspension", "front_camber_gain_deg_per_m"), math.inf, "front_camber_gain_deg_per_m"),
+        (("suspension", "rear_static_camber_deg"), math.nan, "rear_static_camber_deg"),
+        (("suspension", "front_bump_steer_deg_per_m"), math.inf, "front_bump_steer_deg_per_m"),
+        (("suspension", "front_travel_limit_m"), 0.0, "front_travel_limit_m"),
+        (("suspension", "rear_travel_limit_m"), -0.01, "rear_travel_limit_m"),
+        (("steering", "steering_ratio"), 0.0, "steering_ratio"),
+        (("steering", "max_steering_wheel_angle_deg"), 0.0, "max_steering_wheel_angle_deg"),
+        (("steering", "ackermann_fraction"), -0.1, "ackermann_fraction"),
+        (("steering", "ackermann_fraction"), 1.1, "ackermann_fraction"),
+        (("tyres", "lateral_pacejka", "b"), 0.0, "lateral_pacejka.b"),
+        (("tyres", "lateral_pacejka", "c"), -1.0, "lateral_pacejka.c"),
+        (("tyres", "lateral_pacejka", "e"), math.inf, "lateral_pacejka.e"),
+        (("tyres", "lateral_pacejka", "mu"), 0.0, "lateral_pacejka.mu"),
+        (("tyres", "load_sensitivity", "reference_load_n"), 0.0, "reference_load_n"),
+        (("tyres", "load_sensitivity", "peak"), 1.0, "load_sensitivity.peak"),
+        (("tyres", "load_sensitivity", "stiffness"), -0.1, "load_sensitivity.stiffness"),
+        (("tyres", "camber_stiffness_n_per_deg"), 0.0, "camber_stiffness_n_per_deg"),
+        (("tyres", "relaxation", "lateral_length_m"), 0.0, "relaxation.lateral_length_m"),
+        (
+            ("tyres", "relaxation", "longitudinal_length_m"),
+            -1.0,
+            "relaxation.longitudinal_length_m",
+        ),
+        (("tyres", "relaxation", "min_speed_m_s"), 0.0, "relaxation.min_speed_m_s"),
+        (("powertrain", "ice", "ice_inertia_kg_m2"), 0.0, "ice_inertia_kg_m2"),
+        (("powertrain", "ice", "ice_inertia_kg_m2"), -1.0, "ice_inertia_kg_m2"),
+        (("powertrain", "ice", "ice_inertia_kg_m2"), math.inf, "ice_inertia_kg_m2"),
+    ],
+)
+def test_invalid_p2_configuration_fails_in_python_before_the_kernel(
+    tmp_path: Path, repo: Path, path: tuple[Any, ...], value: float, message: str
+) -> None:
+    root = _root(repo)
+    _at(root, path[:-1])[path[-1]] = value
+    with pytest.raises(ContractError, match=message):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+@pytest.mark.parametrize("section", P2_SECTIONS)
+def test_a_missing_p2_section_is_rejected_before_any_array_is_built(
+    tmp_path: Path, repo: Path, section: str
+) -> None:
+    root = _root(repo)
+    del root[section]
+    with pytest.raises(ContractError, match="missing section"):
+        load_car_spec(_write(root, tmp_path))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("chassis", "front_track_m"),
+        ("suspension", "front_ride_rate_n_per_m"),
+        ("steering", "steering_ratio"),
+        ("tyres", "lateral_pacejka"),
+        ("tyres", "load_sensitivity"),
+        ("tyres", "relaxation"),
+    ],
+)
+def test_a_missing_p2_input_fails_at_the_python_boundary(
+    tmp_path: Path, repo: Path, path: tuple[str, ...]
+) -> None:
+    root = _root(repo)
+    del _at(root, path[:-1])[path[-1]]
+    with pytest.raises(ContractError):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
+def test_a_replaced_spec_still_validates_the_p2_inputs(spec: CarSpec) -> None:
+    """P2 validation must not depend on how the spec was built.
+
+    ``replace(spec, raw=...)`` is how a scenario or a test tries a variant, so the P2
+    derivation and range checks in ``build_kernel_config`` have to read the replaced raw
+    document rather than a cached one.
+    """
+    broken = replace(
+        spec,
+        raw={
+            **spec.raw,
+            "chassis": {**_at(spec.raw, ("chassis",)), "front_track_m": 0.0},
+        },
+    )
+    with pytest.raises(ContractError, match="front_track_m"):
+        broken.kernel_config()

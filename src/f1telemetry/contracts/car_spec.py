@@ -52,6 +52,8 @@ _TOP_LEVEL_SECTIONS: Final[tuple[str, ...]] = (
     "gearbox",
     "tyres",
     "chassis",
+    "suspension",
+    "steering",
     "integration",
 )
 _NEEDS_SOURCE_DATE: Final[frozenset[str]] = frozenset(
@@ -174,6 +176,45 @@ class KernelConfig:
     wheelbase_m: float
     overall_width_m: float
     front_weight_fraction: float
+    # --- P2-T1: lateral + load-transfer inputs -------------------------------------------
+    # Geometry and body inertias. The two CG-relative arms are derived from `wheelbase_m`
+    # and `front_weight_fraction` in `build_kernel_config`, not configured twice.
+    cg_to_front_axle_m: float
+    cg_to_rear_axle_m: float
+    cg_height_m: float
+    unsprung_mass_kg: float
+    sprung_mass_kg: float
+    roll_inertia_kg_m2: float
+    pitch_inertia_kg_m2: float
+    yaw_inertia_kg_m2: float
+    # Per-axle quantities are one float64 vector of length two, front first, so a kernel can
+    # index an axle without a string or a second scalar name.
+    axle_track_m: np.ndarray
+    axle_ride_rate_n_per_m: np.ndarray
+    axle_camber_gain_deg_per_m: np.ndarray
+    axle_static_camber_deg: np.ndarray
+    axle_bump_steer_deg_per_m: np.ndarray
+    axle_travel_limit_m: np.ndarray
+    roll_stiffness_front_fraction: float
+    pitch_stiffness_front_fraction: float
+    # Steering contract: scenario input is a steering-wheel angle, positive left.
+    steering_ratio: float
+    max_steering_wheel_angle_deg: float
+    ackermann_fraction: float
+    # Lateral tyre response, load sensitivity, camber and relaxation.
+    lateral_pacejka_b: float
+    lateral_pacejka_c: float
+    lateral_pacejka_e: float
+    lateral_pacejka_mu: float
+    load_sensitivity_reference_n: float
+    load_sensitivity_peak: float
+    load_sensitivity_stiffness: float
+    camber_stiffness_n_per_deg: float
+    relaxation_length_lateral_m: float
+    relaxation_length_longitudinal_m: float
+    relaxation_min_speed_m_s: float
+    # Task 0 P1 prerequisite carried here so the ICE speed state divides by configured data.
+    ice_inertia_kg_m2: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +324,8 @@ class CarSpec:
         gearbox = _section(raw, "gearbox")
         tyres = _section(raw, "tyres")
         chassis = _section(raw, "chassis")
+        suspension = _section(raw, "suspension")
+        steering = _section(raw, "steering")
 
         cl = self.cl_curve
         cd = self.cd_curve
@@ -578,6 +621,143 @@ class CarSpec:
                 "chassis.c42_enforcement."
             )
 
+        # --- P2-T1: lateral + load-transfer inputs ---------------------------------------
+        # The CG-relative arms are *derived* from the wheelbase and the static axle split, not
+        # configured twice: the static front share is the fraction of the wheelbase behind the
+        # CG, so `cg_to_rear = wheelbase * front_weight_fraction`. Two independent YAML values
+        # could be tuned into disagreement with the split they are supposed to describe.
+        cg_to_front = wheelbase * (1.0 - front_weight)
+        cg_to_rear = wheelbase * front_weight
+        cg_height = _positive(chassis.get("cg_height_m"), "car_spec: chassis.cg_height_m")
+        unsprung_mass = _positive(
+            chassis.get("unsprung_mass_kg"), "car_spec: chassis.unsprung_mass_kg"
+        )
+        if unsprung_mass >= mass_kg:
+            raise ContractError(
+                f"car_spec: chassis.unsprung_mass_kg ({unsprung_mass}) must be below "
+                f"mass.total_kg ({mass_kg}); the sprung mass would otherwise be zero or "
+                "negative and the body inertias would be inertia of nothing."
+            )
+        sprung_mass = mass_kg - unsprung_mass
+        roll_inertia = _positive(
+            chassis.get("roll_inertia_kg_m2"), "car_spec: chassis.roll_inertia_kg_m2"
+        )
+        pitch_inertia = _positive(
+            chassis.get("pitch_inertia_kg_m2"), "car_spec: chassis.pitch_inertia_kg_m2"
+        )
+        yaw_inertia = _positive(
+            chassis.get("yaw_inertia_kg_m2"), "car_spec: chassis.yaw_inertia_kg_m2"
+        )
+
+        # The per-axle contract: one float64 vector per quantity, front first. The shared
+        # length is what a `boundscheck=False` kernel relies on to index the right axle, so
+        # every axle array is built here from two named YAML values and can never disagree.
+        axle_track = _axle_pair(chassis, "front_track_m", "rear_track_m", "chassis")
+        axle_ride_rate = _axle_pair(
+            suspension, "front_ride_rate_n_per_m", "rear_ride_rate_n_per_m", "suspension"
+        )
+        axle_camber_gain = _axle_signed_pair(
+            suspension,
+            "front_camber_gain_deg_per_m",
+            "rear_camber_gain_deg_per_m",
+            "suspension",
+        )
+        axle_static_camber = _axle_signed_pair(
+            suspension, "front_static_camber_deg", "rear_static_camber_deg", "suspension"
+        )
+        axle_bump_steer = _axle_signed_pair(
+            suspension, "front_bump_steer_deg_per_m", "rear_bump_steer_deg_per_m", "suspension"
+        )
+        axle_travel_limit = _axle_pair(
+            suspension, "front_travel_limit_m", "rear_travel_limit_m", "suspension"
+        )
+
+        # The two stiffness splits are the load-transfer balance knobs. Strictly inside
+        # (0, 1): exactly 1 would hand all transfer to one axle and leave the other with a
+        # zero share, which is a division by a fraction of nothing in the transfer model.
+        roll_front = _number(
+            suspension.get("roll_stiffness_front_fraction"),
+            "car_spec: suspension.roll_stiffness_front_fraction",
+        )
+        pitch_front = _number(
+            suspension.get("pitch_stiffness_front_fraction"),
+            "car_spec: suspension.pitch_stiffness_front_fraction",
+        )
+        for name, value in (
+            ("roll_stiffness_front_fraction", roll_front),
+            ("pitch_stiffness_front_fraction", pitch_front),
+        ):
+            if not 0.0 < value < 1.0:
+                raise ContractError(
+                    f"car_spec: suspension.{name} must be in (0, 1), got {value}. It is the "
+                    "share of load transfer taken by the front axle; 1 would leave the rear "
+                    "axle carrying none of its own transfer."
+                )
+
+        # The steering contract: a steering-wheel angle in degrees, positive left, divided by
+        # the ratio to get the road-wheel angle, with a mechanical limit past which the
+        # boundary rejects a command rather than clipping it.
+        steering_ratio = _positive(
+            steering.get("steering_ratio"), "car_spec: steering.steering_ratio"
+        )
+        max_steering = _positive(
+            steering.get("max_steering_wheel_angle_deg"),
+            "car_spec: steering.max_steering_wheel_angle_deg",
+        )
+        ackermann = _number(
+            steering.get("ackermann_fraction"), "car_spec: steering.ackermann_fraction"
+        )
+        if not 0.0 <= ackermann <= 1.0:
+            raise ContractError(
+                f"car_spec: steering.ackermann_fraction must be in [0, 1], got {ackermann}. "
+                "0 is parallel steering and 1 is full Ackermann."
+            )
+
+        # The lateral tyre response, its load sensitivity and the camber term, checked with the
+        # same rules as the longitudinal set: `b`, `c` and `mu` are magnitudes, `e` carries a
+        # sign and is only required finite.
+        lateral = _section(tyres, "lateral_pacejka")
+        lateral_b = _positive(lateral.get("b"), "car_spec: tyres.lateral_pacejka.b")
+        lateral_c = _positive(lateral.get("c"), "car_spec: tyres.lateral_pacejka.c")
+        lateral_e = _number(lateral.get("e"), "car_spec: tyres.lateral_pacejka.e")
+        lateral_mu = _positive(lateral.get("mu"), "car_spec: tyres.lateral_pacejka.mu")
+        sensitivity = _section(tyres, "load_sensitivity")
+        sensitivity_reference = _positive(
+            sensitivity.get("reference_load_n"), "car_spec: tyres.load_sensitivity.reference_load_n"
+        )
+        sensitivity_peak = _number(sensitivity.get("peak"), "car_spec: tyres.load_sensitivity.peak")
+        sensitivity_stiffness = _number(
+            sensitivity.get("stiffness"), "car_spec: tyres.load_sensitivity.stiffness"
+        )
+        for name, value in (("peak", sensitivity_peak), ("stiffness", sensitivity_stiffness)):
+            if not 0.0 <= value < 1.0:
+                raise ContractError(
+                    f"car_spec: tyres.load_sensitivity.{name} must be in [0, 1), got {value}. "
+                    "It is a fractional fall in grip per unit of normalised load; 1 would make "
+                    "the load-sensitive tyre reach zero grip at twice the reference load."
+                )
+        camber_stiffness = _positive(
+            tyres.get("camber_stiffness_n_per_deg"),
+            "car_spec: tyres.camber_stiffness_n_per_deg",
+        )
+        relaxation = _section(tyres, "relaxation")
+        relaxation_lateral = _positive(
+            relaxation.get("lateral_length_m"), "car_spec: tyres.relaxation.lateral_length_m"
+        )
+        relaxation_longitudinal = _positive(
+            relaxation.get("longitudinal_length_m"),
+            "car_spec: tyres.relaxation.longitudinal_length_m",
+        )
+        relaxation_min_speed = _positive(
+            relaxation.get("min_speed_m_s"), "car_spec: tyres.relaxation.min_speed_m_s"
+        )
+
+        # Task 0's P1 prerequisite: the ICE rotational state divides by this inertia, so it is
+        # the same kind of divisor as `wheel_inertia_kg_m2` and gets the same rule.
+        ice_inertia = _positive(
+            ice.get("ice_inertia_kg_m2"), "car_spec: powertrain.ice.ice_inertia_kg_m2"
+        )
+
         return KernelConfig(
             dt_s=dt_s,
             mass_kg=mass_kg,
@@ -672,6 +852,37 @@ class CarSpec:
                 chassis.get("overall_width_m"), "car_spec: chassis.overall_width_m"
             ),
             front_weight_fraction=front_weight,
+            cg_to_front_axle_m=cg_to_front,
+            cg_to_rear_axle_m=cg_to_rear,
+            cg_height_m=cg_height,
+            unsprung_mass_kg=unsprung_mass,
+            sprung_mass_kg=sprung_mass,
+            roll_inertia_kg_m2=roll_inertia,
+            pitch_inertia_kg_m2=pitch_inertia,
+            yaw_inertia_kg_m2=yaw_inertia,
+            axle_track_m=axle_track,
+            axle_ride_rate_n_per_m=axle_ride_rate,
+            axle_camber_gain_deg_per_m=axle_camber_gain,
+            axle_static_camber_deg=axle_static_camber,
+            axle_bump_steer_deg_per_m=axle_bump_steer,
+            axle_travel_limit_m=axle_travel_limit,
+            roll_stiffness_front_fraction=roll_front,
+            pitch_stiffness_front_fraction=pitch_front,
+            steering_ratio=steering_ratio,
+            max_steering_wheel_angle_deg=max_steering,
+            ackermann_fraction=ackermann,
+            lateral_pacejka_b=lateral_b,
+            lateral_pacejka_c=lateral_c,
+            lateral_pacejka_e=lateral_e,
+            lateral_pacejka_mu=lateral_mu,
+            load_sensitivity_reference_n=sensitivity_reference,
+            load_sensitivity_peak=sensitivity_peak,
+            load_sensitivity_stiffness=sensitivity_stiffness,
+            camber_stiffness_n_per_deg=camber_stiffness,
+            relaxation_length_lateral_m=relaxation_lateral,
+            relaxation_length_longitudinal_m=relaxation_longitudinal,
+            relaxation_min_speed_m_s=relaxation_min_speed,
+            ice_inertia_kg_m2=ice_inertia,
         )
 
 
@@ -753,6 +964,34 @@ def _section(root: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     if not isinstance(node, Mapping):
         raise ContractError(f"car_spec: section {key!r} missing or not a mapping")
     return node
+
+
+def _axle_pair(section: Mapping[str, Any], front_key: str, rear_key: str, where: str) -> np.ndarray:
+    """The front and rear values of one per-axle quantity as a length-two ``float64`` vector.
+
+    Every P2 per-axle quantity is stored as two named YAML scalars and handed to the kernel as
+    one array, front first. Building them all through this helper is what guarantees they share
+    a length: a ``boundscheck=False`` kernel indexes an axle by position, so a length-two vector
+    on one quantity and a length-one vector on another would read the wrong axle silently. Both
+    entries are finite and strictly positive, the rule every magnitude in this file follows.
+    """
+    front = _positive(section.get(front_key), f"car_spec: {where}.{front_key}")
+    rear = _positive(section.get(rear_key), f"car_spec: {where}.{rear_key}")
+    return np.array((front, rear), dtype=np.float64)
+
+
+def _axle_signed_pair(
+    section: Mapping[str, Any], front_key: str, rear_key: str, where: str
+) -> np.ndarray:
+    """As :func:`_axle_pair`, but for a signed per-axle quantity such as camber or bump steer.
+
+    A camber angle is negative for most of a car's setup, so the sign is part of the value and
+    the rule is finiteness rather than positivity. Both entries still have to be finite: a NaN
+    camber would reach a ``boundscheck=False`` kernel and poison every force at that corner.
+    """
+    front = _number(section.get(front_key), f"car_spec: {where}.{front_key}")
+    rear = _number(section.get(rear_key), f"car_spec: {where}.{rear_key}")
+    return np.array((front, rear), dtype=np.float64)
 
 
 def _curve(entries: Any, where: str, coefficient: str) -> AeroCurve:
