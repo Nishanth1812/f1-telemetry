@@ -79,16 +79,18 @@ required to be positive, since there is no distribution of a negative total.
 
 **Two ways in, deliberately.** The primitives take flat scalars and caller-owned ``float64``
 vectors and are what a compiled kernel calls; :func:`step_loads` is the Python-facing composition
-that checks the configuration and the state before any arithmetic happens. Its small
-:class:`CornerLoads` result is immutable, so a caller cannot adjust a load after the fact and then
-report the total it adjusted - the total is the sum of what was returned.
+that checks the state before any arithmetic happens, on top of :func:`validated_load_scalars` - the
+one boundary that narrows and range-checks every geometry and per-axle vector the kernels read, so
+a kernel calls it once outside its loop and is handed numbers. Its small :class:`CornerLoads`
+result is immutable, so a caller cannot adjust a load after the fact and then report the total it
+adjusted - the total is the sum of what was returned.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
 from numba import njit
@@ -106,12 +108,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CornerLoads",
+    "LoadScalars",
     "clamp_travel_to_limits",
     "corner_loads_n",
     "lateral_roll_moment_nm",
     "longitudinal_load_transfer_n",
     "step_loads",
     "suspension_travel_m",
+    "validated_load_scalars",
     "vertical_load_total_n",
 ]
 
@@ -134,6 +138,32 @@ _BAND_TOLERANCE: Final[float] = 1e-9
 # Total-load conservation is therefore exact to about 1e-12 relative, which is far tighter than any
 # invariant tolerance and is bounded here so a lifted corner cannot be nudged off zero by dust.
 _SUM_TOLERANCE: Final[float] = 1e-12
+
+# The scalars the load model reads and the sign each one has to have, read as data rather than as a
+# list of names because a name that is not checked here is a name nobody notices is unchecked. Every
+# one of the positive group is a magnitude or a divisor somewhere in the transfer: the two CG arms
+# are summed into the wheelbase, the CG height is the leverage over the load, and the ride rate is
+# what divides a load deviation into travel.
+_POSITIVE_LOAD_SCALARS: Final[tuple[str, ...]] = (
+    "mass_kg",
+    "gravity_m_s2",
+    "cg_to_front_axle_m",
+    "cg_to_rear_axle_m",
+    "cg_height_m",
+)
+# A fraction of a total, so the interesting boundary is the top as well as the bottom: exactly 1
+# would leave the rear axle carrying none of its own lateral transfer.
+_FRACTION_LOAD_SCALARS: Final[tuple[str, ...]] = ("roll_stiffness_front_fraction",)
+# The per-axle vectors, front first, in the order `car_spec.yaml` writes them. Held as names so the
+# three of them are validated by one rule rather than three that can drift.
+_AXLE_LOAD_VECTORS: Final[tuple[str, ...]] = (
+    "axle_track_m",
+    "axle_ride_rate_n_per_m",
+    "axle_travel_limit_m",
+)
+# One length-two vector per axle. Named rather than a bare 2 at the validation boundary, because a
+# wrong length is the whole thing this check exists for.
+_AXLE_VECTOR_LENGTH: Final[int] = 2
 
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
@@ -520,6 +550,100 @@ class CornerLoads:
         return tuple(index for index, value in enumerate(self.load_n) if value == 0.0)
 
 
+class LoadScalars(NamedTuple):
+    """Every configuration quantity the load kernels read, narrowed and checked.
+
+    The scalars are plain ``float`` and the per-axle vectors are the config's own contiguous
+    ``float64`` arrays, handed over rather than copied: a compiled kernel must not allocate inside
+    its loop, and the boundary itself allocates nothing either.
+
+    A :class:`~f1telemetry.contracts.car_spec.KernelConfig` attribute is whatever YAML put there -
+    an ``int`` for a mass, a list for a track, a non-contiguous view, a NaN - and a
+    ``boundscheck=False`` kernel cannot defend itself against any of those. This is the type the
+    validated form arrives as, so a caller cannot hand a kernel the raw object by accident.
+    """
+
+    mass_kg: float
+    gravity_m_s2: float
+    cg_to_front_axle_m: float
+    cg_to_rear_axle_m: float
+    cg_height_m: float
+    roll_stiffness_front_fraction: float
+    axle_track_m: np.ndarray
+    axle_ride_rate_n_per_m: np.ndarray
+    axle_travel_limit_m: np.ndarray
+
+
+def validated_load_scalars(config: KernelConfig, prefix: str) -> LoadScalars:
+    """Every geometry and stiffness scalar the load model reads, narrowed and range-checked.
+
+    **One validator for the model, shared by every Python entry point and by the kernel.**
+    :func:`step_loads` needs this, and so does a compiled kernel - which calls it once outside its
+    loop, which is what ``PLAN.md`` section 4.1 rule 3 requires: the loop is handed numbers and
+    never sees the config object. ``prefix`` names the calling entry point in the message, because a
+    shared boundary is a worse place for an ambiguous error than a named one.
+
+    The rules are the ones a compiled function cannot make for itself once ``boundscheck`` is off:
+
+    * magnitudes strictly positive - the mass, gravity, both CG arms and the CG height. A zero or
+      negative one is a zero wheelbase, a zero transfer, or a car with no leverage over its own
+      weight, and all three divide;
+    * the roll-stiffness fraction strictly inside ``(0, 1)`` - it is the share of the roll moment
+      the front axle takes, and exactly 1 would leave the rear axle carrying none of its own
+      transfer;
+    * the three per-axle vectors each a length-two, C-contiguous ``float64`` vector, front first,
+      finite and strictly positive. A wrong length or a non-contiguous view is an out-of-bounds
+      read rather than an error, and a zero track, ride rate or travel limit is the zero divisor of
+      a lateral transfer, a travel or a band.
+
+    It is deliberately *wider* than any one caller's read - the corner-load primitives never touch
+    the travel limit, and :func:`step_loads` holds the whole configuration to every rule - because
+    ``KernelConfig`` is a public frozen dataclass that ``dataclasses.replace`` can make
+    inconsistent, and a boundary that checked only what this call happened to touch would let a bad
+    value sit in the same object the next call reads.
+
+    ``pitch_stiffness_front_fraction`` is *not* in here, and that is the module's stated decision
+    rather than an oversight: the longitudinal transfer is the plan's geometric ``m ax h / L``, so
+    this model reads no pitch-stiffness field at all and validating one would refuse a value the
+    arithmetic never consults.
+    """
+    names = (*_POSITIVE_LOAD_SCALARS, *_FRACTION_LOAD_SCALARS)
+    values = {
+        name: _checked_float(f"config.{name}", getattr(config, name), prefix=prefix)
+        for name in names
+    }
+    for name in _POSITIVE_LOAD_SCALARS:
+        if values[name] <= 0.0:
+            raise ValueError(
+                f"{prefix}: config.{name} must be finite and > 0, got {values[name]!r}. Every one "
+                "of these is a magnitude or a divisor in the transfer: a zero CG arm or CG height "
+                "is a zero wheelbase or a car with no leverage over its own weight"
+            )
+    for name in _FRACTION_LOAD_SCALARS:
+        if not 0.0 < values[name] < 1.0:
+            raise ValueError(
+                f"{prefix}: config.{name} must be in (0, 1), got {values[name]!r}. It is the "
+                "share of the roll moment the front axle takes; 1 would leave the rear axle "
+                "carrying none of its own transfer"
+            )
+
+    vectors = {
+        name: _checked_axle_pair(getattr(config, name), name, prefix=prefix)
+        for name in _AXLE_LOAD_VECTORS
+    }
+    return LoadScalars(
+        mass_kg=values["mass_kg"],
+        gravity_m_s2=values["gravity_m_s2"],
+        cg_to_front_axle_m=values["cg_to_front_axle_m"],
+        cg_to_rear_axle_m=values["cg_to_rear_axle_m"],
+        cg_height_m=values["cg_height_m"],
+        roll_stiffness_front_fraction=values["roll_stiffness_front_fraction"],
+        axle_track_m=vectors["axle_track_m"],
+        axle_ride_rate_n_per_m=vectors["axle_ride_rate_n_per_m"],
+        axle_travel_limit_m=vectors["axle_travel_limit_m"],
+    )
+
+
 def step_loads(
     config: KernelConfig,
     *,
@@ -539,43 +663,13 @@ def step_loads(
     Everything that could divide by zero, index past the end of a length-two vector or poison a
     load with a NaN is refused here, before any arithmetic: a replaceable public ``KernelConfig``
     can be made inconsistent with ``dataclasses.replace``, and a compiled function cannot defend
-    itself once ``boundscheck`` is off. A nonpositive total vertical load is refused rather than
-    distributed, because there is no distribution of a negative total and sharing one out would
-    hand every corner a load the tyre model has to defend against.
+    itself once ``boundscheck`` is off. The configuration half of that is
+    :func:`validated_load_scalars`, shared with the kernels rather than restated. A nonpositive
+    total vertical load is refused rather than distributed, because there is no distribution of a
+    negative total and sharing one out would hand every corner a load the tyre model has to defend
+    against.
     """
-    mass = _checked_float("mass_kg", config.mass_kg, prefix="step_loads")
-    gravity = _checked_float("gravity_m_s2", config.gravity_m_s2, prefix="step_loads")
-    cg_to_front = _checked_float(
-        "cg_to_front_axle_m", config.cg_to_front_axle_m, prefix="step_loads"
-    )
-    cg_to_rear = _checked_float("cg_to_rear_axle_m", config.cg_to_rear_axle_m, prefix="step_loads")
-    cg_height = _checked_float("cg_height_m", config.cg_height_m, prefix="step_loads")
-    roll_front = _checked_float(
-        "roll_stiffness_front_fraction", config.roll_stiffness_front_fraction, prefix="step_loads"
-    )
-    for name, value in (
-        ("mass_kg", mass),
-        ("gravity_m_s2", gravity),
-        ("cg_to_front_axle_m", cg_to_front),
-        ("cg_to_rear_axle_m", cg_to_rear),
-        ("cg_height_m", cg_height),
-    ):
-        if value <= 0.0:
-            raise ValueError(
-                f"step_loads: config.{name} must be > 0, got {value!r}. Every one of these is a "
-                "magnitude or a divisor in the transfer: a zero CG arm or CG height is a zero "
-                "wheelbase or a car with no leverage over its own weight"
-            )
-    if not 0.0 < roll_front < 1.0:
-        raise ValueError(
-            f"step_loads: config.roll_stiffness_front_fraction must be in (0, 1), got "
-            f"{roll_front!r}. It is the share of the roll moment the front axle takes; 1 would "
-            "leave the rear axle carrying none of its own transfer"
-        )
-
-    track_m = _checked_axle_pair(config.axle_track_m, "axle_track_m")
-    ride_rate = _checked_axle_pair(config.axle_ride_rate_n_per_m, "axle_ride_rate_n_per_m")
-    travel_limit = _checked_axle_pair(config.axle_travel_limit_m, "axle_travel_limit_m")
+    geometry = validated_load_scalars(config, "step_loads")
 
     longitudinal_accel = _checked_float(
         "longitudinal_accel_m_s2", longitudinal_accel_m_s2, prefix="step_loads"
@@ -589,7 +683,9 @@ def step_loads(
             "magnitude `aero_forces` returns; aerodynamic lift is not a configured input"
         )
 
-    total_n = vertical_load_total_n(mass, gravity, vertical_accel, downforce)
+    total_n = vertical_load_total_n(
+        geometry.mass_kg, geometry.gravity_m_s2, vertical_accel, downforce
+    )
     if total_n <= 0.0:
         raise ValueError(
             f"step_loads: the total vertical load would be {total_n!r} N for az={vertical_accel!r} "
@@ -603,19 +699,25 @@ def step_loads(
     corner_loads_n(
         loads_n,
         base_n,
-        mass,
-        gravity,
+        geometry.mass_kg,
+        geometry.gravity_m_s2,
         downforce,
         vertical_accel,
         longitudinal_accel,
         lateral_accel,
-        cg_to_front,
-        cg_to_rear,
-        cg_height,
-        track_m,
-        roll_front,
+        geometry.cg_to_front_axle_m,
+        geometry.cg_to_rear_axle_m,
+        geometry.cg_height_m,
+        geometry.axle_track_m,
+        geometry.roll_stiffness_front_fraction,
     )
-    clamp_travel_to_limits(loads_n, base_n, ride_rate, travel_limit, limited_n)
+    clamp_travel_to_limits(
+        loads_n, base_n, geometry.axle_ride_rate_n_per_m, geometry.axle_travel_limit_m, limited_n
+    )
+    # Named once because the ride rate is read per corner below and the corner index is what picks
+    # the axle; spelling the validated vector out at each of the four would be four chances to
+    # disagree about which axle a corner belongs to.
+    ride_rate = geometry.axle_ride_rate_n_per_m
     # Spelled out one corner at a time, in FL, FR, RL, RR order, rather than as a comprehension over
     # the vector: the result is a fixed four-tuple, the order is the contract every caller reads it
     # in, and a comprehension would hand back a length the type checker cannot vouch for.
@@ -671,31 +773,33 @@ def step_loads(
     )
 
 
-def _checked_axle_pair(value: object, name: str) -> np.ndarray:
+def _checked_axle_pair(value: object, name: str, *, prefix: str) -> np.ndarray:
     """A per-axle quantity: a length-two, C-contiguous ``float64`` vector of positive values.
 
     Front first, matching every other per-axle array in ``car_spec.yaml`` and every kernel that
     indexes an axle by position with ``boundscheck`` off. A length-one or length-three vector, a
     ``float32`` one, a nested one, a NaN or a non-positive entry are all refused: with bounds
     checking off, a wrong length is an out-of-bounds read rather than an error, and a zero track
-    or ride rate is the zero denominator of a transfer or a travel.
+    or ride rate is the zero denominator of a transfer or a travel. The vector is returned as it
+    arrived rather than copied, so the boundary allocates nothing and the kernel reads the same
+    caller-owned array the config holds.
     """
     if (
         not isinstance(value, np.ndarray)
         or value.dtype != np.float64
         or value.ndim != 1
-        or value.size != 2
+        or value.size != _AXLE_VECTOR_LENGTH
         or not value.flags.c_contiguous
     ):
         raise ValueError(
-            f"step_loads: config.{name} must be a C-contiguous float64 vector of length 2, "
-            f"front first; got {type(value).__name__} of shape "
+            f"{prefix}: config.{name} must be a C-contiguous float64 vector of length "
+            f"{_AXLE_VECTOR_LENGTH}, front first; got {type(value).__name__} of shape "
             f"{getattr(value, 'shape', None)} and dtype {getattr(value, 'dtype', None)}"
         )
     if not np.isfinite(value).all():
-        raise ValueError(f"step_loads: config.{name} must be finite, got {list(value)}")
+        raise ValueError(f"{prefix}: config.{name} must be finite, got {list(value)}")
     if not np.all(value > 0.0):
-        raise ValueError(f"step_loads: config.{name} must be > 0 at every axle, got {list(value)}")
+        raise ValueError(f"{prefix}: config.{name} must be > 0 at every axle, got {list(value)}")
     return value
 
 

@@ -36,6 +36,11 @@ The claims are checked here in the form that would actually fail:
   downforce, a zero CG arm, a roll fraction outside ``(0, 1)`` and an axle array that is not a
   length-two contiguous ``float64`` vector are all refused at the Python boundary, before a
   ``boundscheck=False`` kernel can read past the end of one.
+* **One validator for the model.** ``validated_load_scalars`` is the shared boundary every Python
+  entry point and a compiled kernel call outside their loop: it hands back narrowed scalars and
+  the per-axle vectors the kernels index, and it refuses everything a compiled function cannot
+  defend against itself - nonfinite and non-numeric scalars, a nonpositive divisor, a roll
+  fraction outside ``(0, 1)``, and any per-axle vector of the wrong length, dtype, layout or sign.
 
 Every physical number comes from the loaded ``car_spec.yaml``, so this file contains no tuned
 constant. The handful of cases that need geometry the committed car cannot produce - a lateral
@@ -706,3 +711,184 @@ def test_invalid_geometry_and_stiffness_configuration_is_refused(
     broken = replace(config, **{field: value})
     with pytest.raises(ValueError, match=message):
         loads.step_loads(broken, longitudinal_accel_m_s2=0.0, lateral_accel_m_s2=0.0)
+
+
+# The six scalars the load model reads. Kept as a name here rather than repeated per test so a
+# scalar added to the validator cannot be forgotten by the test that says the validator is wider
+# than one caller's read.
+_LOAD_SCALAR_NAMES = (
+    "mass_kg",
+    "gravity_m_s2",
+    "cg_to_front_axle_m",
+    "cg_to_rear_axle_m",
+    "cg_height_m",
+    "roll_stiffness_front_fraction",
+)
+
+# The three per-axle vectors the model reads, front first.
+_AXLE_VECTOR_NAMES = ("axle_track_m", "axle_ride_rate_n_per_m", "axle_travel_limit_m")
+
+
+def test_the_load_scalars_validator_hands_back_every_geometry_the_kernels_read(
+    config: KernelConfig,
+) -> None:
+    """Narrowed scalars plus the caller-owned per-axle vectors, with nothing left to re-check.
+
+    The primitives take ``float`` and ``float64`` arrays, so what crosses this boundary has to be
+    exactly those types: a value that is only *equal* to the config's is not enough, because an
+    ``int`` or a non-contiguous view reaching a ``boundscheck=False`` kernel is a different
+    specialization or a silent copy rather than the number the model was validated against.
+    """
+    values = loads.validated_load_scalars(config, "test")
+
+    for name in _LOAD_SCALAR_NAMES:
+        value = getattr(values, name)
+        assert type(value) is float, (
+            f"{name} reached the kernel as {type(value).__name__}; the primitives are compiled "
+            "against float and narrowing here is what keeps one specialization per call site"
+        )
+        assert value == getattr(config, name)
+
+    for name in _AXLE_VECTOR_NAMES:
+        array = getattr(values, name)
+        assert array is getattr(config, name), (
+            f"{name} is handed over rather than copied: the boundary allocates nothing, so a "
+            "kernel reads the same caller-owned vector the config holds"
+        )
+        assert array.dtype == np.float64
+        assert array.ndim == 1
+        assert array.size == 2
+        assert array.flags.c_contiguous
+        assert np.isfinite(array).all()
+        assert np.all(array > 0.0)
+
+
+def test_the_validated_scalars_reproduce_the_loads_step_loads_computes(
+    config: KernelConfig,
+) -> None:
+    """What the validator hands a kernel is what :func:`step_loads` fed its own kernels.
+
+    ``step_loads`` goes through the shared boundary, and this drives the primitives from that same
+    boundary's output. If the two disagreed, a kernel caller and the Python entry point would be
+    reading the configuration through different rules - which is exactly the drift one shared
+    validator exists to prevent, and the failure would only show up as a load case that nobody
+    stepped through :func:`step_loads`.
+    """
+    values = loads.validated_load_scalars(config, "test")
+    longitudinal_m_s2 = 9.0
+    lateral_m_s2 = 4.0
+    loads_n = np.zeros(4, dtype=np.float64)
+    base_n = np.zeros(4, dtype=np.float64)
+    limited_n = np.zeros(4, dtype=np.int64)
+
+    loads.corner_loads_n(
+        loads_n,
+        base_n,
+        values.mass_kg,
+        values.gravity_m_s2,
+        0.0,
+        0.0,
+        longitudinal_m_s2,
+        lateral_m_s2,
+        values.cg_to_front_axle_m,
+        values.cg_to_rear_axle_m,
+        values.cg_height_m,
+        values.axle_track_m,
+        values.roll_stiffness_front_fraction,
+    )
+    loads.clamp_travel_to_limits(
+        loads_n,
+        base_n,
+        values.axle_ride_rate_n_per_m,
+        values.axle_travel_limit_m,
+        limited_n,
+    )
+
+    reference = loads.step_loads(
+        config,
+        longitudinal_accel_m_s2=longitudinal_m_s2,
+        lateral_accel_m_s2=lateral_m_s2,
+    )
+    assert tuple(float(value) for value in loads_n) == pytest.approx(reference.load_n, rel=1e-15)
+    assert tuple(float(value) for value in base_n) == pytest.approx(
+        reference.base_load_n, rel=1e-15
+    )
+    assert tuple(bool(value) for value in limited_n) == reference.travel_limited
+
+
+def test_the_load_scalars_validator_names_the_entry_point_that_refused(
+    config: KernelConfig,
+) -> None:
+    """``prefix`` says *who* refused, because this boundary is shared by several callers.
+
+    ``step_loads`` and a compiled kernel read the same fields, so ``mass_kg must be > 0`` is a
+    worse error than one that says which caller was handed the impossible value.
+    """
+    broken = replace(config, cg_height_m=0.0)
+    with pytest.raises(ValueError, match=r"kernel_boundary: config\.cg_height_m"):
+        loads.validated_load_scalars(broken, "kernel_boundary")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mass_kg", 0.0),
+        ("mass_kg", -1.0),
+        ("mass_kg", math.nan),
+        ("mass_kg", math.inf),
+        ("mass_kg", "800.0"),
+        ("mass_kg", True),
+        ("gravity_m_s2", 0.0),
+        ("gravity_m_s2", -9.80665),
+        ("cg_to_front_axle_m", 0.0),
+        ("cg_to_rear_axle_m", -0.5),
+        ("cg_height_m", 0.0),
+        ("cg_height_m", math.nan),
+        ("roll_stiffness_front_fraction", 0.0),
+        ("roll_stiffness_front_fraction", 1.0),
+        ("roll_stiffness_front_fraction", 1.5),
+        ("roll_stiffness_front_fraction", -0.1),
+        ("roll_stiffness_front_fraction", math.nan),
+    ],
+)
+def test_invalid_load_scalars_are_refused_by_the_shared_validator(
+    config: KernelConfig, field: str, value: Any
+) -> None:
+    """Zero, negative, nonfinite and non-numeric geometry never reaches ``boundscheck=False``."""
+    broken = replace(config, **{field: value})
+    with pytest.raises(ValueError, match=field):
+        loads.validated_load_scalars(broken, "test")
+
+
+@pytest.mark.parametrize("field", _AXLE_VECTOR_NAMES)
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.array([1.6]),
+        np.array([1.6, 1.55, 1.5]),
+        np.array([1.6, 1.55], dtype=np.float32),
+        np.array([[1.6, 1.55]]),
+        np.array([1.6, np.nan]),
+        np.array([1.6, math.inf]),
+        np.array([np.nan, 1.55]),
+        np.array([1.6, 0.0]),
+        np.array([1.6, -1.55]),
+        [1.6, 1.55],
+        np.zeros((2, 2), dtype=np.float64)[:, 0],
+    ],
+)
+def test_a_per_axle_vector_the_kernel_could_read_past_its_end_is_refused(
+    config: KernelConfig, field: str, value: Any
+) -> None:
+    """Length, dtype, layout, finiteness and sign, for each of the three per-axle vectors.
+
+    With bounds checking off, a length-one or ``float32`` vector is an out-of-bounds read rather
+    than an error, and a zero or negative entry is the zero denominator of a transfer, a travel or
+    a band. The vectors are validated *together* rather than per kernel: ``axle_travel_limit_m`` is
+    not read by ``corner_loads_n``, but it is read by the clamp in the same step, and a boundary
+    that checked only what one call happened to touch would let a bad value sit in the object the
+    next call reads.
+    """
+    broken = replace(config, **{field: value})
+    with pytest.raises(ValueError, match=field):
+        loads.validated_load_scalars(broken, "test")
