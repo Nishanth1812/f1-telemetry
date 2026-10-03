@@ -73,13 +73,19 @@ drive a real dashboard, every later phase is built on sand.
 | P1-T8 | Scenarios: `accelerate_to_speed`, `full_throttle` | Uses the P0 scenario schema stub |
 | P1-T9 | Calibration: tune aero + torque to hit 0–100 km/h and top speed | Measure against the reference points in `PLAN.md` §11.1, not the old §11 sanity bands. Record each coefficient and its source in `calibration.md` as you go |
 | P1-T10 | `fastest-lap` cross-check harness | Run the same `car_spec` through it, diff lap times. Fails gracefully if the dependency won't build — note it, don't block |
-| P1-T11 | **Energy-balance invariant** in CI | `d(KE)/dt` = fuel power − drag work, residual <1%. Catches most powertrain bugs |
+| P1-T11 | **Wheel-boundary energy invariant** in CI | Chassis-plus-wheel kinetic-energy change against wheel-torque work, aero drag and tyre-slip work; residual <1%. This is not a fuel-to-vehicle balance because P1 has no engine or motor rotor state. |
 
 **Exit gate**
-- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios declare `ice_rpm_override: 12000` only while the clutch slips, as documented in `docs/calibration.md` § Phase 1 scenario wiring.
+- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios declare `ice_rpm_override: 12000` only while the clutch slips, as documented in `docs/calibration.md` § Phase 1 scenario wiring. Latest measurements are recorded there and in `tasks/todo.md` (0–100 km/h 6.6598 s; 338.43 km/h transient maximum; 307.6 km/h terminal speed; 1.265 g brake probe); recording a reference is not a passed gate.
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
+
+The P1 exit gate remains open. The latest audit reports a 6.6598 s 0–100 km/h time (reference
+2.32 s), a 338.43 km/h transient maximum during the configured 20 s MGU-K request, and a 307.6 km/h
+ICE-only tail. The brake probe reports 1.265 g for caller-supplied wheel torque; it is not a brake
+capacity result. These working-tree measurements must be reproduced before being pinned. The
+missing ICE rotational state and longitudinal load transfer remain open acceleration issues.
 - [ ] `fastest-lap` comparison recorded — agree within a few percent, or the discrepancy is explained
 
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written

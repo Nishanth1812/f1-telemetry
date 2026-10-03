@@ -677,10 +677,24 @@ quoted as current:
   speed were the same number to the digits recorded.
 
 The previous 3 s MGU-K variant was measured in CI at a 308.0353 km/h transient maximum and failed
-the 325.8 km/h reachability floor. No current 0–100 km/h result is recorded after the launch wiring.
-Performance calibration remains open until CI reports the revised scenario's measurements and the
-floor passes. The recorded terminal speed has no event-trap target in any case and was only ever a
-modelled result.
+the 325.8 km/h reachability floor. The latest P1 audit reports 6.6598 s for 0–100 km/h, a
+338.43 km/h transient maximum during the 20 s MGU-K request, and an ICE-only tail near 307.6 km/h.
+These are audit-reported working-tree measurements, not yet reproduced after the Phase 2 config
+changes; rerun and record them before treating them as a pinned baseline. The 0–100 result misses
+the coarse reference, and the transient speed depends on deployment, so performance calibration
+remains open. The recorded terminal speed has no event-trap target in any case and is a modelled
+result.
+
+The same audit found the acceleration miss is structural: RPM is derived from wheel speed and
+floored at idle except for the launch override, while longitudinal axle loads remain fixed at their
+static values. A 12,000 rpm override reduces the reported time to about 5.26 s but produces rear slip
+ratio above 51. A separate bounded ideal-torque probe estimated 2.896 s without longitudinal load
+transfer and 1.612 s with it; those are diagnostic lower-bound probes, not calibrated predictions.
+The engine-speed state and longitudinal load transfer therefore remain open P1 acceptance work.
+
+The brake probe reported about 1.265 g using caller-supplied 873.7 Nm per wheel. There is no brake
+capacity model, so this measures the tire response under that supplied torque and does not establish
+F1 brake performance or a stopping distance.
 
 The external references are [FIA 2026 Australian GP race maximum speeds](https://www.fia.com/events/fia-formula-one-world-championship/season-2026/grand-prix-australia/race-qualification) — the source of the 325.8 km/h reachability floor in section 6,
 [OpenF1 documentation](https://openf1.org/docs/) and the [`car_data` endpoint for

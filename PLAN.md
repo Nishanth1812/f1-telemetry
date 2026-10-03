@@ -545,11 +545,11 @@ bounds to be confirmed, not as gospel:
 | 0–100 km/h | reference **2.32 s**, uncertainty of order **±0.30 s** (§11.1) | coarse telemetry-derived median, 2026 Belgian GP race, OpenF1 `car_data` at ~3.7 Hz |
 | Top speed | a high-speed scenario must transiently reach **≥325.8 km/h** (§11.1) | FIA 2026 Australian GP race speed table, Ocon at Intermediate 2 — a reachability floor, not a terminal target |
 | Peak lateral g | ~4.5–5.5 g at high downforce | downforce from `car_spec`, grip from Pacejka `D` |
-| Peak longitudinal decel | ~−5 to −6 g | tire-road μ, brake torque limit, weight transfer |
-| 200–0 km/h braking distance | order ~4–6 s | derived, then checked against published braking data |
+| Peak longitudinal decel | ~−5 to −6 g, legacy sanity estimate only | tire-road μ and brake capacity; no brake-capacity model exists, so this is not a P1/P2 acceptance target |
+| 200–0 km/h braking distance | order ~4–6 s, legacy estimate only | requires brake capacity and validation data; outside P2 acceptance |
 | Cornering balance | understeer gradient consistent with downforce split | own model, checked for monotonicity |
 | Tire equilibrium temp | compound- and surface-dependent, plausible window | published tyre operating windows |
-| Energy balance | residual <1% | CI invariant, §6 |
+| P1 wheel-boundary energy check | residual <1% | CI invariant: chassis-plus-wheel kinetic-energy change vs wheel torque work, aero drag, and tyre-slip work; this is not fuel-to-vehicle conservation |
 
 ### 11.1 Straight-line reference points
 
@@ -649,7 +649,7 @@ a known circuit (§4).
 4. slip and force sign conventions consistent across all four corners
 5. longitudinal/lateral symmetry at zero steer, zero camber, symmetric setup
 6. energy conservation (§6), residual <1%
-7. monotonic gearbox progression; no reverse engaged under positive throttle
+7. forward gear changes move by one neighbouring gear per recorded step (up or down); reverse is not engaged under positive throttle
 8. determinism: two identical runs produce byte-identical Parquet
 
 **Regression fixtures.** Golden Parquet files with expected traces. Any physics change re-runs them
