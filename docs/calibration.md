@@ -595,18 +595,21 @@ reference points in section 6 and the measured outputs in the next section all t
 declaration adds a car coefficient: `car_spec.yaml` is untouched, and each value is either read
 from it or already declared on `ScenarioSegment`.
 
-### Launch: a declared 12 000 rpm through the clutch-slip interval
+### Launch: an initial 12 000 rpm engine state during clutch slip
 
-`standing_launch` and `accelerate_to_speed` carry `scenarios.LAUNCH_ICE_RPM` (12 000 rpm) only on
-their initial, partially engaged clutch-slip segment, through the existing
-`ScenarioSegment.ice_rpm_override`. During clutch slip the crankshaft is decoupled from wheel speed,
-so the scenario declares the near-**12 000 rpm** reported in the cited 2026 start telemetry. The
-following fully engaged segment returns to wheel-derived speed; because the model has no continuous
-engine-speed state, this transition is discontinuous. The override is a scenario assumption, not a
-car coefficient, and is bounded to the configured `idle_rpm..rev_limit_rpm` range.
+`standing_launch` and `accelerate_to_speed` seed `scenarios.LAUNCH_ICE_RPM` (12 000 rpm) on their
+initial, partially engaged clutch-slip segment through `ScenarioSegment.ice_rpm_initial`. This is
+the near-**12 000 rpm** reported in the cited 2026 start telemetry. While the clutch slips or a shift
+cut opens the driveline, the engine speed advances from delivered ICE and MGU-K crank torque minus
+the crank-reflected gearbox output, divided by configured `ice_inertia_kg_m2`. A fully engaged,
+non-shifting clutch uses an ideal speed lock to the geared rear wheel speed; clutch capacity still
+limits transmitted gearbox torque. This does not add a clutch-friction law, rotating drivetrain
+inertia feedback, governor, or rev-cut model. The telemetry value is an initial condition rather
+than a speed hold and remains a scenario assumption, not a car coefficient.
 
-The declared value is pinned by a test. The existing rear-tyre launch-grip assertion also remains
-in place and must be checked after this change; no run has been made yet to confirm it.
+The initial value and first engine-state torque/inertia update are pinned by tests. The launch-grip
+assertion passes, and the reproduced engine-state baseline is recorded below; the older pinned
+measurements remain historical.
 
 ### High speed: a store-limited MGU-K request, then an ICE-only tail
 
@@ -639,20 +642,20 @@ section 6 has required all along:
 ### What the straight-line numbers are allowed to mean
 
 `tests/test_scenarios.py` reports both speed quantities separately and asserts that the transient
-maximum reaches the 325.8 km/h floor. The latest CI run of the previous 3 s deployment variant
-measured 308.0353 km/h and failed this floor. CI run 37095870013 passed on the revised 20 s request,
-including the transient-floor assertion. Pytest captured the successful test's printed measurements,
-so the Actions log confirms the gate but does not expose its exact speed value. The test now samples
-tail entry at the recorded rate rather than applying a recorded-step index to the kernel-rate trace.
-The revised 0–100 result still needs to be recorded. The
-`accelerate_to_speed` result is compared to the 2.32 s median only as a coarse, sampled reference
-from a ~3.7 Hz feed whose ±0.30 s is quantisation resolution — not a confidence interval or a
-pass/fail tolerance. A model inside ±0.30 s would show nothing more than the feed's resolution.
+maximum reaches the 325.8 km/h floor. The previous 3 s deployment variant measured 308.0353 km/h
+and failed this floor; the revised 20 s request passed it. After adding the evolving engine-speed
+state, the local scenario suite reproduced these working-tree measurements:
 
-For the same reason the previously pinned outputs are **stale, not current**: the 0–100 km/h time
-and the terminal speed quoted in the next section were measured before this wiring, so the tests
-report the gap against the cited references rather than pinning numbers that no longer describe the
-runs. Record the revised run's numbers here after CI, and only then say whether the gate is met.
+- `accelerate_to_speed` reaches 100 km/h in **6.6598 s**, versus the coarse 2.32 s reference.
+- `full_throttle` reaches a **338.4295 km/h transient maximum** during deployment, then settles at
+  **307.6027 km/h** in the ICE-only tail. The final five seconds drift by **−0.0661 km/h**.
+- MGU-K delivery reaches **350 kW** and the store moves from **4.000 MJ to 0.782 MJ**.
+
+These are an engine-state baseline before Task 2 longitudinal load-transfer integration, not a
+calibrated prediction. The 0–100 reference is only a coarse, sampled ~3.7 Hz median; its ±0.30 s is
+feed quantisation resolution, not a confidence interval or a pass/fail tolerance. The 0–100 result
+misses the reference substantially, so the P1 performance gate remains open. The transient maximum
+passes the reachability floor; terminal speed has no event-trap target.
 
 ## Phase 1 deterministic scenarios
 
@@ -677,20 +680,18 @@ quoted as current:
   speed were the same number to the digits recorded.
 
 The previous 3 s MGU-K variant was measured in CI at a 308.0353 km/h transient maximum and failed
-the 325.8 km/h reachability floor. The latest P1 audit reports 6.6598 s for 0–100 km/h, a
-338.43 km/h transient maximum during the 20 s MGU-K request, and an ICE-only tail near 307.6 km/h.
-These are audit-reported working-tree measurements, not yet reproduced after the Phase 2 config
-changes; rerun and record them before treating them as a pinned baseline. The 0–100 result misses
-the coarse reference, and the transient speed depends on deployment, so performance calibration
-remains open. The recorded terminal speed has no event-trap target in any case and is a modelled
+the 325.8 km/h reachability floor. The engine-state baseline above is reproduced after the Phase 2
+configuration edit. It records the 0–100 miss and the deployment-dependent transient separately;
+performance calibration remains open. The terminal speed has no event-trap target and is a modelled
 result.
 
-The same audit found the acceleration miss is structural: RPM is derived from wheel speed and
-floored at idle except for the launch override, while longitudinal axle loads remain fixed at their
-static values. A 12,000 rpm override reduces the reported time to about 5.26 s but produces rear slip
-ratio above 51. A separate bounded ideal-torque probe estimated 2.896 s without longitudinal load
-transfer and 1.612 s with it; those are diagnostic lower-bound probes, not calibrated predictions.
-The engine-speed state and longitudinal load transfer therefore remain open P1 acceptance work.
+Before the engine-state change, RPM was derived from wheel speed and floored at idle except for the
+launch override. A 12,000 rpm held override reduced the reported time to about 5.26 s but produced
+rear slip ratio above 51. A separate bounded ideal-torque probe estimated 2.896 s without
+longitudinal load transfer and 1.612 s with it; those are diagnostic lower-bound probes, not
+calibrated predictions. Engine speed now evolves during clutch slip and shift cuts, but the ideal
+locked-clutch boundary is simplified and longitudinal load transfer remains open P1 acceptance
+work.
 
 The brake probe reported about 1.265 g using caller-supplied 873.7 Nm per wheel. There is no brake
 capacity model, so this measures the tire response under that supplied torque and does not establish

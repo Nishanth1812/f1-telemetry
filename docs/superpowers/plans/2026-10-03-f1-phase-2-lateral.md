@@ -31,9 +31,36 @@
 
 ## Current State and P1 Issues to Carry
 
-The current branch is `feat/phase-2` and was clean when inspected. The P1 runtime path is in `src/f1telemetry/kernels/longitudinal.py`, `src/f1telemetry/physics/forces.py`, `src/f1telemetry/physics/gearbox.py`, and `src/f1telemetry/physics/powertrain.py`. The state currently contains distance, longitudinal speed, and four wheel angular speeds. `KernelConfig` has longitudinal/aero/drivetrain parameters but no CG location, track width, sprung-mass inertia, roll stiffness split, lateral Pacejka data or relaxation lengths. The typed `GroundTruthStep` already carries `vy`, `ay`, steer and per-wheel `Fy`, camber and load fields; `channels.yaml` already declares most P2-facing outputs, but they are not produced by a physics run today.
+**Implementation update (2026-10-03):** The P2 vehicle inputs are in `car_spec.yaml` and the
+validated `KernelConfig`. A tested `physics/loads.py` slice now calculates per-corner static,
+longitudinal and lateral loads plus quasi-static travel; it reports travel-limit flags and documents
+its geometric transfer, aero split and lack of roll-centre/unsprung-mass detail. A tested
+`physics/tyres.py` slice now provides steady lateral Magic Formula response with load sensitivity
+and camber; channel degrees are converted to radians for dimensionless `B`. These are primitives,
+not an integrated chassis: they are not wired into per-corner velocity, steering, combined slip,
+relaxation, or the kernel state. Pitch stiffness, camber gain and bump steer also remain unresolved.
 
-P1 is not complete. Before P2 calibration begins, close or explicitly disposition these items:
+The scenario runner now advances ICE speed during clutch slip and shift cuts from crank torque,
+inertia and reflected load, then applies an ideal wheel-speed lock when the clutch is engaged. This
+bounded runner model does not add a clutch friction law or engine-inertia feedback to wheel
+acceleration. The reproduced pre-load-transfer baseline is 6.6598 s to 100 km/h, 338.4295 km/h
+transient maximum, and 307.6027 km/h ICE-only tail; the acceleration result still misses its coarse
+reference. P1 downshift validation, the `ice_power_w` boundary and the final-interval energy residual
+have been corrected and regression tested. The P1 performance gate remains open, the `just check`
+command is unavailable, and the brake result remains a caller-supplied-torque tire probe. See
+`docs/calibration.md` and `tasks/todo.md` for the baseline and remaining gates.
+
+**Initial audit snapshot:** The branch was clean when first inspected. The P1 runtime path is in
+`src/f1telemetry/kernels/longitudinal.py`, `src/f1telemetry/physics/forces.py`,
+`src/f1telemetry/physics/gearbox.py`, and `src/f1telemetry/physics/powertrain.py`. At that point the
+state contained distance, longitudinal speed and four wheel angular speeds, and `KernelConfig` had
+no P2 geometry or lateral tire inputs. The typed `GroundTruthStep` already carried `vy`, `ay`, steer
+and per-wheel `Fy`, camber and load fields; `channels.yaml` already declared most P2-facing outputs.
+These were baseline findings; the implementation status above is current.
+
+P1 is not complete. The following list records findings from the initial audit; corrected items are
+described in the implementation update above, and open acceptance issues remain until explicitly
+closed or dispositioned:
 
 1. A measured 0–100 km/h time is **6.6598 s** against the coarse 2.32 s reference. The ICE model explains part of the miss: the kernel has no ICE rotational state, derives RPM from wheel speed, and floors it at 4,000 rpm; 370/701 recorded samples were at idle, with a discontinuous drop from the 12,000 rpm launch override. Forcing high RPM changes the time but produces rear slip ratio over 51, so coefficient tuning is not a remedy.
 2. The remaining acceleration gap is also structural: fixed static axle loads omit longitudinal load transfer. A bounded probe estimated a 2.896 s ideal-torque/free-engine lower bound without transfer versus 1.612 s when ideal transfer was added. Treat these as diagnostic probes, not calibrated performance predictions. P1's 0–100 gate cannot be closed until the engine state and longitudinal load transfer are represented or the reference is formally dispositioned. Decide whether the ICE/clutch state belongs in P1 and whether P1 acceptance waits for Task 2; do not silently claim that the lateral model alone fixes this.

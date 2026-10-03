@@ -76,16 +76,16 @@ drive a real dashboard, every later phase is built on sand.
 | P1-T11 | **Wheel-boundary energy invariant** in CI | Chassis-plus-wheel kinetic-energy change against wheel-torque work, aero drag and tyre-slip work; residual <1%. This is not a fuel-to-vehicle balance because P1 has no engine or motor rotor state. |
 
 **Exit gate**
-- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios declare `ice_rpm_override: 12000` only while the clutch slips, as documented in `docs/calibration.md` § Phase 1 scenario wiring. Latest measurements are recorded there and in `tasks/todo.md` (0–100 km/h 6.6598 s; 338.43 km/h transient maximum; 307.6 km/h terminal speed; 1.265 g brake probe); recording a reference is not a passed gate.
+- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios seed `ice_rpm_initial: 12000` during initial clutch slip; the engine integrates delivered torque against reflected clutch load using configured inertia, while a locked clutch applies an ideal wheel-speed constraint. The reproduced engine-state measurements are in `docs/calibration.md`; the 0–100 result misses and the P1 performance gate remains open.
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
 
-The P1 exit gate remains open. The latest audit reports a 6.6598 s 0–100 km/h time (reference
-2.32 s), a 338.43 km/h transient maximum during the configured 20 s MGU-K request, and a 307.6 km/h
-ICE-only tail. The brake probe reports 1.265 g for caller-supplied wheel torque; it is not a brake
-capacity result. These working-tree measurements must be reproduced before being pinned. The
-missing ICE rotational state and longitudinal load transfer remain open acceleration issues.
+The P1 exit gate remains open. The reproduced engine-state baseline reports 6.6598 s to 100 km/h
+(reference 2.32 s), a 338.4295 km/h transient maximum during the configured 20 s MGU-K request, and
+a 307.6027 km/h ICE-only tail. The brake probe reports 1.265 g for caller-supplied wheel torque; it
+is not a brake-capacity result. Longitudinal load transfer and calibration remain open acceleration
+work; see `docs/calibration.md` for the baseline and model limitations.
 - [ ] `fastest-lap` comparison recorded — agree within a few percent, or the discrepancy is explained
 
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written
@@ -100,17 +100,12 @@ Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `doc
 fixed before any parameter edit, so the gate has something to measure against. Both are deliberately
 coarse and neither validates configuration-matched performance: a ~3.7 Hz telemetry-derived 0–100
 median, and a single-event FIA speed-table figure used as a reachability floor rather than a terminal
-speed. The P1 exit gate remains open. No current 0–100 result is recorded after the declared
-12 000 rpm launch wiring; a CI run of the 3 s MGU-K deployment variant measured the transient
-maximum ahead of an ICE-only terminal tail (`docs/calibration.md` § Phase 1 scenario wiring). The
-last pinned pair, a 0–100 km/h time of 6.8998 s against the 2.32 s reference and a 307.4189 km/h
-`full_throttle` maximum, predates that wiring and is stale. CI run 37095870013 passed after extending
-the MGU-K request window, including the 325.8 km/h transient-floor assertion, without changing
-coefficients. The transient maximum is separate from terminal speed and is the quantity the floor
-applies to. The Actions log did not retain the exact speed value, and the revised 0–100 result still
-needs to be recorded. Recording a reference is not a passed gate, and P1 is not complete. Synthetic
-aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
-fidelity or regulatory compliance.
+speed. The P1 exit gate remains open. The engine-state scenario suite reproduces a 6.6598 s
+0–100 km/h time and a 338.4295 km/h transient maximum against the 2.32 s reference and 325.8 km/h
+reachability floor. The last pinned pair predates the launch wiring and is stale. The 0–100 result
+misses; the transient floor passes. Longitudinal load transfer, plausible power-curve review and
+calibration remain open. Synthetic aero, tyres, brakes and powertrain assumptions remain; this work
+does not establish full F1-car fidelity or regulatory compliance.
 
 ---
 
