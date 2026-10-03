@@ -24,8 +24,10 @@ fail:
   vertical load: a wheel in the air keeps relaxing its caller-owned slip
   state, and the load guard that zeroes its force lives in the tyre
   primitives. Relaxing slip while unloaded is not a failure.
-* **Invalid input.** Nonfinite targets, a nonpositive step, a wrong-shaped
-  or wrong-dtype state vector, and a configuration that cannot describe a
+* **Invalid input.** Nonfinite states, targets and patch speeds, a
+  nonpositive step, a wrong-shaped or wrong-dtype state vector, a
+  read-only state buffer, a state array that shares memory with any
+  other of the five, and a configuration that cannot describe a
   relaxation - a zero length, a zero floor - are refused before any
   arithmetic happens.
 
@@ -467,6 +469,193 @@ def test_invalid_state_and_step_are_refused(config: KernelConfig) -> None:
             alpha_target.copy(),
             patch_speed.copy(),
             DT_S,
+        )
+
+
+def test_nonfinite_state_and_speed_are_refused(config: KernelConfig) -> None:
+    """A NaN or infinity in a state or the patch speed fails before Numba."""
+    kappa_state, kappa_target, alpha_state, alpha_target, patch_speed = _state_pair()
+    nan_state = kappa_state.copy()
+    nan_state[1] = math.nan
+    with pytest.raises(ValueError, match="slip_ratio_state"):
+        relaxation.step_relaxation(
+            config,
+            nan_state,
+            kappa_target.copy(),
+            alpha_state.copy(),
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+    inf_speed = patch_speed.copy()
+    inf_speed[3] = -math.inf
+    with pytest.raises(ValueError, match="patch_speed_m_s"):
+        relaxation.step_relaxation(
+            config,
+            kappa_state.copy(),
+            kappa_target.copy(),
+            alpha_state.copy(),
+            alpha_target.copy(),
+            inf_speed,
+            DT_S,
+        )
+
+
+def test_state_aliased_with_its_target_is_refused(config: KernelConfig) -> None:
+    """A state sharing memory with its target relaxes toward itself: a silent no-op."""
+    kappa_state, kappa_target, alpha_state, alpha_target, patch_speed = _state_pair()
+    before = kappa_state.copy()
+    # One buffer handed in as both the longitudinal state and its target.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            kappa_state,
+            kappa_state,
+            alpha_state.copy(),
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+    # Refused before any arithmetic happens: the caller's buffer is untouched.
+    assert np.array_equal(kappa_state, before)
+    # The lateral axis refuses the same layout.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            kappa_state.copy(),
+            kappa_target.copy(),
+            alpha_state,
+            alpha_state,
+            patch_speed.copy(),
+            DT_S,
+        )
+
+
+def test_state_aliased_with_other_step_arrays_is_refused(
+    config: KernelConfig,
+) -> None:
+    """A state sharing memory with the other state, its target or the speed corrupts the loop."""
+    kappa_state, kappa_target, alpha_state, alpha_target, patch_speed = _state_pair()
+    # Both axes' state in one buffer: the lateral step of a wheel reads the
+    # value the longitudinal step of the same wheel just wrote.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            alpha_state,
+            kappa_target.copy(),
+            alpha_state,
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+    # The longitudinal state aliased with the patch speed: the lateral step
+    # re-reads a speed the longitudinal step just overwrote.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            patch_speed,
+            kappa_target.copy(),
+            alpha_state.copy(),
+            alpha_target.copy(),
+            patch_speed,
+            DT_S,
+        )
+    # A state aliased with the other axis's target.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            kappa_state,
+            kappa_target.copy(),
+            alpha_state.copy(),
+            kappa_state,
+            patch_speed.copy(),
+            DT_S,
+        )
+
+
+def test_read_only_state_is_refused(config: KernelConfig) -> None:
+    """The step writes both states in place, so a read-only buffer is refused."""
+    kappa_state, kappa_target, alpha_state, alpha_target, patch_speed = _state_pair()
+    frozen_kappa = kappa_state.copy()
+    frozen_kappa.setflags(write=False)
+    with pytest.raises(ValueError, match="writeable"):
+        relaxation.step_relaxation(
+            config,
+            frozen_kappa,
+            kappa_target.copy(),
+            alpha_state.copy(),
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+    frozen_alpha = alpha_state.copy()
+    frozen_alpha.setflags(write=False)
+    with pytest.raises(ValueError, match="writeable"):
+        relaxation.step_relaxation(
+            config,
+            kappa_state.copy(),
+            kappa_target.copy(),
+            frozen_alpha,
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+
+
+def test_overlapping_views_of_one_buffer_are_refused(config: KernelConfig) -> None:
+    """The refusal is about shared memory, not object identity."""
+    shared = np.zeros(8, dtype=np.float64)
+    _, _, alpha_state, alpha_target, patch_speed = _state_pair()
+    # The state view and the target view are distinct array objects that
+    # overlap in the RL and RR elements of one buffer.
+    with pytest.raises(ValueError, match="share memory"):
+        relaxation.step_relaxation(
+            config,
+            shared[0:4],
+            shared[2:6],
+            alpha_state.copy(),
+            alpha_target.copy(),
+            patch_speed.copy(),
+            DT_S,
+        )
+
+
+def test_disjoint_views_of_one_buffer_relax(config: KernelConfig) -> None:
+    """Views that share no memory are caller-owned buffers, and relax normally."""
+    kappa_state, kappa_target, alpha_state, alpha_target, patch_speed = _state_pair()
+    buffer = np.zeros(20, dtype=np.float64)
+    views = [buffer[index * 4 : (index + 1) * 4] for index in range(5)]
+    for view, source in zip(
+        views,
+        (kappa_state, kappa_target, alpha_state, alpha_target, patch_speed),
+        strict=True,
+    ):
+        view[...] = source
+    relaxation.step_relaxation(config, views[0], views[1], views[2], views[3], views[4], DT_S)
+    for wheel in range(4):
+        assert views[0][wheel] == pytest.approx(
+            _reference_step(
+                kappa_state[wheel],
+                kappa_target[wheel],
+                patch_speed[wheel],
+                config.relaxation_length_longitudinal_m,
+                DT_S,
+                config.relaxation_min_speed_m_s,
+            ),
+            rel=1e-12,
+            abs=1e-15,
+        )
+        assert views[2][wheel] == pytest.approx(
+            _reference_step(
+                alpha_state[wheel],
+                alpha_target[wheel],
+                patch_speed[wheel],
+                config.relaxation_length_lateral_m,
+                DT_S,
+                config.relaxation_min_speed_m_s,
+            ),
+            rel=1e-12,
+            abs=1e-15,
         )
 
 

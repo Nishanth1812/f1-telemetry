@@ -56,7 +56,13 @@ explicit: relaxation first, then combined slip, then the tyre force.
 **Two ways in, deliberately.** The primitives take flat scalars and
 caller-owned ``float64`` vectors and are what a compiled kernel calls;
 :func:`step_relaxation` is the Python-facing composition that checks the
-configuration and the state before any arithmetic happens. The kernel
+configuration and the state before any arithmetic happens. The checks
+include writeability and memory aliasing: the step writes its state
+arrays in place, so a read-only state cannot carry the relaxed slip,
+and a state that shares memory with a target, the other state or the
+patch speed would either relax toward a target that moves with it or
+read values the step just overwrote; the boundary refuses both rather
+than let either silently defeat the update. The kernel
 reads the configuration once, outside its loop, and hands the primitives
 numbers. The state vectors are *caller-owned*: nothing in this module
 allocates a slip state, and the step writes through the arrays it is
@@ -230,7 +236,14 @@ def step_relaxation(
 
     All five vectors are caller-owned ``float64`` C-contiguous length-four
     arrays; the two state arrays are updated in place and the targets and
-    speeds are read only. ``dt_s`` must be finite and nonnegative - the
+    speeds are read only. Both state arrays must be writeable, and
+    neither may share memory with any of the other four: a read-only
+    state cannot carry the relaxed slip, a state aliased with its
+    target relaxes toward a target that moves with it, and a state
+    aliased with the speed, the other target or the other state makes
+    the step read values it just overwrote, so all three are refused
+    like any other caller bug.
+    ``dt_s`` must be finite and nonnegative - the
     production integrator is the fixed 100 us step, so a negative or
     nonfinite step here is a caller bug rather than a different model.
     Every scalar is narrowed to ``float`` so that equivalent ``int`` and
@@ -243,16 +256,49 @@ def step_relaxation(
     dt = _checked_float("dt_s", dt_s, prefix="step_relaxation")
     if dt < 0.0:
         raise ValueError(f"step_relaxation: dt_s must be >= 0, got {dt!r}")
-    for label, value in (
+    vectors: tuple[tuple[str, np.ndarray], ...] = (
         ("slip_ratio_state", slip_ratio_state),
         ("slip_ratio_target", slip_ratio_target),
         ("slip_angle_state", slip_angle_state),
         ("slip_angle_target", slip_angle_target),
         ("patch_speed_m_s", patch_speed_m_s),
-    ):
+    )
+    for label, value in vectors:
         _checked_wheel_vector(label, value, prefix="step_relaxation")
         if not np.isfinite(value).all():
             raise ValueError(f"step_relaxation: {label} must be finite, got {list(value)}")
+    # The two state arrays are the only ones the step writes, so
+    # each must be writeable and neither may share memory with
+    # any of the other four. A read-only state cannot carry the
+    # relaxed slip - the compiled step refuses the write with a
+    # typing error far from the call - a state aliased with its
+    # target relaxes toward a target that moves with it (the
+    # step silently does nothing), and a state aliased with the
+    # patch speed, the other target or the other state makes a
+    # later wheel, or the lateral step of the same wheel, read a
+    # value this step just overwrote. Buffer layout is the
+    # caller's choice, so a read-only or aliased state is
+    # refused rather than silently producing a run that looks
+    # relaxed.
+    for state_label, state in (
+        ("slip_ratio_state", slip_ratio_state),
+        ("slip_angle_state", slip_angle_state),
+    ):
+        if not state.flags.writeable:
+            raise ValueError(
+                f"step_relaxation: {state_label} must be writeable: "
+                "the step updates the caller's state in place, so a "
+                "read-only buffer cannot carry the relaxed slip"
+            )
+        for other_label, other in vectors:
+            if state_label != other_label and np.shares_memory(state, other):
+                raise ValueError(
+                    f"step_relaxation: {state_label} must not share memory with "
+                    f"{other_label}: the step writes its state in place, so an "
+                    "aliased target moves with the state (the relaxation "
+                    "silently does nothing) and an aliased speed, target or "
+                    "other state makes the step read values it just overwrote"
+                )
     relax_slip_state(
         slip_ratio_state,
         slip_ratio_target,
