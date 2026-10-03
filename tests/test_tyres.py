@@ -676,6 +676,7 @@ def test_step_lateral_force_refuses_inputs_that_would_produce_nans(
         ("lateral_pacejka_b", math.nan),
         ("lateral_pacejka_c", 0.0),
         ("lateral_pacejka_c", -1.5),
+        ("lateral_pacejka_c", 1.0),
         ("lateral_pacejka_c", 2.5),
         ("lateral_pacejka_c", math.nan),
         ("lateral_pacejka_e", 1.0),

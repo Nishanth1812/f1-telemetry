@@ -594,6 +594,16 @@ class CarSpec:
         pacejka_b = _positive(pacejka.get("b"), "car_spec: tyres.longitudinal_pacejka.b")
         pacejka_c = _positive(pacejka.get("c"), "car_spec: tyres.longitudinal_pacejka.c")
         pacejka_e = _number(pacejka.get("e"), "car_spec: tyres.longitudinal_pacejka.e")
+        if not 1.0 < pacejka_c <= 2.0:
+            raise ContractError(
+                "car_spec: tyres.longitudinal_pacejka.c must be in (1, 2]; "
+                "combined-slip peak normalization requires a finite, reachable peak"
+            )
+        if pacejka_e >= 1.0:
+            raise ContractError(
+                "car_spec: tyres.longitudinal_pacejka.e must be finite and < 1; "
+                "combined-slip peak normalization requires a strictly increasing peak equation"
+            )
         pacejka_mu = _positive(pacejka.get("mu"), "car_spec: tyres.longitudinal_pacejka.mu")
         slip_guard = _positive(
             tyres.get("slip_ratio_min_speed_m_s"),
@@ -713,13 +723,23 @@ class CarSpec:
                 "0 is parallel steering and 1 is full Ackermann."
             )
 
-        # The lateral tyre response, its load sensitivity and the camber term, checked with the
-        # same rules as the longitudinal set: `b`, `c` and `mu` are magnitudes, `e` carries a
-        # sign and is only required finite.
+        # The lateral tyre response, its load sensitivity and the camber term. Both shape factors
+        # must exceed one so the finite combined-slip peak arguments exist; both curvature factors
+        # must be below one so those peak equations are strictly increasing.
         lateral = _section(tyres, "lateral_pacejka")
         lateral_b = _positive(lateral.get("b"), "car_spec: tyres.lateral_pacejka.b")
         lateral_c = _positive(lateral.get("c"), "car_spec: tyres.lateral_pacejka.c")
+        if not 1.0 < lateral_c <= 2.0:
+            raise ContractError(
+                "car_spec: tyres.lateral_pacejka.c must be in (1, 2]; "
+                "combined-slip peak normalization requires a finite, reachable peak"
+            )
         lateral_e = _number(lateral.get("e"), "car_spec: tyres.lateral_pacejka.e")
+        if lateral_e >= 1.0:
+            raise ContractError(
+                "car_spec: tyres.lateral_pacejka.e must be finite and < 1; "
+                "combined-slip peak normalization requires a strictly increasing peak equation"
+            )
         lateral_mu = _positive(lateral.get("mu"), "car_spec: tyres.lateral_pacejka.mu")
         sensitivity = _section(tyres, "load_sensitivity")
         sensitivity_reference = _positive(

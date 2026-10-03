@@ -74,6 +74,8 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 from numba import njit
 
+from .pacejka import magic_formula_shape  # noqa: TID251 -- shared physics primitive
+
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
 
@@ -264,8 +266,7 @@ def _magic_formula(slip: float, stiffness: float, shape: float, curvature: float
     caller that reached for this would get a dimensionless number in [-1, 1] and would still have
     to remember the guard.
     """
-    scaled = stiffness * slip
-    return math.sin(shape * math.atan(scaled - curvature * (scaled - math.atan(scaled))))
+    return magic_formula_shape(stiffness * slip, shape, curvature)
 
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
@@ -454,6 +455,18 @@ def validated_config_scalars(config: KernelConfig, prefix: str) -> dict[str, flo
     for name in _FRACTION_CONFIG_SCALARS:
         if not 0.0 < values[name] < 1.0:
             raise ValueError(f"{prefix}: config.{name} must be in (0, 1), got {values[name]!r}")
+    shape = values["pacejka_c"]
+    if not 1.0 < shape <= 2.0:
+        raise ValueError(
+            f"{prefix}: config.pacejka_c must be in (1, 2], got {shape!r}. "
+            "The combined-slip peak normalization requires a finite peak argument"
+        )
+    curvature = values["pacejka_e"]
+    if curvature >= 1.0:
+        raise ValueError(
+            f"{prefix}: config.pacejka_e must be finite and < 1, got {curvature!r}. "
+            "The combined-slip peak equation is strictly increasing only below 1"
+        )
     return values
 
 

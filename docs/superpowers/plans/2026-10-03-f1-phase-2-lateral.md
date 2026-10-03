@@ -38,13 +38,18 @@ transfer, aero split and lack of roll-centre/unsprung-mass detail. Tested `physi
 steady lateral Magic Formula response with load sensitivity and camber; channel degrees are
 converted to radians for dimensionless `B`. New `physics/kinematics.py` and
 `physics/relaxation.py` primitives now cover per-corner contact/wheel-frame slip angle and exact
-exponential longitudinal/lateral slip-state relaxation. `physics/steering.py` now validates the
-steering-wheel limit and maps the command to the Ackermann road-wheel pair. The focused suites pass
-(58 kinematics, 13 relaxation, 49 steering tests), along with Ruff and basedpyright checks. These
-remain separate tested primitives, not an integrated chassis: combined slip, body-state integration,
-truth recording, and real steering scenarios remain open. Pitch stiffness, camber gain and bump steer
-also remain unresolved. Relaxation lengths and lateral tire coefficients remain synthesized,
-uncalibrated inputs.
+exponential longitudinal/lateral slip-state relaxation. `physics/steering.py` validates the
+steering-wheel limit and maps the command to the Ackermann road-wheel pair. The new
+`physics/combined_slip.py` implements normalized-slip-vector similarity: each pure-axis curve keeps
+its own peak and shape, while the normalized combined radius drives the respective curve and its
+direction cosines allocate force. Its exact ellipse follows from the formula, not a force clamp.
+Focused combined-slip/contract/tire tests pass (403); Ruff and basedpyright pass. These are still
+separate tested primitives, not an integrated chassis: kernel relaxation state, body-state
+integration, truthful records, and real steering scenarios remain open. Pitch stiffness, camber gain
+and bump steer also remain unresolved. Relaxation lengths and lateral tire coefficients remain
+synthesized, uncalibrated inputs; the current lateral coefficient placeholder predicts a peak at an
+implausibly large slip angle and must be calibrated before any handling-performance gate is treated
+as meaningful.
 
 The scenario runner now advances ICE speed during clutch slip and shift cuts from crank torque,
 inertia and reflected load, then applies an ideal wheel-speed lock when the clutch is engaged. This

@@ -91,6 +91,8 @@ from typing import TYPE_CHECKING, Final
 
 from numba import njit
 
+from .pacejka import magic_formula_shape  # noqa: TID251 -- shared physics primitive
+
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
 
@@ -112,6 +114,7 @@ __all__ = [
 # a reversed response; with E >= 1 the curve's inner term saturates below the
 # value the peak needs, so the peak is never reached. Both bounds are the
 # model's contract made checkable, not tuned coefficients.
+_SHAPE_FACTOR_MIN: Final[float] = 1.0
 _SHAPE_FACTOR_MAX: Final[float] = 2.0
 _CURVATURE_FACTOR_MAX: Final[float] = 1.0
 _RAD_PER_DEG: Final[float] = math.pi / 180.0
@@ -275,8 +278,7 @@ def _magic_formula(slip: float, stiffness: float, shape: float, curvature: float
     sign-preserving, so a positive equivalent slip angle is a positive force
     at every finite slip angle rather than only near the origin.
     """
-    scaled = stiffness * slip
-    return math.sin(shape * math.atan(scaled - curvature * (scaled - math.atan(scaled))))
+    return magic_formula_shape(stiffness * slip, shape, curvature)
 
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
@@ -395,12 +397,12 @@ def validated_lateral_scalars(config: KernelConfig, prefix: str) -> dict[str, fl
                 f"{prefix}: config.{name} must be finite and > 0, got {values[name]!r}"
             )
     shape = values["lateral_pacejka_c"]
-    if not 0.0 < shape <= _SHAPE_FACTOR_MAX:
+    if not _SHAPE_FACTOR_MIN < shape <= _SHAPE_FACTOR_MAX:
         raise ValueError(
-            f"{prefix}: config.lateral_pacejka_c must be in (0, {_SHAPE_FACTOR_MAX}], "
-            f"got {shape!r}. The shape factor keeps the lateral response sign-preserving "
-            "and peak-reaching at every finite slip angle; above 2 the Magic Formula's "
-            "argument can cross pi and the force would reverse past its peak"
+            f"{prefix}: config.lateral_pacejka_c must be in "
+            f"({_SHAPE_FACTOR_MIN}, {_SHAPE_FACTOR_MAX}], got {shape!r}. "
+            "The combined-slip peak normalization needs a finite, reachable peak; "
+            "above 2 the Magic Formula can reverse sign past its peak"
         )
     curvature = values["lateral_pacejka_e"]
     if not curvature < _CURVATURE_FACTOR_MAX:
