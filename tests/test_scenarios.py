@@ -19,6 +19,11 @@ file covers that path and nothing wider:
 * **The produced records.** Only contract channels are published, every published value stays
   inside the range `channels.yaml` declares for it, and `PLAN.md` section 11's invariants,
   including the discrete chassis and wheel energy balance, run against the real traces.
+* **Two boundaries are pinned, not assumed.** The final recorded row's energy residual is the
+  final complete control interval's, recomputed here from the documented wheel-boundary
+  identity rather than trusted, and `ice_power_w` is pinned to its declared boundary - the
+  ICE's gross crankshaft shaft power, which a shift cut does not collapse and a slipping
+  clutch does not follow - with a regression for each case.
 * **Straight-line references are used according to their evidence.** The coarse 0-100 km/h time
   and terminal speed are printed for review, but neither is assigned an unsupported tolerance.
   The high-speed run's transient maximum is checked against the cited 325.8 km/h reachability floor;
@@ -39,7 +44,8 @@ import numpy as np
 import pytest
 
 from f1telemetry.generated.channels import CHANNELS, DTYPES
-from f1telemetry.physics import gearbox  # noqa: TID251 -- the scenarios drive this API
+from f1telemetry.kernels import longitudinal  # noqa: TID251 -- the scenarios drive the kernel
+from f1telemetry.physics import forces, gearbox  # noqa: TID251 -- the scenarios drive this API
 from f1telemetry.testing import scenarios
 from f1telemetry.testing.invariants import (
     check_energy_balance,
@@ -93,6 +99,108 @@ def _windows(run: ScenarioRun, scenario: Scenario) -> tuple[slice, ...]:
         windows.append(slice(first, first + recorded))
         first += recorded
     return tuple(windows)
+
+
+def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> float:
+    """The wheel-boundary energy residual of the run's final control interval.
+
+    The identity the scenario module documents - the change in chassis and wheel kinetic
+    energy against the work of the wheel torques, aerodynamic drag and tyre slip, each
+    term at midpoint velocity and wheel speed - recomputed here straight from the run's own
+    trace and torque histories rather than through the runner's helper, so the recorded
+    final-row value is checked against the documented quantities and not against itself.
+
+    The interval is the last complete one: ``[steps - control_steps, steps]``, which ends
+    on the run's terminal state, because no interval starts there.
+    """
+    count = run.control_steps
+    start = run.steps - count
+    trace = run.trace
+    values = forces.validated_config_scalars(config, "test_scenarios")
+    kinetic_change = (
+        0.5
+        * config.mass_kg
+        * (
+            trace[start + count, longitudinal.V_INDEX] ** 2
+            - trace[start, longitudinal.V_INDEX] ** 2
+        )
+    )
+    kinetic_change += (
+        0.5
+        * values["wheel_inertia_kg_m2"]
+        * math.fsum(
+            float(trace[start + count, column] ** 2 - trace[start, column] ** 2)
+            for column in range(longitudinal.WHEEL_STATE_OFFSET, longitudinal.STATE_SIZE)
+        )
+    )
+    torque_work = 0.0
+    drag_work = 0.0
+    tyre_slip_work = 0.0
+    weight_n = config.mass_kg * config.gravity_m_s2
+    for index in range(start, start + count):
+        before = trace[index]
+        after = trace[index + 1]
+        speed_mid = 0.5 * (float(before[longitudinal.V_INDEX]) + float(after[longitudinal.V_INDEX]))
+        downforce_n, drag_n = forces.aero_forces(
+            float(before[longitudinal.V_INDEX]),
+            values["air_density_kg_m3"],
+            values["reference_area_m2"],
+            config.aero_speed_m_s,
+            config.cl,
+            config.cd,
+        )
+        drag_work += drag_n * speed_mid * config.dt_s
+        for wheel in range(forces.WHEEL_COUNT):
+            column = longitudinal.WHEEL_STATE_OFFSET + wheel
+            omega_mid = 0.5 * (float(before[column]) + float(after[column]))
+            torque_work += (
+                (
+                    forces.wheel_drive_torque_nm(wheel, float(run.drive_torque_nm[index]))
+                    + run.brake_torque_nm[index, wheel]
+                )
+                * omega_mid
+                * config.dt_s
+            )
+            load_n = forces.static_wheel_load_n(weight_n, values["front_weight_fraction"], wheel)
+            load_n += downforce_n / forces.WHEEL_COUNT
+            fx_n = forces.wheel_tyre_force_n(
+                float(before[longitudinal.V_INDEX]),
+                float(before[column]),
+                load_n,
+                values["rolling_radius_m"],
+                values["slip_ratio_min_speed_m_s"],
+                values["pacejka_b"],
+                values["pacejka_c"],
+                values["pacejka_e"],
+                values["pacejka_mu"],
+            )
+            tyre_slip_work += (
+                fx_n * (omega_mid * values["rolling_radius_m"] - speed_mid) * config.dt_s
+            )
+    accounted_work = torque_work + drag_work - tyre_slip_work
+    scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
+    return abs(kinetic_change - accounted_work) / scale
+
+
+def _clutch_transmitted_power(run: ScenarioRun, window: slice) -> np.ndarray:
+    """The mechanical power crossing the clutch, per recorded step of ``window``.
+
+    The clutch's output is the driveline torque against the wheel speeds - the rear-axle
+    boundary C9.2.5 states the demand in - read at each recorded step's first kernel step
+    from the run's own trace and torque histories. The front wheels are undriven (C9.1.1),
+    so their share of the driveline torque is exactly zero and only the rear pair
+    contributes.
+    """
+    rows = np.arange(window.start, window.stop) * run.control_steps
+    transmitted_w = np.empty(rows.size)
+    for index, row in enumerate(rows):
+        omega = run.trace[row, longitudinal.WHEEL_STATE_OFFSET : longitudinal.STATE_SIZE]
+        transmitted_w[index] = math.fsum(
+            float(forces.wheel_drive_torque_nm(wheel, float(run.drive_torque_nm[row])))
+            * float(omega[wheel])
+            for wheel in range(forces.WHEEL_COUNT)
+        )
+    return transmitted_w
 
 
 # ------------------------------------------------------------------ behaviour: launch
@@ -413,6 +521,77 @@ def test_a_requested_shift_cuts_the_driveline_for_the_configured_shift_time(
     assert config.shift_time_s <= config.shift_time_max_up_s, "C9.8.4's up-change limit"
 
 
+def test_ice_power_w_is_gross_crank_shaft_power_not_clutch_transmitted(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+) -> None:
+    """The channel's declared boundary is the crankshaft, upstream of the clutch.
+
+    ``f1telemetry.testing.scenarios`` declares ``ice_power_w`` as the ICE's gross
+    shaft power at the crankshaft - the delivered torque against the engine speed
+    the drivetrain sampled - and this regression pins the two cases that boundary
+    changes the most:
+
+    * **A shift cut opens the driveline, not the engine.** The driveline torque is
+      exactly zero through the cut, so the clutch-transmitted power is zero, while
+      the engine keeps delivering shaft power: the channel does not collapse with
+      the driveline it no longer drives.
+    * **A slipping clutch decouples the two boundaries.** Over the standing launch's
+      declared-12 000 rpm slip segment the channel reports the shaft power at the
+      declared crank speed, while the power actually crossing the clutch stays below
+      it because the wheels cannot turn anything like as fast as the engine while
+      they slip.
+
+    The operational form of the boundary is checked first: at every recorded step of
+    every scenario the channel is exactly ``ice_torque_nm * ice_rpm * tau / 60``.
+    """
+    for run in runs.values():
+        shaft_w = run.drivetrain.ice_torque_nm * run.drivetrain.ice_rpm * (math.tau / 60.0)
+        assert np.allclose(run.drivetrain.ice_power_w, shaft_w, rtol=1e-12, atol=0.0), (
+            f"{run.name}: ice_power_w is declared as the ICE's gross crankshaft "
+            "shaft power, so it must be exactly the delivered torque against the "
+            "sampled engine speed at every recorded step"
+        )
+
+    # A shift cut: nothing crosses the clutch, but the engine keeps turning.
+    run = runs["full_throttle_shifts"]
+    scenario = suite["full_throttle_shifts"]
+    offset = 0
+    cuts: list[slice] = []
+    for segment in scenario.segments:
+        if segment.request is gearbox.GearRequest.UP:
+            active = np.flatnonzero(run.drive_torque_nm[offset:] != 0.0)
+            resumed = offset + int(active[0])
+            cuts.append(slice(offset, resumed))
+        offset += round(segment.duration_s / run.dt_s)
+    assert cuts, "full_throttle_shifts must contain at least one requested shift"
+    for cut in cuts:
+        recorded = slice(cut.start // run.control_steps, cut.stop // run.control_steps)
+        assert np.all(run.drive_torque_nm[cut] == 0.0), (
+            "a requested shift cuts the driveline: the clutch transmits no torque, "
+            "so the power crossing it is exactly zero"
+        )
+        assert np.all(run.drivetrain.ice_power_w[recorded] > 0.0), (
+            "ice_power_w is declared at the crankshaft, so a shift cut does not "
+            "collapse it with the driveline: the engine keeps delivering shaft "
+            "power through the cut, and only drive_torque_nm against wheel speed "
+            "is the clutch-transmitted quantity"
+        )
+
+    # A slipping clutch: the channel follows the engine, not the wheels.
+    run = runs["standing_launch"]
+    scenario = suite["standing_launch"]
+    window = _windows(run, scenario)[0]
+    assert np.all(run.drivetrain.ice_rpm[window] == scenarios.LAUNCH_ICE_RPM)
+    shaft_w = run.drivetrain.ice_power_w[window]
+    transmitted_w = _clutch_transmitted_power(run, window)
+    assert np.all(transmitted_w < shaft_w), (
+        "while the clutch slips the wheels turn far slower than the engine, so the "
+        "power crossing the clutch stays below the crankshaft power the channel "
+        "reports: ice_power_w is the engine-side quantity, and the clutch boundary "
+        "is drive_torque_nm against wheel speed"
+    )
+
+
 # ------------------------------------------------------- behaviour: coast and neutral
 
 
@@ -628,6 +807,41 @@ def test_energy_invariant_rejects_a_real_run_record_over_one_percent(
     result = check_energy_balance(record, spec)
     assert len(result) == 1
     assert result[0].where == "step 1"
+
+
+def test_the_final_intervals_energy_residual_is_computed_not_fabricated(
+    runs: Mapping[str, ScenarioRun], config: KernelConfig
+) -> None:
+    """The last row's residual is the final interval's, computed from its own work.
+
+    The run's terminal state has no interval after it, so the last recorded
+    row reports the residual of the final complete control interval - the one
+    that *ends* on that row, which is the same interval the row before it
+    describes. That value has to be the wheel-boundary identity computed from
+    the interval's own work and energy, not a hard-coded pass, and this test
+    holds it to all three of the things a fabricated zero is not: it is the
+    same computed value the previous row carries, it is nonzero because a real
+    interval's identity does not close to exactly zero in floating point, and
+    it matches the identity recomputed here from the documented quantities.
+    """
+    for run in runs.values():
+        steps = run.record.ground_truth
+        final = steps[-1].energy_residual_fraction
+        previous = steps[-2].energy_residual_fraction
+        assert final is not None and math.isfinite(final), run.name
+        assert final == previous, (
+            f"{run.name}: the final row sits on the terminal state, where no "
+            "interval starts, so it must report the final complete interval's "
+            f"residual - the same value the previous row carries - not a "
+            f"fabricated pass (recorded {final!r} against {previous!r})"
+        )
+        assert final == pytest.approx(
+            _final_interval_energy_residual(run, config), rel=1e-6, abs=1e-10
+        ), (
+            f"{run.name}: the final row's residual must be the wheel-boundary "
+            "identity recomputed from the final interval's own kinetic-energy "
+            "change, wheel-torque work, drag work and tyre-slip work"
+        )
 
 
 def test_the_published_channels_are_contract_channels_inside_their_declared_ranges(

@@ -46,16 +46,37 @@ model behaviour rather than validated car performance.
   wheels. Making them magnitudes rather than absent lets a later scenario bias front against rear
   without this module's shape changing.
 
-* **A record carries what the model computes and nothing else.** ``ice_power_w`` is ICE shaft
-  power from the delivered torque; ``mgu_k_power_w`` is the *store-side* electrical power,
-  ``-d(SOC)/dt``, because that is the boundary C5.2.7 and C5.2.9 bound and it is exactly
-  derivable from the state the MGU-K step wrote. Invariant 6 instead uses wheel-side work because
-  the kernel has no engine or motor rotor state.
+* **A record carries what the model computes and nothing else, and each power
+  channel names the boundary it is measured at.** ``ice_power_w`` is the ICE's
+  *gross shaft power at the crankshaft*: the delivered torque against the engine
+  speed the drivetrain sampled, upstream of the gearbox and the clutch. That
+  boundary is a choice, made and documented here, and it is deliberate: the
+  fuel-energy-flow clauses that bound the ICE (C5.2.3, C5.2.4, C5.2.5) are
+  stated against crankshaft power, and the shaft power is exactly derivable
+  from the state the runner already computes - the same test
+  ``mgu_k_power_w`` passes for its own boundary. It is deliberately *not* the
+  power transmitted through the clutch: a shift cut opens the driveline while
+  the engine keeps making power, and a slipping clutch transmits less than the
+  engine delivers, so the two boundaries differ by the whole clutch. The
+  clutch-transmitted quantity is ``drive_torque_nm`` against wheel speed, which
+  the run already carries. An ICE-only clutch-transmitted power is not reported
+  at all, because the MGU-K joins the crankshaft upstream of the clutch
+  (C5.18.2) and the model sums the two sources before it: the torque that
+  crosses the clutch belongs to both, and attributing the clutch's limit to one
+  of them would invent a split the model does not compute. ``mgu_k_power_w`` is
+  the *store-side* electrical power, ``-d(SOC)/dt``, because that is the
+  boundary C5.2.7 and C5.2.9 bound and it is exactly derivable from the state
+  the MGU-K step wrote. Invariant 6 instead uses wheel-side work because the
+  kernel has no engine or motor rotor state.
 
 * **The energy invariant uses the modeled boundary.** The kernel has four wheel states and no
   engine-speed state, so the check balances chassis and wheel kinetic energy against wheel-torque
   work, aerodynamic drag and tyre-slip work. It does not compare crankshaft power directly with
-  chassis acceleration.
+  chassis acceleration, and it is never relabelled as a fuel-to-vehicle conservation law. Every
+  interval of every record is computed from those quantities, the last included: the final
+  recorded row sits on the run's terminal state, where no interval *starts*, so it reports the
+  residual of the final complete control interval - the one that *ends* on that row - and no row
+  is a hard-coded pass.
 
 * **Segments are timed to stay inside the tyres' grip, and two of them are seeded rolling.**
   With no traction control (C9.1.2) a drive demand above the Magic Formula's peak has no
@@ -202,7 +223,10 @@ class DrivetrainTrace:
 
     Arrays rather than objects so a check can read a whole stretch of a run without a Python loop
     over it, and so a repeat run can be compared byte for byte. ``accel_m_s2`` is the chassis
-    acceleration the kernel produced, which ``GroundTruthStep`` does not carry.
+    acceleration the kernel produced, which ``GroundTruthStep`` does not carry. ``ice_power_w``
+    is the ICE's gross crankshaft shaft power - upstream of the clutch by declaration, see the
+    module docstring - while ``drive_torque_nm`` is the post-clutch driveline torque, so the
+    power the clutch actually transmits is that torque against wheel speed.
     """
 
     gear: np.ndarray
@@ -752,9 +776,22 @@ def _energy_residual_fraction(
     Work uses midpoint velocity and wheel speed, matching the explicit Euler update exactly.
     Wheel torque supplies energy; aero drag and tyre slip remove it. ICE/MGU-K crank power is
     intentionally excluded because P1 has no engine or driveline rotational state.
+
+    The interval is ``[start, start + count)``. The run's final recorded row sits on the
+    terminal state, where no interval starts, so it reports the residual of the final
+    complete control interval - the one that *ends* on that row, and the same interval the
+    row before it describes - by shifting the window back one interval. That interval is
+    computed from the same quantities as every other one: no row is a hard-coded pass.
     """
     if start + count >= trace.shape[0]:
-        return 0.0
+        # Only the final recorded row lands here, and it is the one case in
+        # which the interval has to be read backwards: the row describes the
+        # run's terminal state, so the residual it can truthfully carry is the
+        # final complete interval's, the one ending on that state. Every
+        # segment is a whole number of control intervals, so `start` (the
+        # terminal row) is at least `count`, and the shifted window stays
+        # inside the trace.
+        start = trace.shape[0] - 1 - count
     initial = trace[start]
     final = trace[start + count]
     wheel_columns = range(longitudinal.WHEEL_STATE_OFFSET, longitudinal.STATE_SIZE)
