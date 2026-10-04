@@ -34,9 +34,9 @@ downforce. And the diagonal is *closed*: a run seeds the coupling to zero throug
 :func:`initial_state`, and every step after that feeds its own resolved acceleration forward, so the
 transfer is a result of the run rather than an input a caller has to keep supplying.
 
-**Diagnostics are optional and caller-owned.** :class:`StepOutputs` is four ``(steps, 4)`` buffers -
-load, longitudinal force, suspension travel and the travel-limit flag - filled per step when a
-caller asks for them and left alone when it does not. They are an *output*, not a state: the
+**Diagnostics are optional and caller-owned.** :class:`StepOutputs` contains per-corner ``(steps,
+4)`` buffers for loads, forces, slip work, slip state and suspension geometry, filled per step when
+a caller asks for them and left alone when it does not. They are an *output*, not a state: the
 loads are computed either way, because they are an input to the tyre model, so omitting them cannot
 change a byte of the trace. That is what lets them stay optional rather than becoming part of
 the trace itself, and it is asserted rather than assumed.
@@ -69,7 +69,7 @@ nonpositive ``dt_s`` or ``mass_kg``, a step count that is not an integer, a seed
 a nonfinite wheel speed, and any buffer that is not a C-contiguous ``float64`` ``ndarray`` of
 exactly the size the run needs. The optional :class:`StepOutputs` buffers are held to the same
 rules,
-and to one extra: all four are validated or none of them is used. A mistake surfaces as a
+and to one extra: every field is validated or none of them is used. A mistake surfaces as a
 :class:`ValueError` naming the buffer instead of as a silent write past the end of an array.
 """
 
@@ -87,7 +87,14 @@ from numba import njit
 # section 6's `torque_curve -> gearbox -> clutch -> differential -> wheels`, read as models feeding
 # the integrator rather than the other way round. Layer isolation exists to keep analytics, the
 # server and the web layer out of the physics core; a kernel composing the core is the composition.
-from f1telemetry.physics import forces, loads  # noqa: TID251 -- the kernel composes the models
+from f1telemetry.physics import (  # noqa: TID251 -- the kernel composes the models
+    combined_slip,
+    forces,
+    kinematics,
+    loads,
+    relaxation,
+    steering,
+)
 
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
@@ -148,14 +155,23 @@ STATE_SIZE: Final[int] = PREVIOUS_AZ_INDEX + 1
 # The per-step diagnostics, as names, in the order `StepOutputs` declares them. Written as data so
 # the validation loop and the error messages cannot disagree about which buffer is which, and so a
 # field added to the group is one line rather than four.
-STEP_OUTPUT_FLOAT_FIELDS: Final[tuple[str, ...]] = ("load_n", "force_x_n", "travel_m")
+STEP_OUTPUT_FLOAT_FIELDS: Final[tuple[str, ...]] = (
+    "load_n",
+    "force_x_n",
+    "force_y_n",
+    "slip_work_j",
+    "slip_ratio",
+    "slip_angle_deg",
+    "camber_deg",
+    "travel_m",
+)
 STEP_OUTPUT_FLAG_FIELD: Final[str] = "travel_limited"
 STEP_OUTPUT_FIELDS: Final[tuple[str, ...]] = (*STEP_OUTPUT_FLOAT_FIELDS, STEP_OUTPUT_FLAG_FIELD)
 FLOAT64_DTYPE: Final = np.dtype(np.float64)
 
 
 class StepOutputs(NamedTuple):
-    """The caller's per-step corner diagnostics: four ``(steps, 4)`` buffers, one per quantity.
+    """The caller's per-step corner diagnostics, with one ``(steps, 4)`` buffer per quantity.
 
     **A named group of buffers, not a fourth return value.** A ``(steps, 4)`` load and a
     ``(steps, 4)`` longitudinal force are the same shape and the same dtype, so four loose
@@ -163,9 +179,8 @@ class StepOutputs(NamedTuple):
     would get a trace that looks finished. Naming them means the kernel and the caller agree on what
     each one holds, and :func:`simulate` can refuse a group that is not this type at all.
 
-    Three ``float64`` fields and one ``int64``: ``travel_limited`` is a 0/1 report about the
-    configured mechanical limit rather than a measurement, and a float field would say otherwise
-    through its dtype.
+    Measurement fields use ``float64``. ``travel_limited`` uses ``int64`` for its 0/1 report about
+    the configured mechanical limit, rather than implying a measured magnitude.
 
     Every buffer is the caller's, and every one is C-contiguous and writeable because
     ``boundscheck=False`` writes into it: a short row count, a missing wheel column, a strided view
@@ -179,6 +194,11 @@ class StepOutputs(NamedTuple):
 
     load_n: np.ndarray
     force_x_n: np.ndarray
+    force_y_n: np.ndarray
+    slip_work_j: np.ndarray
+    slip_ratio: np.ndarray
+    slip_angle_deg: np.ndarray
+    camber_deg: np.ndarray
     travel_m: np.ndarray
     travel_limited: np.ndarray
 
@@ -205,6 +225,7 @@ def _integrate(
     slip_ratio_min_speed_m_s: float,
     rolling_radius_m: float,
     wheel_inertia_kg_m2: float,
+    yaw_inertia_kg_m2: float,
     cg_to_front_axle_m: float,
     cg_to_rear_axle_m: float,
     cg_height_m: float,
@@ -212,8 +233,25 @@ def _integrate(
     roll_stiffness_front_fraction: float,
     axle_ride_rate_n_per_m: np.ndarray,
     axle_travel_limit_m: np.ndarray,
+    axle_static_camber_deg: np.ndarray,
+    axle_camber_gain_deg_per_m: np.ndarray,
+    axle_bump_steer_deg_per_m: np.ndarray,
+    steering_ratio: float,
+    wheelbase_m: float,
+    ackermann_fraction: float,
+    max_steering_wheel_angle_deg: float,
+    relaxation_length_longitudinal_m: float,
+    relaxation_length_lateral_m: float,
+    relaxation_min_speed_m_s: float,
+    steer_wheel_deg: np.ndarray,
+    combined_parameters: np.ndarray,
     load_n_diagnostics: np.ndarray,
     force_x_n_diagnostics: np.ndarray,
+    force_y_n_diagnostics: np.ndarray,
+    slip_work_j_diagnostics: np.ndarray,
+    slip_ratio_diagnostics: np.ndarray,
+    slip_angle_diagnostics: np.ndarray,
+    camber_diagnostics: np.ndarray,
     travel_m_diagnostics: np.ndarray,
     travel_limited_diagnostics: np.ndarray,
     record_diagnostics: bool,
@@ -246,18 +284,17 @@ def _integrate(
     module docstring - so it must only ever be reached through :func:`simulate`.
     """
     out[0, :] = state
-    # The four-wheel scratch the load model writes, allocated once here and reused by every step.
-    # A compiled loop owns no buffers, and `corner_loads_n`/`clamp_travel_to_limits` both take
-    # caller-owned vectors precisely so this can live here rather than on the allocator: four small
-    # vectors once beats 3 allocations per step times a hundred thousand steps.
     load_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
     base_load_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
     travel_limited_scratch_n = np.empty(forces.WHEEL_COUNT, dtype=np.int64)
+    travel_scratch_m = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
+    road_wheel_steer_deg = np.empty(forces.WHEEL_COUNT, dtype=np.float64)
     for index in range(steps):
-        # Carry the P2-owned states this step does not integrate until a later task owns them. This
-        # keeps caller-seeded transients deterministic and prevents uninitialized output columns.
         out[index + 1, :] = out[index, :]
-        speed_m_s = out[index, V_INDEX]
+        vx_m_s = out[index, V_INDEX]
+        vy_m_s = out[index, VY_INDEX]
+        yaw_rate_rad_s = out[index, YAW_RATE_INDEX]
+        speed_m_s = math.sqrt(vx_m_s * vx_m_s + vy_m_s * vy_m_s)
         downforce_n, drag_n = forces.aero_forces(
             speed_m_s,
             air_density_kg_m3,
@@ -266,15 +303,6 @@ def _integrate(
             cl,
             cd,
         )
-        # **The corner loads, from the acceleration the previous step resolved.** The load a tyre
-        # is asked about is one 100 us step behind the force it produced, which is the plan's
-        # explicit answer to the load/force algebraic loop: the same `previous_acceleration_m_s2`
-        # argument `loads.step_loads` takes as a keyword, read here out of the state columns the
-        # kernel writes at the end of each step. A run therefore seeds the coupling to zero through
-        # `initial_state` and carries it forward itself, and the aero load is distributed by the
-        # same CG share as the weight rather than a quarter on each patch - P2-T2's deliberate
-        # change of convention, and the reason the loads no longer come from
-        # `forces.static_wheel_load_n` at all.
         loads.corner_loads_n(
             load_scratch_n,
             base_load_scratch_n,
@@ -290,10 +318,6 @@ def _integrate(
             axle_track_m,
             roll_stiffness_front_fraction,
         )
-        # Clamping is a result, not a decision: a corner that ran out of travel is put on its stop
-        # and flagged, and the load the clamp removed is shared over the corners that still have
-        # room so the four still sum to the car's total. Both the flag and the clamped travel are
-        # reported rather than folded away.
         loads.clamp_travel_to_limits(
             load_scratch_n,
             base_load_scratch_n,
@@ -301,40 +325,87 @@ def _integrate(
             axle_travel_limit_m,
             travel_limited_scratch_n,
         )
-        drivetrain_torque_nm = drive_torque_nm[index]
-        # Drag is signed along +x and is negative going forward, so it starts the sum rather than
-        # being subtracted; adding it keeps one sign convention instead of two.
-        net_force_n = drag_n
         for wheel in range(forces.WHEEL_COUNT):
-            column = WHEEL_STATE_OFFSET + wheel
-            # The axle a corner belongs to, in the same FL, FR, RL, RR order the load model reads:
-            # an axle is the two adjacent corners, so the mapping is derived from the wheel count
-            # per axle rather than restated. It is what picks this corner's ride rate below.
             axle = wheel // forces.WHEELS_PER_AXLE_COUNT
-            load_n = load_scratch_n[wheel]
-            tyre_fx_n = forces.wheel_tyre_force_n(
-                speed_m_s,
-                out[index, column],
-                load_n,
-                rolling_radius_m,
+            travel_scratch_m[wheel] = loads.suspension_travel_m(
+                load_scratch_n[wheel], base_load_scratch_n[wheel], axle_ride_rate_n_per_m[axle]
+            )
+        steering.road_wheel_angles_deg(
+            steer_wheel_deg[index],
+            steering_ratio,
+            wheelbase_m,
+            axle_track_m[0],
+            ackermann_fraction,
+            road_wheel_steer_deg,
+        )
+        net_force_x_n = 0.0
+        net_force_y_n = 0.0
+        yaw_moment_nm = 0.0
+        if speed_m_s > 0.0:
+            net_force_x_n = drag_n * vx_m_s / speed_m_s
+            net_force_y_n = drag_n * vy_m_s / speed_m_s
+        for wheel in range(forces.WHEEL_COUNT):
+            axle = wheel // forces.WHEELS_PER_AXLE_COUNT
+            side = 1.0 if wheel % forces.WHEELS_PER_AXLE_COUNT == 0 else -1.0
+            corner_x_m = cg_to_front_axle_m if axle == 0 else -cg_to_rear_axle_m
+            corner_y_m = side * 0.5 * axle_track_m[axle]
+            patch_vx_m_s, patch_vy_m_s = kinematics.contact_velocity_m_s(
+                vx_m_s, vy_m_s, yaw_rate_rad_s, corner_x_m, corner_y_m
+            )
+            steer_deg = road_wheel_steer_deg[wheel]
+            steer_deg += axle_bump_steer_deg_per_m[axle] * travel_scratch_m[wheel]
+            wheel_vx_m_s, wheel_vy_m_s = kinematics.wheel_frame_velocity_m_s(
+                patch_vx_m_s, patch_vy_m_s, steer_deg
+            )
+            patch_speed_m_s = math.sqrt(wheel_vx_m_s * wheel_vx_m_s + wheel_vy_m_s * wheel_vy_m_s)
+            target_kappa = forces.slip_ratio(
+                out[index, WHEEL_STATE_OFFSET + wheel] * rolling_radius_m,
+                wheel_vx_m_s,
                 slip_ratio_min_speed_m_s,
-                pacejka_b,
-                pacejka_c,
-                pacejka_e,
-                pacejka_mu,
+            )
+            target_alpha_deg = kinematics.slip_angle_deg(wheel_vx_m_s, wheel_vy_m_s)
+            kappa = relaxation.relax_slip_ratio(
+                out[index, KAPPA_RELAX_OFFSET + wheel],
+                target_kappa,
+                patch_speed_m_s,
+                relaxation_length_longitudinal_m,
+                dt_s,
+                relaxation_min_speed_m_s,
+            )
+            alpha_deg = relaxation.relax_slip_ratio(
+                out[index, ALPHA_RELAX_OFFSET + wheel],
+                target_alpha_deg,
+                patch_speed_m_s,
+                relaxation_length_lateral_m,
+                dt_s,
+                relaxation_min_speed_m_s,
+            )
+            out[index + 1, KAPPA_RELAX_OFFSET + wheel] = kappa
+            out[index + 1, ALPHA_RELAX_OFFSET + wheel] = alpha_deg
+            camber_deg = side * (
+                axle_static_camber_deg[axle]
+                + axle_camber_gain_deg_per_m[axle] * travel_scratch_m[wheel]
+            )
+            load_n = load_scratch_n[wheel]
+            tyre_fx_n, tyre_fy_n = combined_slip.combined_tyre_forces(
+                kappa, alpha_deg, camber_deg, load_n, combined_parameters
             )
             if record_diagnostics:
-                # Row `index` is the step that started at trace row `index`, so the diagnostics and
-                # the trace line up row for row: these are the loads the force below was computed
-                # from, not the loads the row that comes out was integrated with.
                 load_n_diagnostics[index, wheel] = load_n
                 force_x_n_diagnostics[index, wheel] = tyre_fx_n
-                travel_m_diagnostics[index, wheel] = loads.suspension_travel_m(
-                    load_n, base_load_scratch_n[wheel], axle_ride_rate_n_per_m[axle]
-                )
+                force_y_n_diagnostics[index, wheel] = tyre_fy_n
+                slip_ratio_diagnostics[index, wheel] = kappa
+                slip_angle_diagnostics[index, wheel] = alpha_deg
+                camber_diagnostics[index, wheel] = camber_deg
+                travel_m_diagnostics[index, wheel] = travel_scratch_m[wheel]
                 travel_limited_diagnostics[index, wheel] = travel_limited_scratch_n[wheel]
-            net_force_n += tyre_fx_n
-            drive_nm = forces.wheel_drive_torque_nm(wheel, drivetrain_torque_nm)
+            steer_rad = steer_deg * (math.pi / 180.0)
+            body_fx_n = tyre_fx_n * math.cos(steer_rad) - tyre_fy_n * math.sin(steer_rad)
+            body_fy_n = tyre_fx_n * math.sin(steer_rad) + tyre_fy_n * math.cos(steer_rad)
+            net_force_x_n += body_fx_n
+            net_force_y_n += body_fy_n
+            yaw_moment_nm += corner_x_m * body_fy_n - corner_y_m * body_fx_n
+            drive_nm = forces.wheel_drive_torque_nm(wheel, drive_torque_nm[index])
             alpha_rad_s2 = forces.wheel_angular_acceleration_rad_s2(
                 drive_nm,
                 tyre_fx_n,
@@ -342,19 +413,70 @@ def _integrate(
                 wheel_inertia_kg_m2,
                 brake_torque_nm[index, wheel],
             )
-            out[index + 1, column] = out[index, column] + alpha_rad_s2 * dt_s
-        acceleration_m_s2 = net_force_n / mass_kg
-        out[index + 1, V_INDEX] = speed_m_s + acceleration_m_s2 * dt_s
-        out[index + 1, X_INDEX] = out[index, X_INDEX] + out[index + 1, V_INDEX] * dt_s
-        # **Close the load lag with what this step actually resolved.** Only the longitudinal
-        # component exists in this kernel: there is no lateral force and no heave state yet, so
-        # `ay` and `az` are written zero rather than left holding a caller seed the loop would keep
-        # re-reading forever. Writing the zero is the honest value - a body that is not accelerating
-        # sideways or vertically carries no `m * ay` or `m * az` term - and it means a lateral task
-        # only has to start writing its own column.
-        out[index + 1, PREVIOUS_AX_INDEX] = acceleration_m_s2
-        out[index + 1, PREVIOUS_AY_INDEX] = 0.0
+            out[index + 1, WHEEL_STATE_OFFSET + wheel] = (
+                out[index, WHEEL_STATE_OFFSET + wheel] + alpha_rad_s2 * dt_s
+            )
+        ax_m_s2 = net_force_x_n / mass_kg
+        ay_m_s2 = net_force_y_n / mass_kg
+        vx_next_m_s = vx_m_s + (ax_m_s2 + yaw_rate_rad_s * vy_m_s) * dt_s
+        vy_next_m_s = vy_m_s + (ay_m_s2 - yaw_rate_rad_s * vx_m_s) * dt_s
+        yaw_accel_rad_s2 = yaw_moment_nm / yaw_inertia_kg_m2
+        yaw_rate_next_rad_s = yaw_rate_rad_s + yaw_accel_rad_s2 * dt_s
+        psi_next_rad = out[index, PSI_INDEX] + yaw_rate_next_rad_s * dt_s
+        cos_psi = math.cos(psi_next_rad)
+        sin_psi = math.sin(psi_next_rad)
+        out[index + 1, X_INDEX] = (
+            out[index, X_INDEX] + (vx_next_m_s * cos_psi - vy_next_m_s * sin_psi) * dt_s
+        )
+        out[index + 1, Y_INDEX] = (
+            out[index, Y_INDEX] + (vx_next_m_s * sin_psi + vy_next_m_s * cos_psi) * dt_s
+        )
+        out[index + 1, V_INDEX] = vx_next_m_s
+        out[index + 1, VY_INDEX] = vy_next_m_s
+        out[index + 1, YAW_RATE_INDEX] = yaw_rate_next_rad_s
+        out[index + 1, PSI_INDEX] = psi_next_rad
+        left_travel_m = 0.5 * (travel_scratch_m[0] + travel_scratch_m[2])
+        right_travel_m = 0.5 * (travel_scratch_m[1] + travel_scratch_m[3])
+        front_travel_m = 0.5 * (travel_scratch_m[0] + travel_scratch_m[1])
+        rear_travel_m = 0.5 * (travel_scratch_m[2] + travel_scratch_m[3])
+        out[index + 1, ROLL_INDEX] = (right_travel_m - left_travel_m) / (
+            0.5 * (axle_track_m[0] + axle_track_m[1])
+        )
+        out[index + 1, PITCH_INDEX] = (front_travel_m - rear_travel_m) / (
+            cg_to_front_axle_m + cg_to_rear_axle_m
+        )
+        out[index + 1, HEAVE_INDEX] = 0.25 * (
+            travel_scratch_m[0] + travel_scratch_m[1] + travel_scratch_m[2] + travel_scratch_m[3]
+        )
+        out[index + 1, PREVIOUS_AX_INDEX] = ax_m_s2
+        out[index + 1, PREVIOUS_AY_INDEX] = ay_m_s2
         out[index + 1, PREVIOUS_AZ_INDEX] = 0.0
+        if record_diagnostics:
+            vx_mid_m_s = 0.5 * (vx_m_s + vx_next_m_s)
+            vy_mid_m_s = 0.5 * (vy_m_s + vy_next_m_s)
+            yaw_mid_rad_s = 0.5 * (yaw_rate_rad_s + yaw_rate_next_rad_s)
+            for wheel in range(forces.WHEEL_COUNT):
+                axle = wheel // forces.WHEELS_PER_AXLE_COUNT
+                side = 1.0 if wheel % forces.WHEELS_PER_AXLE_COUNT == 0 else -1.0
+                corner_x_m = cg_to_front_axle_m if axle == 0 else -cg_to_rear_axle_m
+                corner_y_m = side * 0.5 * axle_track_m[axle]
+                patch_vx_m_s, patch_vy_m_s = kinematics.contact_velocity_m_s(
+                    vx_mid_m_s, vy_mid_m_s, yaw_mid_rad_s, corner_x_m, corner_y_m
+                )
+                steer_deg = road_wheel_steer_deg[wheel]
+                steer_deg += axle_bump_steer_deg_per_m[axle] * travel_scratch_m[wheel]
+                wheel_vx_m_s, wheel_vy_m_s = kinematics.wheel_frame_velocity_m_s(
+                    patch_vx_m_s, patch_vy_m_s, steer_deg
+                )
+                wheel_omega_mid_rad_s = 0.5 * (
+                    out[index, WHEEL_STATE_OFFSET + wheel]
+                    + out[index + 1, WHEEL_STATE_OFFSET + wheel]
+                )
+                slip_work_j_diagnostics[index, wheel] = (
+                    force_x_n_diagnostics[index, wheel]
+                    * (wheel_omega_mid_rad_s * rolling_radius_m - wheel_vx_m_s)
+                    - force_y_n_diagnostics[index, wheel] * wheel_vy_m_s
+                ) * dt_s
     return out
 
 
@@ -443,6 +565,11 @@ def allocate_step_outputs(steps: int) -> StepOutputs:
     return StepOutputs(
         load_n=np.zeros(shape, dtype=np.float64),
         force_x_n=np.zeros(shape, dtype=np.float64),
+        force_y_n=np.zeros(shape, dtype=np.float64),
+        slip_work_j=np.zeros(shape, dtype=np.float64),
+        slip_ratio=np.zeros(shape, dtype=np.float64),
+        slip_angle_deg=np.zeros(shape, dtype=np.float64),
+        camber_deg=np.zeros(shape, dtype=np.float64),
         travel_m=np.zeros(shape, dtype=np.float64),
         travel_limited=np.zeros(shape, dtype=np.int64),
     )
@@ -457,6 +584,7 @@ def simulate(
     brake_torque_nm: np.ndarray | None = None,
     *,
     step_outputs: StepOutputs | None = None,
+    steer_wheel_deg: np.ndarray | None = None,
 ) -> np.ndarray:
     """Run a straight-line scenario from a validated :class:`KernelConfig`, in fixed steps.
 
@@ -498,6 +626,10 @@ def simulate(
     validated or none of it is used. Omitting it changes nothing about the run: the trace is
     byte-identical, and the loads the tyre model needs are computed either way, because they are an
     input to the physics rather than an output of it.
+
+    ``steer_wheel_deg`` is an optional caller-owned per-step steering-wheel history in degrees,
+    positive left. Omitting it is a zero-steer run. Each sample is checked against the configured
+    steering limit before entering the compiled loop.
     """
     count = _checked_steps(steps)
     for name, value in (
@@ -520,6 +652,17 @@ def simulate(
     values = forces.validated_config_scalars(config, "simulate")
     geometry = loads.validated_load_scalars(config, "simulate")
     forces.validate_aero_arrays(config, "simulate")
+    steering_values = steering.validated_steering_scalars(config, "simulate")
+    relaxation_values = relaxation.validated_relaxation_scalars(config, "simulate")
+    combined_parameters = combined_slip.prepare_combined_slip_parameters(config, "simulate")
+    yaw_inertia_kg_m2 = float(config.yaw_inertia_kg_m2)
+    if not math.isfinite(yaw_inertia_kg_m2) or yaw_inertia_kg_m2 <= 0.0:
+        raise ValueError(
+            f"simulate: config.yaw_inertia_kg_m2 must be finite and > 0, got {yaw_inertia_kg_m2!r}"
+        )
+    axle_static_camber_deg, axle_camber_gain_deg_per_m, axle_bump_steer_deg_per_m = (
+        _validated_suspension_arrays(config)
+    )
 
     _check_buffer("state", state, (STATE_SIZE,), writable=False)
     _check_buffer("drive_torque_nm", drive_torque_nm, (count,), writable=False)
@@ -529,6 +672,9 @@ def simulate(
     if not np.isfinite(brake_torque_nm).all():
         raise ValueError("simulate: brake_torque_nm must be finite")
     _check_buffer("out", out, (count + 1, STATE_SIZE), writable=True)
+    steer_history = _checked_steering_history(
+        steer_wheel_deg, count, steering_values["max_steering_wheel_angle_deg"]
+    )
     if not np.isfinite(state).all():
         raise ValueError(
             "simulate: state must be finite. A NaN wheel speed is not a slow wheel: it reaches the "
@@ -565,6 +711,7 @@ def simulate(
         values["slip_ratio_min_speed_m_s"],
         values["rolling_radius_m"],
         values["wheel_inertia_kg_m2"],
+        yaw_inertia_kg_m2,
         geometry.cg_to_front_axle_m,
         geometry.cg_to_rear_axle_m,
         geometry.cg_height_m,
@@ -572,8 +719,25 @@ def simulate(
         geometry.roll_stiffness_front_fraction,
         geometry.axle_ride_rate_n_per_m,
         geometry.axle_travel_limit_m,
+        axle_static_camber_deg,
+        axle_camber_gain_deg_per_m,
+        axle_bump_steer_deg_per_m,
+        steering_values["steering_ratio"],
+        steering_values["wheelbase_m"],
+        steering_values["ackermann_fraction"],
+        steering_values["max_steering_wheel_angle_deg"],
+        relaxation_values["relaxation_length_longitudinal_m"],
+        relaxation_values["relaxation_length_lateral_m"],
+        relaxation_values["relaxation_min_speed_m_s"],
+        steer_history,
+        combined_parameters,
         diagnostics.load_n,
         diagnostics.force_x_n,
+        diagnostics.force_y_n,
+        diagnostics.slip_work_j,
+        diagnostics.slip_ratio,
+        diagnostics.slip_angle_deg,
+        diagnostics.camber_deg,
         diagnostics.travel_m,
         diagnostics.travel_limited,
         record_diagnostics,
@@ -594,13 +758,18 @@ def _discarded_step_outputs() -> StepOutputs:
     return StepOutputs(
         load_n=np.zeros(shape, dtype=np.float64),
         force_x_n=np.zeros(shape, dtype=np.float64),
+        force_y_n=np.zeros(shape, dtype=np.float64),
+        slip_work_j=np.zeros(shape, dtype=np.float64),
+        slip_ratio=np.zeros(shape, dtype=np.float64),
+        slip_angle_deg=np.zeros(shape, dtype=np.float64),
+        camber_deg=np.zeros(shape, dtype=np.float64),
         travel_m=np.zeros(shape, dtype=np.float64),
         travel_limited=np.zeros(shape, dtype=np.int64),
     )
 
 
 def _checked_step_outputs(step_outputs: object, count: int) -> StepOutputs:
-    """Four diagnostic buffers the kernel can write into, or a :class:`ValueError` naming the field.
+    """Diagnostic buffers the kernel can write into, or a :class:`ValueError` naming the field.
 
     Every rule :func:`simulate` applies to the buffers it has always checked applies here too, for
     the same reason: the loop writes into these with ``boundscheck=False``, so a wrong shape, a
@@ -608,7 +777,7 @@ def _checked_step_outputs(step_outputs: object, count: int) -> StepOutputs:
     are checked for ``int64`` rather than ``float64`` because a differently-typed buffer compiles as
     a differently-typed kernel and writes the wrong number of bytes.
 
-    The group itself has to be a :class:`StepOutputs`, and the four may not share memory. Three
+    The group itself has to be a :class:`StepOutputs`, and no two fields may share memory. Three
     ``(steps, 4)`` float64 buffers passed as loose arguments are one refactor away from being
     swapped, and two of them aliased would produce a run that looks finished with one corner
     quantity quietly overwritten by another - which is exactly the failure this boundary exists to
@@ -661,6 +830,49 @@ def _checked_steps(steps: int) -> int:
     if count < 0:
         raise ValueError(f"steps must be >= 0, got {count}")
     return count
+
+
+def _validated_suspension_arrays(
+    config: KernelConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    static_camber = config.axle_static_camber_deg
+    camber_gain = config.axle_camber_gain_deg_per_m
+    bump_steer = config.axle_bump_steer_deg_per_m
+    arrays = (static_camber, camber_gain, bump_steer)
+    names = (
+        "axle_static_camber_deg",
+        "axle_camber_gain_deg_per_m",
+        "axle_bump_steer_deg_per_m",
+    )
+    for name, array in zip(names, arrays, strict=True):
+        if (
+            not isinstance(array, np.ndarray)
+            or array.dtype != FLOAT64_DTYPE
+            or array.shape != (2,)
+            or not array.flags.c_contiguous
+            or not np.isfinite(array).all()
+        ):
+            raise ValueError(
+                f"simulate: config.{name} must be a finite, C-contiguous float64 axle pair"
+            )
+    return static_camber, camber_gain, bump_steer
+
+
+def _checked_steering_history(
+    steer_wheel_deg: np.ndarray | None,
+    count: int,
+    limit_deg: float,
+) -> np.ndarray:
+    if steer_wheel_deg is None:
+        return np.zeros(count, dtype=np.float64)
+    _check_buffer("steer_wheel_deg", steer_wheel_deg, (count,), writable=False)
+    if not np.isfinite(steer_wheel_deg).all():
+        raise ValueError("simulate: steer_wheel_deg must be finite")
+    if np.any(np.abs(steer_wheel_deg) > limit_deg):
+        raise ValueError(
+            f"simulate: steer_wheel_deg exceeds the configured limit of {limit_deg} degrees"
+        )
+    return steer_wheel_deg
 
 
 def _check_buffer(
