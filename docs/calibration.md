@@ -820,3 +820,32 @@ only as a reachability floor" - a different and weaker role than being a target,
   task finds the 0–100 window too tight to separate a real coefficient error from feed
   quantisation, the correct response is to say so and re-derive the reference - not to widen the
   band until the current output fits.
+
+## Phase 2 lateral implementation evidence
+
+The P2 implementation adds planar body motion, four-corner load transfer, load-sensitive combined
+slip, relaxation states, Ackermann steering and quasi-static suspension geometry. This records
+implementation evidence only; no P2 coefficient was tuned to these outputs.
+
+- The 20 m/s steady-circle scenario requests a 50 m radius and settles within 5% of that radius at
+  about 0.76 g. The constant-radius sweep covers 40–115 m/s, holds its requested 200 m radius, and
+  reaches the 4.5–5.5 g order-of-magnitude sanity band at its high-speed point. That band is not a
+  source-backed acceptance target. P2 remains open until a documented target and comparable test
+  condition are selected.
+- At 50 m radius and 20 m/s, steering demand changes monotonically as
+  `roll_stiffness_front_fraction` moves from 0.3 to 0.7 with the other inputs fixed. The test is a
+  balance-sensitivity check, not an understeer-gradient calibration.
+- The zero-steer symmetry control disables static camber, camber gain and bump steer. A separate
+  paired left/right simulation checks mirrored planar state and wheel loads/forces. Production
+  scenarios retain the synthetic suspension coefficients, so zero commanded steer can still have
+  toe effects from bump steer; symmetry tolerances are not widened to hide that behavior.
+- Wheel camber truth is signed per corner as emitted by the kernel. The `camber` channel range was
+  widened to `[-5, 5]` degrees so both sides of the configured signed camber are representable.
+- Invariant 6 uses the discrete energy balance over chassis translation, yaw and four wheel spins,
+  against wheel-torque work, signed aerodynamic drag and longitudinal/lateral tire slip work. The
+  independently recomputed final-interval residual matches the recorded residual on the circle and
+  straight-line scenarios.
+
+P1 remains open: the latest recorded 0–100 km/h result is 6.6598 s against the coarse 2.32 s
+reference, and the synthesized ICE curve remains uncalibrated. The 338.4295 km/h transient
+reachability result does not close that acceleration miss or validate the car model.

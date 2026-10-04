@@ -128,11 +128,20 @@ does not establish full F1-car fidelity or regulatory compliance.
 | P2-T10 | Invariants 2 (friction ellipse), 4 (sign conventions), 5 (symmetry) | Invariant 5 is the cheapest bug-finder in the project — run it constantly |
 
 **Exit gate**
-- [ ] Constant-radius sweep reaches target peak lateral g
-- [ ] Friction ellipse never exceeded, all four corners, all steps
-- [ ] Symmetry holds at zero steer / zero camber / symmetric setup
-- [ ] Steering demand is monotonic in `roll_stiffness_front_fraction` at matched radius and lateral acceleration
-- [ ] Quasi-static suspension travel stays within mechanical limits across the load range (no bottoming out silently)
+- [ ] Constant-radius sweep reaches a source-backed target peak lateral g
+- [x] The 4.5–5.5 g order-of-magnitude sanity band is reached on the configured high-speed sweep; this is not a source-backed calibration target
+- [x] The friction ellipse and zero-load force bound pass on every wheel in the produced scenarios
+- [x] Zero-steer symmetry passes with camber and bump steer disabled; paired left/right steering runs mirror chassis state and four-wheel force/load outputs
+- [x] Steering demand changes monotonically with `roll_stiffness_front_fraction` at matched 50 m radius and 20 m/s
+- [x] Suspension travel-limit flags remain clear throughout the produced scenarios and every sweep run
+
+**Implementation status (2026-10):** The P2 kernel, load transfer, steering, relaxation, combined-slip
+forces, scenario truth and channel publication are implemented on `feat/phase-2`. The 50 m circle
+settles within 5% of its requested radius at about 0.76 g; the constant-radius sweep spans 40–115
+m/s, matches its 200 m radius, and reaches the 4.5–5.5 g sanity band at its high-speed point. These
+are model outputs, not calibration claims. The source-backed lateral-g target is still unset, so the
+P2 exit gate remains open. P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
+`docs/calibration.md`.
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four
 corners, and a steering-sensitivity curve.

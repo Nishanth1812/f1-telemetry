@@ -57,6 +57,7 @@ class WheelTruth:
     alpha_rad: float
     camber_deg: float
     mu_lateral: float | None = None
+    effective_alpha_rad: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,7 @@ class GroundTruthStep:
     * body frame is x forward, y left, z up
     * ``kappa`` positive in drive, ``fx_n`` positive forward
     * ``alpha_rad`` positive when the tyre generates ``fy_n`` in +y
+    * ``drag_w`` is signed against forward motion, so aerodynamic drag power is negative
     * ``gear`` is -1 reverse, 0 neutral, 1..8
     * ``az_m_s2`` is the chassis vertical acceleration, so the load sum is
       ``mass * (g + az) + downforce``
@@ -155,6 +157,7 @@ def with_wheel(
     kappa: float | None = None,
     alpha_rad: float | None = None,
     camber_deg: float | None = None,
+    effective_alpha_rad: float | None = None,
 ) -> SampleRecord:
     """Return a copy of `record` with one wheel's truth fields replaced.
 
@@ -173,6 +176,9 @@ def with_wheel(
         alpha_rad=_pick(alpha_rad, current.alpha_rad),
         camber_deg=_pick(camber_deg, current.camber_deg),
         mu_lateral=current.mu_lateral if mu_lateral is None else mu_lateral,
+        effective_alpha_rad=(
+            current.effective_alpha_rad if effective_alpha_rad is None else effective_alpha_rad
+        ),
     )
     wheels = list(target.wheels)
     wheels[index] = merged

@@ -624,10 +624,10 @@ channels:
     width: 4
     corners: [FL, FR, RL, RR]
     dtype: float32
-    range: [-5.0, 1.0]
+    range: [-5.0, 5.0]
     noise_model: gaussian
     sigma: 0.05
-    quantise: { bits: 14, full_scale: 5.0 }
+    quantise: { bits: 14, full_scale: 10.0 }
     fault_eligible: [dropout, freeze, spike, step, gain, noise, quantise, swap, saturate, stale]
     description: Camber angle, negative at the top of the wheel.
     provenance: illustrative

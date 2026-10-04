@@ -148,3 +148,19 @@
 - [ ] P1 performance reporting gate closes. **Open pending recorded results.** The transient floor, launch-grip check and tail-settling assertion all passed CI run 37095870013. Record the 0–100 result and exact transient maximum; terminal speed is separate and is not the reachability-floor quantity.
 - [ ] `just check` passes.
 - [x] Calibration inputs, available historical/event-specific references, and the optional solver comparison are recorded for review.
+
+## Checkpoint: Phase 2 implementation
+
+**Progress:** The feature branch now has planar/yaw integration, longitudinal and lateral load
+transfer, load-sensitive combined-slip forces, per-wheel relaxation, steering/Ackermann geometry,
+quasi-static suspension outputs, signed camber truth, and deterministic circle/speed-sweep scenarios.
+Produced runs check force/load/sign invariants; a clean zero-steer control and mirrored-turn pair check
+symmetry; energy records include planar, yaw and wheel kinetic energy plus signed aero drag and tire
+slip work. Travel-limit flags are checked across all recorded scenario and sweep steps. The 50 m
+circle returns about 0.76 g, and the high-speed sweep reaches the 4.5–5.5 g sanity band. These values
+are not calibrated targets.
+
+**Still open:** Choose a source-backed lateral-g target and matched test condition, review and pin
+advisory P2 traces after coefficients stabilize, and capture the requested load-transfer/steering
+demo. P1 remains open at 6.6598 s to 100 km/h against the coarse 2.32 s reference; the engine curve
+is still synthetic and untuned. Do not close either phase gate from the P2 sanity band.

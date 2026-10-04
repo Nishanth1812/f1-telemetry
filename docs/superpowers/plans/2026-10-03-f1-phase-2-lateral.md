@@ -167,10 +167,10 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `car_spec.yaml`, `src/f1telemetry/contracts/car_spec.py`, `tests/test_car_spec.py`, `docs/calibration.md`.
 
-- [ ] Add failing contract tests for missing/invalid geometry, stiffness distribution, steering limits, lateral tire parameters, load-sensitivity inputs and relaxation lengths.
-- [ ] Add only the inputs required by Tasks 2–5. Keep each empirical/synthetic input claimed in `not_regulated`; cite actual regulatory values without inferring geometry or performance from unrelated clauses.
-- [ ] Extend `KernelConfig` with flat scalar/array fields and build them outside Numba, following the existing P1 config-validation path.
-- [ ] Verify that invalid/zero physical denominators and mismatched arrays fail before kernel entry, and that changing a YAML coefficient changes the generated config.
+- [x] Add contract tests for missing/invalid geometry, stiffness distribution, steering limits, lateral tire parameters, load-sensitivity inputs and relaxation lengths.
+- [x] Add only the inputs required by Tasks 2–5. Keep each empirical/synthetic input claimed in `not_regulated`; cite actual regulatory values without inferring geometry or performance from unrelated clauses.
+- [x] Extend `KernelConfig` with flat scalar/array fields and build them outside Numba, following the existing P1 config-validation path.
+- [x] Verify that invalid/zero physical denominators and mismatched arrays fail before kernel entry, and that changing a YAML coefficient changes the generated config.
 
 **Done when:** P2 config is fully validated and provenance-audited with no hardcoded model coefficients in kernels.
 
@@ -178,11 +178,11 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/physics/forces.py`, `car_spec.yaml`, `tests/test_forces.py`, `tests/test_car_spec.py`.
 
-- [ ] Add tests for symmetric static loads, positive/negative longitudinal transfer, left/right lateral transfer, combined transfer and zero-load/lift-off boundaries.
-- [ ] Include longitudinal acceleration load transfer in this task if Task 0 explicitly deferred it from P1; this is a prerequisite for resolving the P1 0–100 gate and must conserve total load.
-- [ ] Implement corner loads from validated CG/axle/track geometry and roll/pitch stiffness distribution; preserve the existing total-load accounting convention for weight, vertical acceleration and aero.
-- [ ] Derive roll/pitch response, camber gain, bump steer and suspension travel from the documented quasi-static kinematics. Enforce configured travel limits explicitly and expose a failure/limit result rather than silently clipping an impossible load.
-- [ ] Test that mirrored turn/load inputs mirror corner loads, and that front/rear stiffness distribution moves lateral load transfer in the expected direction without changing total load.
+- [x] Add tests for symmetric static loads, positive/negative longitudinal transfer, left/right lateral transfer, combined transfer and zero-load/lift-off boundaries.
+- [x] Include longitudinal acceleration load transfer, conserving total load; the P1 0–100 performance gate remains open pending engine/calibration work.
+- [x] Implement corner loads from validated CG/axle/track geometry and roll/pitch stiffness distribution; preserve the existing total-load accounting convention for weight, vertical acceleration and aero.
+- [x] Derive roll/pitch response, camber gain, bump steer and suspension travel from the documented quasi-static kinematics. Enforce configured travel limits explicitly and expose travel-limit flags.
+- [x] Test that mirrored turn/load inputs mirror corner loads, and that front/rear stiffness distribution moves lateral load transfer in the expected direction without changing total load.
 
 **Done when:** all loads remain finite, physically signed and conserved across the tested range; suspension travel remains within declared mechanical limits.
 
@@ -190,11 +190,11 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/physics/forces.py`, `tests/test_forces.py`, `tests/test_longitudinal_kernel.py`.
 
-- [ ] Test contact velocity at each corner using `vx`, `vy` and yaw rate, including inside/outside wheel velocity and left/right steering signs.
-- [ ] Implement front/rear steering angles from the selected input contract and Ackermann geometry; calculate slip angle and camber consistently in the wheel frame.
-- [ ] Implement lateral Magic Formula with documented load sensitivity on `D` and `B` and configured camber response. Preserve exactly zero force for an unloaded wheel.
-- [ ] Test force sign, zero slip, camber sign, load sensitivity (non-proportional grip), left/right symmetry and finite output near zero speed.
-- [ ] Review P1's low-speed longitudinal slip regularization here. Any behavior change must have standing-start and braking regression coverage and remain labeled as a model choice.
+- [x] Test contact velocity at each corner using `vx`, `vy` and yaw rate, including inside/outside wheel velocity and left/right steering signs.
+- [x] Implement front/rear steering angles from the selected input contract and Ackermann geometry; calculate slip angle and camber consistently in the wheel frame.
+- [x] Implement lateral Magic Formula with documented load sensitivity on `D` and `B` and configured camber response. Preserve exactly zero force for an unloaded wheel.
+- [x] Test force sign, zero slip, camber sign, load sensitivity (non-proportional grip), left/right symmetry and finite output near zero speed.
+- [x] Review the low-speed longitudinal slip denominator and cover reverse speed with a regression; retain standing-start and braking coverage.
 
 **Done when:** each wheel produces a correctly signed lateral force from its local states and validated config, with no kernel state integration yet.
 
@@ -202,11 +202,11 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/physics/forces.py`, `src/f1telemetry/kernels/longitudinal.py`, `tests/test_forces.py`, `tests/test_longitudinal_kernel.py`.
 
-- [ ] Test pure longitudinal, pure lateral, mixed slip, rapid slip transitions, wheel lock/spin, zero load and force bounds for the selected similarity method.
-- [ ] Implement the documented similarity combination so the ellipse emerges from the configured tire model; do not add a post-hoc force clamp that masks invalid model parameters.
-- [ ] Add caller-owned lateral and longitudinal relaxation states per wheel, using configured relaxation lengths and the actual patch travel speed with a finite low-speed limit.
-- [ ] Integrate relaxation in the fixed 100 µs step and pin update order with a one-step expected-value test; keep all state/output allocation outside the kernel.
-- [ ] Test that at every corner and step, normalized combined force satisfies the agreed ellipse bound within a documented floating-point tolerance.
+- [x] Test pure longitudinal, pure lateral, mixed slip, rapid slip transitions, wheel lock/spin, zero load and force bounds for the selected similarity method.
+- [x] Implement the documented similarity combination so the ellipse emerges from the configured tire model; do not add a post-hoc force clamp that masks invalid model parameters.
+- [x] Add caller-owned lateral and longitudinal relaxation states per wheel, using configured relaxation lengths and the actual patch travel speed with a finite low-speed limit.
+- [x] Integrate relaxation in the fixed 100 µs step and pin update order with a one-step expected-value test; keep all state/output allocation outside the kernel.
+- [x] Test that at every corner and step, normalized combined force satisfies the ellipse bound within a documented floating-point tolerance.
 
 **Done when:** combined tire force stays bounded and transient slip response is deterministic and covered at the kernel boundary.
 
@@ -215,11 +215,11 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 **Files:** `src/f1telemetry/kernels/longitudinal.py`, `src/f1telemetry/physics/forces.py`, `tests/test_longitudinal_kernel.py`.
 
 - [x] Pin the expanded state layout and named index constants; preserve existing P1 `vx` and wheel angular-speed semantics.
-- [ ] Compute each patch's force in the wheel frame, transform to body axes, sum force and yaw moment using corner position, and integrate `vx`, `vy`, yaw rate, world position and heading.
-- [ ] Derive roll/pitch/heave from the quasi-static load/suspension solution and integrate only planar motion and yaw; calculate suspension motion without adding a multi-body linkage state.
-- [ ] Extend Python-side buffer/state/config validation for every new state column before calling the `boundscheck=False` kernel.
-- [ ] Add reference-step and determinism tests, plus zero-steer/zero-camber equivalence tests that show the P2 kernel reduces to the P1 longitudinal behavior within a stated tolerance.
-- [ ] Add a caller-owned P2 initializer for named body values, four wheel speeds and relaxation states; validate it through the same Python boundary as `simulate`.
+- [x] Compute each patch's force in the wheel frame, transform to body axes, sum force and yaw moment using corner position, and integrate planar motion, yaw rate, world position and heading.
+- [x] Derive roll/pitch/heave from the quasi-static load/suspension solution and integrate only planar motion and yaw; calculate suspension motion without adding a multi-body linkage state.
+- [x] Extend Python-side buffer/state/config validation for every new state column before calling the `boundscheck=False` kernel.
+- [x] Add reference-step and determinism tests, plus a zero-steer/zero-camber control for the symmetric P2 setup.
+- [x] Add a caller-owned P2 initializer for named body values, four wheel speeds and relaxation states; validate it through the same Python boundary as `simulate`.
 
 **Done when:** a caller-owned P2 state can complete a fixed-step run with finite values and repeatable bytes, and P1 longitudinal scenarios remain covered.
 
@@ -227,11 +227,11 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/testing/scenarios.py`, `src/f1telemetry/testing/records.py`, `tests/test_scenarios.py`, `channels.yaml` only if needed, generated outputs only if changed.
 
-- [ ] Extend `GroundTruthStep` with any missing yaw rate, roll/pitch/heave rates, yaw moment or suspension outputs needed by invariants; do not infer truth from sensor channels.
-- [ ] Record actual P2 values into the existing declared channels (`vy`, `yaw_rate`, lateral acceleration, roll, pitch, per-wheel slip angle/load/camber/travel) at their declared rates.
-- [ ] Implement deterministic `steady_state_circle` and `constant_radius_speed_sweep` inputs with named radius/speed ranges, fixed seeds/state and controlled steering. Validate scenario inputs before kernel entry.
-- [ ] Add a two-direction turn pair and a zero-steer straight-line control. Ensure the existing hand-supplied cornering fixture is not used as scenario output.
-- [ ] If a channel change is genuinely needed, update `channels.yaml`, run the existing code generator and check generated diffs; avoid duplicating a quantity already in the contract.
+- [x] Extend `GroundTruthStep` with yaw, roll/pitch/heave and suspension outputs needed by the invariants; do not infer truth from sensor channels.
+- [x] Record actual P2 values into the existing declared channels (`vy`, `yaw_rate`, lateral acceleration, roll, pitch, per-wheel slip angle/load/camber/travel) at their declared rates.
+- [x] Implement deterministic `steady_state_circle` and `constant_radius_speed_sweep` inputs with named radius/speed ranges and controlled steering; validate scenario inputs before kernel entry.
+- [x] Add a two-direction turn pair and a separate zero-steer symmetric control. The hand-supplied cornering fixture remains a fixture, not scenario output.
+- [x] Widen the signed camber channel range in `channels.yaml` and regenerate the existing contract outputs.
 
 **Done when:** the scenarios produce real four-wheel truth and sensor records, repeat byte-identically, and report achieved radius/lateral acceleration as well as commands.
 
@@ -239,14 +239,14 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 
 **Files:** `src/f1telemetry/testing/invariants.py`, `tests/test_invariants.py`, `tests/test_scenarios.py`, `docs/calibration.md`, `PHASES.md`, `tasks/todo.md`, `tests/golden/` only after output is reviewed.
 
-- [ ] Exercise invariant 2 (combined-slip bound), invariant 3 (load sum), invariant 4 (sign conventions) and invariant 5 (mirror symmetry) against simulated circle/sweep records, not only supplied fixtures.
-- [ ] Extend invariant 6 to account for P2 translational/rotational body kinetic energy and tire slip work, or explicitly retain a separately named longitudinal-only energy check; do not apply the P1 formula to P2 records unchanged.
-- [ ] Check symmetry with mirrored left/right simulations; retain the zero-steer/zero-camber case as its own control rather than weakening it to accept legitimate corner asymmetry.
-- [ ] Add suspension travel checks at the configured extremes and under maximum tested aero/load; reject silent bottoming.
-- [ ] Define and record source-backed P2 calibration conditions before coefficient tuning. Measure peak lateral g in the constant-radius sweep and compare with the 4.5–5.5 g order-of-magnitude band only as a sanity check until a defensible target is selected.
-- [ ] Sweep `roll_stiffness_front_fraction` at matched radius/ay and assert steering demand changes monotonically in the expected direction; change no other parameter during the comparison. Re-scope the separate aero-balance gate if a front/rear aero input is added later.
-- [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize; regenerate invariant/detection reports through existing harnesses only.
-- [ ] Run `just check`, record the exact result, update only exit items supported by evidence, and capture the four-corner load-transfer demo plus steering-sensitivity curve.
+- [x] Exercise invariants 2 (combined-slip bound), 3 (load sum), and 4 (sign conventions) against produced scenarios; check invariant 5 using mirrored simulations and a zero-steer control.
+- [x] Extend invariant 6 to account for P2 translational/rotational body kinetic energy and tire slip work; use signed drag consistently in fixture and scenario records.
+- [x] Check symmetry with mirrored left/right simulations; retain a zero-steer/zero-camber case as its own control.
+- [x] Check travel-limit flags through every recorded step of every scenario and every speed-sweep run.
+- [ ] Define source-backed P2 calibration conditions before tuning. Record the measured sweep; treat 4.5–5.5 g only as an order-of-magnitude sanity band.
+- [x] Sweep `roll_stiffness_front_fraction` at matched radius/ay and assert steering demand changes monotonically with other inputs fixed.
+- [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize.
+- [ ] Run the complete `just check`, record the exact result, and capture the four-corner load-transfer demo plus steering-sensitivity curve.
 
 **Done when:** all P2 exit gates in `PHASES.md` pass on real simulation output, target and assumptions are recorded, `just check` is green, and tag/demo criteria are reviewable.
 

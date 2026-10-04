@@ -171,11 +171,14 @@ def test_invariant_5_left_right_symmetry(straight: SampleRecord, spec: CarSpec) 
     assert rl.fz_n == rr.fz_n
     assert fl.fz_n < rl.fz_n, "acceleration must load the rear axle"
 
+    cornering_input = with_step(straight, 0, steer_rad=math.radians(5.0))
+    assert _result(5, cornering_input, spec).passed, "the mirror check applies only at zero steer"
+
 
 def test_invariant_6_energy_balance(
     straight: SampleRecord, cornering: SampleRecord, spec: CarSpec
 ) -> None:
-    """d(KE)/dt = ICE + MGU-K - drag, residual under 1%. Backed from P1."""
+    """d(KE)/dt = ICE + MGU-K + signed drag power, residual under 1%. Backed from P1."""
     for record in (straight, cornering):
         result = _result(6, record, spec)
         assert result.passed, result.summary()
@@ -185,7 +188,7 @@ def test_invariant_6_energy_balance(
 
     step = straight.ground_truth[0]
     kinetic = spec.mass_kg * (step.vx_m_s * step.ax_m_s2 + step.vy_m_s * step.ay_m_s2)
-    supplied = step.ice_power_w + step.mgu_k_power_w - step.drag_w
+    supplied = step.ice_power_w + step.mgu_k_power_w + step.drag_w
     assert kinetic > 0.0
     assert abs(supplied - kinetic) / abs(kinetic) < 0.01
 
@@ -289,13 +292,12 @@ def test_every_mutation_is_detected_by_exactly_its_invariant(spec: CarSpec) -> N
         assert not target.passed, f"mutation {number} went unnoticed"
 
 
-def test_cornering_record_does_not_satisfy_the_symmetry_invariant(
+def test_cornering_record_is_outside_the_zero_steer_symmetry_check(
     cornering: SampleRecord, spec: CarSpec
 ) -> None:
-    """Invariant 5 must not pass on a cornering record: that would make it vacuous."""
+    """Invariant 5 checks left/right symmetry only when the driver requests zero steer."""
     result = _result(5, cornering, spec)
-    assert not result.passed, "the symmetry check accepted lateral motion"
-    assert result.violations
+    assert result.passed, "a valid cornering record is not a zero-steer symmetry case"
 
 
 def test_checkers_never_raise_on_absurd_input(straight: SampleRecord, spec: CarSpec) -> None:

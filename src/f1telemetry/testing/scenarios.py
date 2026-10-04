@@ -111,6 +111,7 @@ from f1telemetry.physics import (  # noqa: TID251 -- and the models
     forces,
     gearbox,
     powertrain,
+    tyres,
 )
 from f1telemetry.testing.records import (
     CORNERS,
@@ -126,12 +127,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CONTROL_STEPS",
     "LAUNCH_ICE_RPM",
-    "PHASE_ONE_INVARIANTS",
     "DrivetrainTrace",
     "Scenario",
     "ScenarioRun",
     "ScenarioSegment",
     "build_scenarios",
+    "run_constant_radius_speed_sweep",
     "run_scenario",
     "scenario",
 ]
@@ -155,9 +156,6 @@ LAUNCH_ICE_RPM: Final[float] = 12_000.0
 # buffer over one step is therefore an MJ/s rate, and it has to be converted before it can be
 # compared with anything the regulation states.
 _J_PER_MJ: Final[float] = 1.0e6
-
-# All eight checks run against each produced Phase 1 scenario record.
-PHASE_ONE_INVARIANTS: Final[tuple[int, ...]] = (1, 2, 3, 4, 5, 6, 7, 8)
 
 _UNIT_BRAKE: Final[tuple[float, ...]] = (1.0, 1.0, 1.0, 1.0)
 _REQUEST_CODES: Final[frozenset[int]] = frozenset(int(member) for member in gearbox.GearRequest)
@@ -192,11 +190,12 @@ class ScenarioSegment:
     grid_standing_start: bool = False
     overtake: bool = False
     ice_rpm_initial: float | None = None
+    steer_wheel_deg: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
-    """A named straight-line run from fixed initial conditions.
+    """A named run from fixed initial conditions.
 
     ``initial_gear`` seeds the gearbox buffer, and a rolling start seeds every wheel at the speed
     that would roll without slip, so a rolling scenario does not start with a locked axle.
@@ -219,8 +218,9 @@ class DrivetrainTrace:
     """What the drivetrain was asked and what it did, at the recorded rate.
 
     Arrays rather than objects so a check can read a whole stretch of a run without a Python loop
-    over it, and so a repeat run can be compared byte for byte. ``accel_m_s2`` is the chassis
-    acceleration the kernel produced, which ``GroundTruthStep`` does not carry. ``ice_power_w``
+    over it, and so a repeat run can be compared byte for byte. ``accel_m_s2`` is the body-frame
+    longitudinal acceleration read from the kernel trace, matching ``GroundTruthStep.ax_m_s2``.
+    ``ice_power_w``
     is the ICE's gross crankshaft shaft power - upstream of the clutch by declaration, see the
     module docstring - while ``drive_torque_nm`` is the post-clutch driveline torque, so the
     power the clutch actually transmits is that torque against wheel speed.
@@ -263,6 +263,7 @@ class ScenarioRun:
     drivetrain: DrivetrainTrace
     record: SampleRecord
     step_outputs: longitudinal.StepOutputs
+    steer_wheel_deg: np.ndarray
 
     @property
     def record_dt_s(self) -> float:
@@ -288,7 +289,23 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
     brake_nm = -_rear_wheel_torque_nm(config)
     mgu_k_nm = config.mgu_k_torque_limit_nm / config.mgu_k_crankshaft_ratio
     top_gear = int(config.gear_ratios.size)
+    circle_speed_m_s = 20.0
+    circle_radius_m = 50.0
+    circle_steer_wheel_deg = (
+        math.degrees(math.atan(config.wheelbase_m / circle_radius_m)) * config.steering_ratio
+    )
     built = (
+        Scenario(
+            name="steady_state_circle",
+            initial_speed_m_s=circle_speed_m_s,
+            initial_gear=0,
+            description=(
+                "Neutral 20 m/s left-hand circle using the no-slip steering angle for a 50 m "
+                "radius. The short fixed-input run exposes settling, yaw response, lateral load "
+                "transfer and all four suspension outputs."
+            ),
+            segments=(ScenarioSegment(1.0, steer_wheel_deg=circle_steer_wheel_deg),),
+        ),
         Scenario(
             name="standing_launch",
             initial_speed_m_s=0.0,
@@ -481,6 +498,7 @@ def run_scenario(
 
     trace = np.zeros((total + 1, longitudinal.STATE_SIZE), dtype=np.float64)
     step_outputs = longitudinal.allocate_step_outputs(total)
+    steer_history = np.zeros(total, dtype=np.float64)
     drive = np.zeros(total, dtype=np.float64)
     brake_torque = np.zeros((total, forces.WHEEL_COUNT), dtype=np.float64)
     rpm = np.zeros(total, dtype=np.float64)
@@ -504,6 +522,7 @@ def run_scenario(
     row = 0
     mgu_k_cap_w = config.mgu_k_peak_power_kw * 1_000.0
     for segment, count in zip(plan.segments, counts, strict=True):
+        steer_history[row : row + count] = segment.steer_wheel_deg
         if segment.ice_rpm_initial is not None:
             engine_rpm = float(segment.ice_rpm_initial)
         gear_state[gearbox.CLUTCH_INDEX] = segment.clutch
@@ -586,6 +605,7 @@ def run_scenario(
                 longitudinal.allocate(control_steps),
                 brake[interval : interval + control_steps],
                 step_outputs=_step_output_view(step_outputs, interval_start, control_steps),
+                steer_wheel_deg=steer_history[interval_start : interval_start + control_steps],
             )
             trace[interval_start + 1 : interval_start + control_steps + 1] = out[1:]
             state = out[control_steps].copy()
@@ -601,7 +621,7 @@ def run_scenario(
                 engine_rpm = _wheel_coupled_ice_rpm(config, state, gear_state)
         row += count
 
-    accel = np.concatenate((np.diff(trace[:, longitudinal.V_INDEX]) / config.dt_s, np.zeros(1)))
+    accel = trace[:, longitudinal.PREVIOUS_AX_INDEX].copy()
     recorded = _held(rpm, control_steps, total).size
     drivetrain = DrivetrainTrace(
         gear=_held(gear, control_steps, total),
@@ -632,10 +652,74 @@ def run_scenario(
         brake_torque_nm=brake_torque,
         drivetrain=drivetrain,
         record=_build_record(
-            plan, config, trace, drivetrain, drive, brake_torque, control_steps, step_outputs
+            plan,
+            config,
+            trace,
+            drivetrain,
+            drive,
+            brake_torque,
+            control_steps,
+            step_outputs,
+            steer_history,
         ),
         step_outputs=step_outputs,
+        steer_wheel_deg=steer_history,
     )
+
+
+def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, ...]:
+    """Run neutral circles at increasing speed, adjusting steering to hold a 200 m radius.
+
+    Each point is a separate 0.5 s fixed-input run. A bisection over steering demand matches the
+    mean measured radius in the final 150 ms, so this sweep reports the grip available at a fixed
+    path radius instead of conflating it with a fixed steering command.
+    """
+    radius_m = 200.0
+    duration_s = 0.5
+    speed_points_m_s = (40.0, 50.0, 60.0, 70.0, 80.0, 95.0, 115.0)
+    geometric_steer_deg = math.degrees(math.atan(config.wheelbase_m / radius_m)) * (
+        config.steering_ratio
+    )
+    runs: list[ScenarioRun] = []
+    for speed_m_s in speed_points_m_s:
+        lower_deg = 0.0
+        upper_deg = min(3.0 * geometric_steer_deg, config.max_steering_wheel_angle_deg)
+        for _ in range(9):
+            steer_deg = 0.5 * (lower_deg + upper_deg)
+            candidate = Scenario(
+                name=f"constant_radius_speed_sweep_{speed_m_s:g}",
+                initial_speed_m_s=speed_m_s,
+                initial_gear=0,
+                description=(
+                    f"Neutral speed sweep point targeting a {radius_m:g} m radius at "
+                    f"{speed_m_s:g} m/s; steering is adjusted to match measured radius."
+                ),
+                segments=(ScenarioSegment(duration_s, steer_wheel_deg=steer_deg),),
+            )
+            result = run_scenario(config, candidate)
+            tail = result.record.ground_truth[-15:]
+            mean_speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(
+                tail
+            )
+            mean_yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
+            measured_radius = math.inf if mean_yaw_rate <= 0.0 else mean_speed / mean_yaw_rate
+            if measured_radius > radius_m:
+                lower_deg = steer_deg
+            else:
+                upper_deg = steer_deg
+        final_steer_deg = 0.5 * (lower_deg + upper_deg)
+        final_plan = Scenario(
+            name=f"constant_radius_speed_sweep_{speed_m_s:g}",
+            initial_speed_m_s=speed_m_s,
+            initial_gear=0,
+            description=(
+                f"Neutral speed sweep point targeting a {radius_m:g} m radius at "
+                f"{speed_m_s:g} m/s; steering is adjusted to match measured radius."
+            ),
+            segments=(ScenarioSegment(duration_s, steer_wheel_deg=final_steer_deg),),
+        )
+        runs.append(run_scenario(config, final_plan))
+    return tuple(runs)
 
 
 def _step_output_view(
@@ -651,6 +735,11 @@ def _step_output_view(
     return longitudinal.StepOutputs(
         load_n=step_outputs.load_n[start:stop],
         force_x_n=step_outputs.force_x_n[start:stop],
+        force_y_n=step_outputs.force_y_n[start:stop],
+        slip_work_j=step_outputs.slip_work_j[start:stop],
+        slip_ratio=step_outputs.slip_ratio[start:stop],
+        slip_angle_deg=step_outputs.slip_angle_deg[start:stop],
+        camber_deg=step_outputs.camber_deg[start:stop],
         travel_m=step_outputs.travel_m[start:stop],
         travel_limited=step_outputs.travel_limited[start:stop],
     )
@@ -705,19 +794,17 @@ def _build_record(
     brake_torque_nm: np.ndarray,
     control_steps: int,
     step_outputs: longitudinal.StepOutputs,
+    steer_history: np.ndarray,
 ) -> SampleRecord:
     """Assemble the :class:`SampleRecord` a scenario produces, decimated to the recorded rate.
 
     The per-corner loads, longitudinal tyre forces, suspension travels and travel-limit
     flags are the values the kernel actually applied, read from ``step_outputs`` at the row
-    of the step that starts at each recorded trace row - so the record agrees with the run
-    rather than describing a second, slightly different set of numbers. ``slip_ratio``
-    shares that row's state. ``vy``, ``ay``, ``az``, ``steer_rad``, ``alpha_rad``,
-    ``fy_n`` and ``camber_deg`` are exactly zero: this slice has no lateral or vertical
-    dynamics to report, and a fabricated value for any of them would make the record claim
-    something the model did not compute.
+    of the step that starts at each recorded trace row. Planar state and yaw are read from
+    the trace; suspension remains quasi-static, so vertical acceleration is zero.
     """
     values = forces.validated_config_scalars(config, "scenarios")
+    lateral = tyres.validated_lateral_scalars(config, "scenarios")
     steps: list[GroundTruthStep] = []
     frames: list[SensorFrame] = []
     # No kernel step starts at the terminal trace row, so it carries the outputs of the
@@ -726,7 +813,10 @@ def _build_record(
     for index in range(len(drivetrain.gear)):
         row = index * control_steps
         step_row = row if row < step_outputs.load_n.shape[0] else last_step_row
-        speed = float(trace[row, longitudinal.V_INDEX])
+        input_row = min(row, steer_history.shape[0] - 1)
+        vx = float(trace[row, longitudinal.V_INDEX])
+        vy = float(trace[row, longitudinal.VY_INDEX])
+        speed = math.hypot(vx, vy)
         downforce_n, drag_n = forces.aero_forces(
             speed,
             values["air_density_kg_m3"],
@@ -737,21 +827,36 @@ def _build_record(
         )
         wheels: list[WheelTruth] = []
         for wheel in range(forces.WHEEL_COUNT):
-            omega = float(trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel])
-            kappa = forces.slip_ratio(
-                omega * values["rolling_radius_m"],
-                speed,
-                values["slip_ratio_min_speed_m_s"],
-            )
+            fz_n = float(step_outputs.load_n[step_row, wheel])
+            tyre_camber_deg = float(step_outputs.camber_deg[step_row, wheel])
             wheels.append(
                 WheelTruth(
-                    fz_n=float(step_outputs.load_n[step_row, wheel]),
+                    fz_n=fz_n,
                     fx_n=float(step_outputs.force_x_n[step_row, wheel]),
-                    fy_n=0.0,
+                    fy_n=float(step_outputs.force_y_n[step_row, wheel]),
                     mu=values["pacejka_mu"],
-                    kappa=kappa,
-                    alpha_rad=0.0,
-                    camber_deg=0.0,
+                    mu_lateral=tyres.lateral_peak_friction(
+                        fz_n,
+                        lateral["lateral_pacejka_mu"],
+                        lateral["load_sensitivity_reference_n"],
+                        lateral["load_sensitivity_peak"],
+                    ),
+                    kappa=float(step_outputs.slip_ratio[step_row, wheel]),
+                    alpha_rad=math.radians(float(step_outputs.slip_angle_deg[step_row, wheel])),
+                    camber_deg=tyre_camber_deg,
+                    effective_alpha_rad=math.radians(
+                        float(step_outputs.slip_angle_deg[step_row, wheel])
+                        + tyres.camber_equivalent_slip_deg(
+                            tyre_camber_deg,
+                            lateral["camber_stiffness_n_per_deg"],
+                            tyres.reference_cornering_stiffness_n_per_deg(
+                                lateral["lateral_pacejka_mu"],
+                                lateral["lateral_pacejka_b"],
+                                lateral["lateral_pacejka_c"],
+                                lateral["load_sensitivity_reference_n"],
+                            ),
+                        )
+                    ),
                 )
             )
         suspension_travel_m = (
@@ -766,13 +871,14 @@ def _build_record(
             bool(step_outputs.travel_limited[step_row, 2]),
             bool(step_outputs.travel_limited[step_row, 3]),
         )
-        accel = float(drivetrain.accel_m_s2[index])
+        accel = float(trace[row, longitudinal.PREVIOUS_AX_INDEX])
+        ay = float(trace[row, longitudinal.PREVIOUS_AY_INDEX])
         step = GroundTruthStep(
             t_s=index * config.dt_s * control_steps,
-            vx_m_s=speed,
-            vy_m_s=0.0,
+            vx_m_s=vx,
+            vy_m_s=vy,
             ax_m_s2=accel,
-            ay_m_s2=0.0,
+            ay_m_s2=ay,
             az_m_s2=0.0,
             gear=int(drivetrain.gear[index]),
             clutch=float(drivetrain.clutch[index]),
@@ -781,7 +887,7 @@ def _build_record(
             mgu_k_power_w=float(drivetrain.mgu_k_power_w[index]),
             drag_w=drag_n * speed,
             downforce_n=downforce_n,
-            steer_rad=0.0,
+            steer_rad=math.radians(float(steer_history[input_row])),
             energy_residual_fraction=_energy_residual_fraction(
                 trace,
                 drive_torque_nm,
@@ -793,6 +899,10 @@ def _build_record(
                 step_outputs,
             ),
             wheels=(wheels[0], wheels[1], wheels[2], wheels[3]),
+            yaw_rate_rad_s=float(trace[row, longitudinal.YAW_RATE_INDEX]),
+            roll_rad=float(trace[row, longitudinal.ROLL_INDEX]),
+            pitch_rad=float(trace[row, longitudinal.PITCH_INDEX]),
+            heave_m=float(trace[row, longitudinal.HEAVE_INDEX]),
             suspension_travel_m=suspension_travel_m,
             travel_limited=travel_limited,
         )
@@ -858,7 +968,17 @@ def _energy_residual_fraction(
     kinetic_change = (
         0.5
         * config.mass_kg
-        * (final[longitudinal.V_INDEX] ** 2 - initial[longitudinal.V_INDEX] ** 2)
+        * (
+            final[longitudinal.V_INDEX] ** 2
+            + final[longitudinal.VY_INDEX] ** 2
+            - initial[longitudinal.V_INDEX] ** 2
+            - initial[longitudinal.VY_INDEX] ** 2
+        )
+    )
+    kinetic_change += (
+        0.5
+        * config.yaw_inertia_kg_m2
+        * (final[longitudinal.YAW_RATE_INDEX] ** 2 - initial[longitudinal.YAW_RATE_INDEX] ** 2)
     )
     inertia = values["wheel_inertia_kg_m2"]
     kinetic_change += (
@@ -873,9 +993,11 @@ def _energy_residual_fraction(
     for index in range(start, start + count):
         before = trace[index]
         after = trace[index + 1]
-        speed_mid = 0.5 * (before[longitudinal.V_INDEX] + after[longitudinal.V_INDEX])
+        speed_mid = 0.5 * math.hypot(
+            before[longitudinal.V_INDEX], before[longitudinal.VY_INDEX]
+        ) + 0.5 * math.hypot(after[longitudinal.V_INDEX], after[longitudinal.VY_INDEX])
         _downforce_n, drag_n = forces.aero_forces(
-            float(before[longitudinal.V_INDEX]),
+            float(math.hypot(before[longitudinal.V_INDEX], before[longitudinal.VY_INDEX])),
             values["air_density_kg_m3"],
             values["reference_area_m2"],
             config.aero_speed_m_s,
@@ -894,11 +1016,7 @@ def _energy_residual_fraction(
                 * omega_mid
                 * dt_s
             )
-            tyre_slip_work += (
-                float(step_outputs.force_x_n[index, wheel])
-                * (omega_mid * values["rolling_radius_m"] - speed_mid)
-                * dt_s
-            )
+            tyre_slip_work += float(step_outputs.slip_work_j[index, wheel])
     accounted_work = torque_work + drag_work - tyre_slip_work
     scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
     return abs(kinetic_change - accounted_work) / scale
@@ -920,10 +1038,15 @@ def _frame_values(
     angles, temperatures, boost pressure - are absent rather than published as zeros, because a
     published zero is a claim that the sensor read zero.
     """
-    return {
-        "speed": step.vx_m_s * 3.6,
+    values = {
+        "speed": math.hypot(step.vx_m_s, step.vy_m_s) * 3.6,
         "vx": step.vx_m_s,
+        "vy": step.vy_m_s,
+        "yaw_rate": math.degrees(step.yaw_rate_rad_s),
+        "accel_lateral": step.ay_m_s2,
         "accel_longitudinal": step.ax_m_s2,
+        "roll": math.degrees(step.roll_rad),
+        "pitch": math.degrees(step.pitch_rad),
         "ice_rpm": float(drivetrain.ice_rpm[index]),
         "ice_torque_nm": float(drivetrain.ice_torque_nm[index]),
         "mgu_k_rpm": float(drivetrain.ice_rpm[index]) * config.mgu_k_crankshaft_ratio,
@@ -932,9 +1055,10 @@ def _frame_values(
         "throttle_pct": step.throttle_pct,
         "clutch_pct": step.clutch * 100.0,
         "downforce_n": step.downforce_n,
+        "steering_angle": math.degrees(step.steer_rad),
         **{
-            f"wheel_speed_{corner.lower()}": float(
-                trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel]
+            f"wheel_speed_{corner.lower()}": abs(
+                float(trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel])
             )
             * config.rolling_radius_m
             * 3.6
@@ -945,10 +1069,23 @@ def _frame_values(
             for wheel, corner in enumerate(CORNERS)
         },
         **{
+            f"slip_angle_{corner.lower()}": math.degrees(wheels[wheel].alpha_rad)
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
             f"vertical_load_{corner.lower()}": wheels[wheel].fz_n
             for wheel, corner in enumerate(CORNERS)
         },
+        **{
+            f"camber_{corner.lower()}": wheels[wheel].camber_deg
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
+            f"suspension_travel_{corner.lower()}": step.suspension_travel_m[wheel] * 1_000.0
+            for wheel, corner in enumerate(CORNERS)
+        },
     }
+    return values
 
 
 def _rear_wheel_torque_nm(config: KernelConfig) -> float:
@@ -1051,6 +1188,16 @@ def _checked_segment(
         if not 0.0 <= pedal <= 1.0:
             msg = f"{label}: throttle and clutch must be in [0, 1], got {pedal!r}"
             raise ValueError(msg)
+    steer = segment.steer_wheel_deg
+    if isinstance(steer, bool) or not isinstance(steer, (int, float)) or not math.isfinite(steer):
+        msg = f"{label}: steer_wheel_deg must be a finite number, got {steer!r}"
+        raise ValueError(msg)
+    if abs(steer) > config.max_steering_wheel_angle_deg:
+        msg = (
+            f"{label}: steer_wheel_deg magnitude {abs(steer)!r} exceeds configured limit "
+            f"{config.max_steering_wheel_angle_deg!r}"
+        )
+        raise ValueError(msg)
     if isinstance(segment.request, bool) or not isinstance(
         segment.request, (gearbox.GearRequest, int)
     ):

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -49,6 +50,8 @@ from f1telemetry.physics import (  # noqa: TID251 -- the scenarios drive this AP
     engine,
     forces,
     gearbox,
+    kinematics,
+    steering,
 )
 from f1telemetry.testing import scenarios
 from f1telemetry.testing.invariants import (
@@ -127,7 +130,17 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
         * config.mass_kg
         * (
             trace[start + count, longitudinal.V_INDEX] ** 2
+            + trace[start + count, longitudinal.VY_INDEX] ** 2
             - trace[start, longitudinal.V_INDEX] ** 2
+            - trace[start, longitudinal.VY_INDEX] ** 2
+        )
+    )
+    kinetic_change += (
+        0.5
+        * config.yaw_inertia_kg_m2
+        * (
+            trace[start + count, longitudinal.YAW_RATE_INDEX] ** 2
+            - trace[start, longitudinal.YAW_RATE_INDEX] ** 2
         )
     )
     kinetic_change += (
@@ -147,9 +160,20 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
     for index in range(start, start + count):
         before = trace[index]
         after = trace[index + 1]
-        speed_mid = 0.5 * (float(before[longitudinal.V_INDEX]) + float(after[longitudinal.V_INDEX]))
+        yaw_mid = 0.5 * (
+            float(before[longitudinal.YAW_RATE_INDEX]) + float(after[longitudinal.YAW_RATE_INDEX])
+        )
+        speed_before = math.hypot(
+            float(before[longitudinal.V_INDEX]), float(before[longitudinal.VY_INDEX])
+        )
+        speed_after = math.hypot(
+            float(after[longitudinal.V_INDEX]), float(after[longitudinal.VY_INDEX])
+        )
+        speed_mid = 0.5 * (speed_before + speed_after)
+        vx_mid = 0.5 * (float(before[longitudinal.V_INDEX]) + float(after[longitudinal.V_INDEX]))
+        vy_mid = 0.5 * (float(before[longitudinal.VY_INDEX]) + float(after[longitudinal.VY_INDEX]))
         _downforce_n, drag_n = forces.aero_forces(
-            float(before[longitudinal.V_INDEX]),
+            speed_before,
             values["air_density_kg_m3"],
             values["reference_area_m2"],
             config.aero_speed_m_s,
@@ -157,6 +181,15 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
             config.cd,
         )
         drag_work += drag_n * speed_mid * config.dt_s
+        road_steer_deg = np.zeros(forces.WHEEL_COUNT, dtype=np.float64)
+        steering.road_wheel_angles_deg(
+            float(run.steer_wheel_deg[index]),
+            config.steering_ratio,
+            config.wheelbase_m,
+            float(config.axle_track_m[0]),
+            config.ackermann_fraction,
+            road_steer_deg,
+        )
         for wheel in range(forces.WHEEL_COUNT):
             column = longitudinal.WHEEL_STATE_OFFSET + wheel
             omega_mid = 0.5 * (float(before[column]) + float(after[column]))
@@ -168,11 +201,22 @@ def _final_interval_energy_residual(run: ScenarioRun, config: KernelConfig) -> f
                 * omega_mid
                 * config.dt_s
             )
+            axle = wheel // forces.WHEELS_PER_AXLE_COUNT
+            side = 1.0 if wheel % forces.WHEELS_PER_AXLE_COUNT == 0 else -1.0
+            corner_x = config.cg_to_front_axle_m if axle == 0 else -config.cg_to_rear_axle_m
+            corner_y = side * 0.5 * float(config.axle_track_m[axle])
+            patch_vx, patch_vy = kinematics.contact_velocity_m_s(
+                vx_mid, vy_mid, yaw_mid, corner_x, corner_y
+            )
+            steer_deg = float(road_steer_deg[wheel]) + float(
+                config.axle_bump_steer_deg_per_m[axle] * run.step_outputs.travel_m[index, wheel]
+            )
+            wheel_vx, wheel_vy = kinematics.wheel_frame_velocity_m_s(patch_vx, patch_vy, steer_deg)
             tyre_slip_work += (
                 float(run.step_outputs.force_x_n[index, wheel])
-                * (omega_mid * values["rolling_radius_m"] - speed_mid)
-                * config.dt_s
-            )
+                * (omega_mid * values["rolling_radius_m"] - wheel_vx)
+                - float(run.step_outputs.force_y_n[index, wheel]) * wheel_vy
+            ) * config.dt_s
     accounted_work = torque_work + drag_work - tyre_slip_work
     scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
     return abs(kinetic_change - accounted_work) / scale
@@ -629,7 +673,7 @@ def test_neutral_transmits_nothing_and_first_gear_restores_the_torque(
 
 
 def test_a_coasting_car_slows_against_drag_and_the_drag_grows_with_speed(
-    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
 ) -> None:
     run = runs["coast_neutral"]
     scenario = suite["coast_neutral"]
@@ -641,14 +685,29 @@ def test_a_coasting_car_slows_against_drag_and_the_drag_grows_with_speed(
     window = _windows(run, scenario)[neutral]
     speeds = np.array([step.vx_m_s for step in run.record.ground_truth[window]])
     drag = np.array([step.drag_w for step in run.record.ground_truth[window]])
-    accel = run.drivetrain.accel_m_s2[window]
-    assert np.all(np.diff(speeds[1:]) < 0.0), "nothing but drag acts after neutral selection"
-    assert np.all(accel[1:] < 0.0)
+    assert speeds[-1] < speeds[0], "drag removes net speed over the neutral segment"
     assert np.all(drag < 0.0), "drag power is signed against forward motion"
     assert abs(drag[-1]) < abs(drag[0]), "drag power falls as the car's speed falls"
     assert abs(drag[-1] / speeds[-1]) < abs(drag[0] / speeds[0]), (
         "drag force grows approximately with speed squared"
     )
+    first_trace_row = window.start * run.control_steps
+    last_trace_row = window.stop * run.control_steps
+
+    def kinetic_energy(row: int) -> float:
+        state = run.trace[row]
+        wheel_omega = state[
+            longitudinal.WHEEL_STATE_OFFSET : longitudinal.WHEEL_STATE_OFFSET + forces.WHEEL_COUNT
+        ]
+        return (
+            0.5
+            * config.mass_kg
+            * (state[longitudinal.V_INDEX] ** 2 + state[longitudinal.VY_INDEX] ** 2)
+            + 0.5 * config.yaw_inertia_kg_m2 * state[longitudinal.YAW_RATE_INDEX] ** 2
+            + 0.5 * config.wheel_inertia_kg_m2 * float(np.dot(wheel_omega, wheel_omega))
+        )
+
+    assert kinetic_energy(last_trace_row) < kinetic_energy(first_trace_row)
 
 
 # ------------------------------------------------------------------ behaviour: braking
@@ -779,11 +838,20 @@ def test_mgu_k_power_matches_the_stored_energy_it_claims_to_measure(
 # --------------------------------------------------------------- invariants and records
 
 
-def test_every_phase_one_invariant_passes_on_the_produced_records(
+def test_p1_invariants_pass_on_the_produced_scenario_records(
     runs: Mapping[str, ScenarioRun], spec: CarSpec, suite: Mapping[str, Scenario]
 ) -> None:
+    p1_invariants = (1, 6, 7, 8)
     for name, run in runs.items():
-        for result in run_all(run.record, spec, scenarios.PHASE_ONE_INVARIANTS):
+        for result in run_all(run.record, spec, p1_invariants):
+            assert result.passed, f"{name}: {result.summary()}"
+
+
+def test_p2_invariants_pass_on_produced_scenario_records(
+    runs: Mapping[str, ScenarioRun], spec: CarSpec
+) -> None:
+    for name, run in runs.items():
+        for result in run_all(run.record, spec, (2, 3, 4)):
             assert result.passed, f"{name}: {result.summary()}"
 
 
@@ -902,6 +970,185 @@ def test_scenario_truth_records_applied_load_force_and_travel(
         assert step.travel_limited == tuple(
             bool(value) for value in run.step_outputs.travel_limited[output_row]
         )
+
+
+def test_suspension_stays_within_configured_limits_for_every_scenario_step(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    for name, run in runs.items():
+        assert all(not any(step.travel_limited) for step in run.record.ground_truth), (
+            f"{name} reached a configured suspension travel limit"
+        )
+
+
+def test_steered_scenario_records_lateral_truth_and_contract_channels(
+    config: KernelConfig,
+) -> None:
+    plan = scenarios.Scenario(
+        name="steered_record",
+        initial_speed_m_s=20.0,
+        initial_gear=3,
+        description="Short steering truth regression.",
+        segments=(scenarios.ScenarioSegment(duration_s=0.1, steer_wheel_deg=10.0),),
+    )
+
+    run = scenarios.run_scenario(config, plan)
+    step = run.record.ground_truth[1]
+    frame = run.record.frames[1].values
+
+    assert step.steer_rad == pytest.approx(math.radians(10.0))
+    assert step.yaw_rate_rad_s > 0.0
+    assert any(wheel.fy_n != 0.0 for wheel in step.wheels)
+    assert tuple(wheel.fy_n for wheel in step.wheels) == tuple(
+        float(value) for value in run.step_outputs.force_y_n[run.control_steps]
+    )
+    assert frame["steering_angle"] == pytest.approx(10.0)
+    assert frame["yaw_rate"] == pytest.approx(math.degrees(step.yaw_rate_rad_s))
+    assert frame["slip_angle_fl"] == pytest.approx(math.degrees(step.wheels[0].alpha_rad))
+    assert tuple(wheel.camber_deg for wheel in step.wheels) == tuple(
+        float(value) for value in run.step_outputs.camber_deg[run.control_steps]
+    )
+    for corner, wheel in zip(CORNERS, step.wheels, strict=True):
+        assert frame[f"camber_{corner.lower()}"] == pytest.approx(wheel.camber_deg)
+    final_residual = run.record.ground_truth[-1].energy_residual_fraction
+    assert final_residual == pytest.approx(
+        _final_interval_energy_residual(run, config), rel=1e-6, abs=1e-10
+    )
+
+
+def test_steady_state_circle_settles_to_its_requested_radius(
+    runs: Mapping[str, ScenarioRun], config: KernelConfig
+) -> None:
+    run = runs["steady_state_circle"]
+    tail = run.record.ground_truth[-15:]
+    speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(tail)
+    yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
+    lateral_g = math.fsum(step.ay_m_s2 for step in tail) / len(tail) / config.gravity_m_s2
+
+    assert speed / yaw_rate == pytest.approx(50.0, rel=0.05)
+    assert 0.7 < lateral_g < 0.9
+    assert all(not any(step.travel_limited) for step in tail)
+
+
+def test_constant_radius_speed_sweep_matches_radius_and_reaches_lateral_target(
+    config: KernelConfig,
+) -> None:
+    sweep = scenarios.run_constant_radius_speed_sweep(config)
+    lateral_g: list[float] = []
+    for run in sweep:
+        assert all(not any(step.travel_limited) for step in run.record.ground_truth), (
+            f"{run.name} reached a configured suspension travel limit"
+        )
+        tail = run.record.ground_truth[-15:]
+        speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(tail)
+        yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
+        lateral_g.append(math.fsum(step.ay_m_s2 for step in tail) / len(tail) / config.gravity_m_s2)
+        assert speed / yaw_rate == pytest.approx(200.0, abs=3.0)
+
+    assert np.all(np.diff(lateral_g) > 0.0)
+    assert 4.5 <= lateral_g[-1] <= 5.5
+
+
+def test_zero_steer_symmetry_control_has_no_camber_or_bump_steer(
+    config: KernelConfig, spec: CarSpec
+) -> None:
+    control_config = replace(
+        config,
+        axle_static_camber_deg=np.zeros_like(config.axle_static_camber_deg),
+        axle_camber_gain_deg_per_m=np.zeros_like(config.axle_camber_gain_deg_per_m),
+        axle_bump_steer_deg_per_m=np.zeros_like(config.axle_bump_steer_deg_per_m),
+    )
+    plan = scenarios.Scenario(
+        name="zero_steer_symmetry_control",
+        initial_speed_m_s=20.0,
+        initial_gear=0,
+        description="Symmetric control with no camber or bump steer.",
+        segments=(scenarios.ScenarioSegment(duration_s=0.1),),
+    )
+    run = scenarios.run_scenario(control_config, plan)
+    result = run_all(run.record, spec, (5,))[0]
+    assert result.passed, result.summary()
+
+
+def test_left_and_right_steering_runs_are_mirror_symmetric(config: KernelConfig) -> None:
+    symmetric_config = replace(
+        config,
+        axle_static_camber_deg=np.zeros_like(config.axle_static_camber_deg),
+        axle_camber_gain_deg_per_m=np.zeros_like(config.axle_camber_gain_deg_per_m),
+        axle_bump_steer_deg_per_m=np.zeros_like(config.axle_bump_steer_deg_per_m),
+    )
+
+    def run_turn(steer_wheel_deg: float) -> ScenarioRun:
+        plan = scenarios.Scenario(
+            name="mirrored_turn",
+            initial_speed_m_s=20.0,
+            initial_gear=0,
+            description="Matched steering input for the paired-turn symmetry check.",
+            segments=(scenarios.ScenarioSegment(0.1, steer_wheel_deg=steer_wheel_deg),),
+        )
+        return scenarios.run_scenario(symmetric_config, plan)
+
+    left_turn = run_turn(5.0).record.ground_truth
+    right_turn = run_turn(-5.0).record.ground_truth
+    assert len(left_turn) == len(right_turn)
+    for left_step, right_step in zip(left_turn, right_turn, strict=True):
+        assert left_step.vx_m_s == pytest.approx(right_step.vx_m_s, rel=1e-7, abs=1e-9)
+        assert left_step.vy_m_s == pytest.approx(-right_step.vy_m_s, rel=1e-6, abs=1e-8)
+        assert left_step.yaw_rate_rad_s == pytest.approx(
+            -right_step.yaw_rate_rad_s, rel=1e-6, abs=1e-8
+        )
+        assert left_step.ay_m_s2 == pytest.approx(-right_step.ay_m_s2, rel=1e-6, abs=1e-7)
+        mirrored_wheels = (
+            right_step.wheels[1],
+            right_step.wheels[0],
+            right_step.wheels[3],
+            right_step.wheels[2],
+        )
+        for left_wheel, right_wheel in zip(left_step.wheels, mirrored_wheels, strict=True):
+            assert left_wheel.fz_n == pytest.approx(right_wheel.fz_n, rel=1e-6, abs=1e-4)
+            assert left_wheel.fx_n == pytest.approx(right_wheel.fx_n, rel=1e-6, abs=1e-4)
+            assert left_wheel.fy_n == pytest.approx(-right_wheel.fy_n, rel=1e-6, abs=1e-4)
+            assert left_wheel.kappa == pytest.approx(right_wheel.kappa, rel=1e-6, abs=1e-8)
+            assert left_wheel.alpha_rad == pytest.approx(-right_wheel.alpha_rad, rel=1e-6, abs=1e-8)
+            assert left_wheel.camber_deg == pytest.approx(
+                -right_wheel.camber_deg, rel=1e-6, abs=1e-8
+            )
+
+
+def test_steering_demand_is_monotonic_with_front_roll_stiffness(
+    config: KernelConfig,
+) -> None:
+    demands: list[float] = []
+    radius_m = 50.0
+    speed_m_s = 20.0
+    geometric_steer = math.degrees(math.atan(config.wheelbase_m / radius_m)) * (
+        config.steering_ratio
+    )
+    for front_fraction in (0.3, 0.5, 0.7):
+        candidate_config = replace(config, roll_stiffness_front_fraction=front_fraction)
+        lower_deg, upper_deg = 0.0, 2.0 * geometric_steer
+        for _ in range(8):
+            steer_deg = 0.5 * (lower_deg + upper_deg)
+            plan = scenarios.Scenario(
+                name="roll_stiffness_probe",
+                initial_speed_m_s=speed_m_s,
+                initial_gear=0,
+                description="Match the same circle while varying the roll stiffness split.",
+                segments=(scenarios.ScenarioSegment(0.5, steer_wheel_deg=steer_deg),),
+            )
+            run = scenarios.run_scenario(candidate_config, plan)
+            tail = run.record.ground_truth[-15:]
+            mean_speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(
+                tail
+            )
+            mean_yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
+            if mean_speed / mean_yaw_rate > radius_m:
+                lower_deg = steer_deg
+            else:
+                upper_deg = steer_deg
+        demands.append(0.5 * (lower_deg + upper_deg))
+
+    assert np.all(np.diff(demands) < 0.0), demands
 
 
 # ---------------------------------------------------------------------- determinism

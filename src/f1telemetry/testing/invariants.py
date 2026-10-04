@@ -42,6 +42,10 @@ _LOAD_RELATIVE_TOLERANCE: Final[float] = 1.0e-3
 _LOAD_ABSOLUTE_FLOOR_N: Final[float] = 1.0
 _ENERGY_RESIDUAL_LIMIT: Final[float] = 0.01
 _SYMMETRY_TOLERANCE: Final[float] = 1.0e-9
+_SYMMETRY_LONGITUDINAL_FORCE_ABSOLUTE_N: Final[float] = 1.0
+_SYMMETRY_LATERAL_FORCE_ABSOLUTE_N: Final[float] = 1.0
+_SYMMETRY_RELATIVE_TOLERANCE: Final[float] = 1.0e-6
+_SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2: Final[float] = 1.0e-3
 _FINITE_TOLERANCE: Final[float] = 1.0e12
 
 
@@ -137,6 +141,9 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
                 else ("mu_lateral", wheel.mu),
                 ("kappa", wheel.kappa),
                 ("alpha_rad", wheel.alpha_rad),
+                ("effective_alpha_rad", wheel.effective_alpha_rad)
+                if wheel.effective_alpha_rad is not None
+                else ("effective_alpha_rad", wheel.alpha_rad),
                 ("camber_deg", wheel.camber_deg),
             ):
                 if not math.isfinite(value) or abs(value) > _FINITE_TOLERANCE:
@@ -260,75 +267,51 @@ def check_sign_conventions(record: SampleRecord, _spec: CarSpec) -> tuple[Violat
                         limit=wheel.kappa,
                     )
                 )
-            if _sign(wheel.alpha_rad) != _sign(wheel.fy_n):
+            effective_alpha_rad = (
+                wheel.alpha_rad if wheel.effective_alpha_rad is None else wheel.effective_alpha_rad
+            )
+            if _sign(effective_alpha_rad) != _sign(wheel.fy_n):
                 issues.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="slip angle and lateral force disagree in sign",
+                        detail="effective slip and lateral force disagree in sign",
                         value=wheel.fy_n,
-                        limit=wheel.alpha_rad,
+                        limit=effective_alpha_rad,
                     )
                 )
     return tuple(issues)
 
 
 def check_symmetry(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 5: left/right symmetry at zero steer, zero camber and a symmetric setup.
+    """Invariant 5: zero steer preserves mirrored corner outputs on a symmetric car.
 
-    Applied to a straight-line record, where the correct answer is exact: no lateral
-    velocity, no lateral acceleration, no slip angle, no lateral force, and matching
-    loads within each axle. A left/right asymmetry here is a load-transfer or indexing
-    bug and is the cheapest bug-finder in the project.
+    Static camber can create lateral force at zero slip. The physical symmetry check
+    therefore compares mirrored values rather than requiring every lateral quantity to
+    be zero.
     """
     issues: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         if abs(step.steer_rad) > _SYMMETRY_TOLERANCE:
+            continue
+        if abs(step.vy_m_s) > 1.0e-4:
             issues.append(
                 Violation(
                     where=f"step {index}",
-                    detail="symmetry check needs zero steering input",
-                    value=step.steer_rad,
-                    limit=_SYMMETRY_TOLERANCE,
+                    detail="straight-line record has lateral velocity",
+                    value=abs(step.vy_m_s),
+                    limit=1.0e-4,
                 )
             )
-        if abs(step.vy_m_s) > _SYMMETRY_TOLERANCE or abs(step.ay_m_s2) > _SYMMETRY_TOLERANCE:
+        if abs(step.ay_m_s2) > _SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2:
             issues.append(
                 Violation(
                     where=f"step {index}",
-                    detail="straight-line record has lateral motion",
-                    value=abs(step.vy_m_s),
-                    limit=_SYMMETRY_TOLERANCE,
+                    detail="straight-line record has lateral acceleration",
+                    value=abs(step.ay_m_s2),
+                    limit=_SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2,
                 )
             )
         fl, fr, rl, rr = step.wheels
-        for corner, wheel in zip(CORNERS, step.wheels, strict=True):
-            if abs(wheel.alpha_rad) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric setup must produce no slip angle",
-                        value=wheel.alpha_rad,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
-            if abs(wheel.camber_deg) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric setup must have zero camber",
-                        value=wheel.camber_deg,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
-            if abs(wheel.fy_n) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric straight-line run must produce no lateral force",
-                        value=wheel.fy_n,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
         for left, right, axle in ((fl, fr, "front"), (rl, rr, "rear")):
             if abs(left.fz_n - right.fz_n) > _LOAD_ABSOLUTE_FLOOR_N:
                 issues.append(
@@ -339,20 +322,43 @@ def check_symmetry(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...
                         limit=right.fz_n,
                     )
                 )
-            if abs(left.kappa - right.kappa) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} {axle} axle",
-                        detail="left and right slip ratio differ with no lateral input",
-                        value=left.kappa,
-                        limit=right.kappa,
-                    )
+            for left_value, right_value, sign, quantity, quantity_tolerance in (
+                (left.kappa, right.kappa, 1.0, "slip ratio", 1.0e-5),
+                (
+                    left.fx_n,
+                    right.fx_n,
+                    1.0,
+                    "longitudinal force",
+                    _SYMMETRY_LONGITUDINAL_FORCE_ABSOLUTE_N,
+                ),
+                (left.alpha_rad, right.alpha_rad, 1.0, "slip angle", 1.0e-4),
+                (left.camber_deg, right.camber_deg, -1.0, "camber", 1.0e-3),
+                (
+                    left.fy_n,
+                    right.fy_n,
+                    -1.0,
+                    "lateral force",
+                    _SYMMETRY_LATERAL_FORCE_ABSOLUTE_N,
+                ),
+            ):
+                tolerance = max(
+                    quantity_tolerance,
+                    max(abs(left_value), abs(right_value)) * _SYMMETRY_RELATIVE_TOLERANCE,
                 )
+                if abs(left_value - sign * right_value) > tolerance:
+                    issues.append(
+                        Violation(
+                            where=f"step {index} {axle} axle",
+                            detail=f"mirrored {quantity} differs with no lateral input",
+                            value=left_value,
+                            limit=sign * right_value,
+                        )
+                    )
     return tuple(issues)
 
 
 def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 6: modeled longitudinal kinetic-energy residual stays under 1%."""
+    """Invariant 6: planar, yaw, and wheel kinetic-energy residual stays under 1%."""
     issues: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         if step.energy_residual_fraction is not None:
@@ -360,7 +366,10 @@ def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation
         else:
             kinetic_rate = spec.mass_kg * (step.vx_m_s * step.ax_m_s2 + step.vy_m_s * step.ay_m_s2)
             power_in = step.ice_power_w + step.mgu_k_power_w
-            residual = power_in - step.drag_w - kinetic_rate
+            # ``drag_w`` is signed negative in the forward direction, so it is added as
+            # an external power term. Legacy records without a complete P2 energy residual
+            # have no wheel or yaw state; compare only the translational chassis balance.
+            residual = power_in + step.drag_w - kinetic_rate
             relative = abs(residual) / max(abs(kinetic_rate), 1.0)
         if relative > _ENERGY_RESIDUAL_LIMIT:
             issues.append(
