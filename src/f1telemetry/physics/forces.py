@@ -235,7 +235,7 @@ def aero_forces(
 
 @njit(cache=True, fastmath=False, nogil=True, boundscheck=False, error_model="numpy")
 def slip_ratio(wheel_speed_m_s: float, speed_m_s: float, min_speed_m_s: float) -> float:
-    """``kappa = (omega r - v) / max(v, eps)``, the longitudinal slip ratio.
+    """``kappa = (omega r - v) / max(abs(v), eps)``, the longitudinal slip ratio.
 
     Both speeds are circumferential: ``wheel_speed_m_s`` is already ``omega`` times the rolling
     radius, which is the product Task 4 builds when it owns the wheel state, and this function
@@ -252,7 +252,7 @@ def slip_ratio(wheel_speed_m_s: float, speed_m_s: float, min_speed_m_s: float) -
     denominator pinned at ``eps``, a launch sits at a *large* slip ratio, on the falling branch
     of the Magic Formula rather than the part of the curve that rises.
     """
-    denominator = speed_m_s if speed_m_s > min_speed_m_s else min_speed_m_s
+    denominator = abs(speed_m_s) if abs(speed_m_s) > min_speed_m_s else min_speed_m_s
     return (wheel_speed_m_s - speed_m_s) / denominator
 
 
