@@ -1,5 +1,5 @@
 {
-  "description": "Supplied fixture values, not simulation output. The baseline exists to prove the comparison machinery works and to catch a change to the fixture or the harness; P1 replaces it with a simulation run.",
+  "description": "Supplied fixture values, not simulation output. The baseline exists to prove the comparison machinery works and to catch a change to the fixture or the harness. P2 simulation snapshots are tracked separately.",
   "dt_s": 0.01,
   "name": "straight_line",
   "record_description": "Straight-line full-throttle acceleration. Supplied values, not simulation output: the four corner loads, the 53/47 power split and the drag term are hand-computed so that invariants 2, 3, 4, 5 and 6 all hold exactly.",

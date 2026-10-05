@@ -143,6 +143,8 @@ historical plausibility floor at its high-speed point. The 4.0 g figure comes fr
 report of lateral acceleration at Spa's Pouhon; its car, corner and conditions do not match this
 synthetic neutral-circle sweep. It is context, not a calibration target. The source-backed,
 configuration-matched lateral-g target is still unset, so the P2 calibration exit gate remains open.
+Actual simulation snapshots for the 50 m circle and 105 m/s sweep endpoint are pinned as advisory
+goldens, with current untuned coefficients recorded in their descriptions.
 P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 `docs/calibration.md`.
 

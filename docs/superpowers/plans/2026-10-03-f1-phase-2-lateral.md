@@ -245,10 +245,10 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - [x] Check travel-limit flags through every recorded step of every scenario and every speed-sweep run.
 - [x] Record a historical 4.0 g plausibility floor and its mismatch caveats; keep configuration-matched P2 calibration open. The measured sweep stays inside every published channel range.
 - [x] Sweep `roll_stiffness_front_fraction` at matched radius/ay and assert steering demand changes monotonically with other inputs fixed.
-- [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize. Coefficients remain synthetic and untuned, so a baseline is premature.
-- [ ] Run the complete quality gate and record the exact result; capture the four-corner load-transfer demo plus steering-sensitivity curve.
+- [x] Save reviewed steady-circle and final sweep scenario outputs as initial advisory golden traces. They record current synthetic, untuned outputs and do not act as calibration targets.
+- [x] Run the complete project quality checks and record the exact result; capture the four-corner load-transfer demo plus steering-sensitivity curve. `just` is unavailable in this environment, so run the `Justfile` check components directly.
 
-**Done when:** all P2 exit gates in `PHASES.md` pass on real simulation output, target and assumptions are recorded, `just check` is green, and tag/demo criteria are reviewable.
+**Implementation done when:** real P2 simulation output passes the implemented force/load/sign/symmetry/travel checks, demo and advisory baselines are reviewable, and project checks pass. The separate calibration exit gate remains open until matched source data and test conditions are available.
 
 ## P2 Exit Gate
 
@@ -258,8 +258,8 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - Steering demand is monotonic when only the modeled front/rear roll-stiffness split changes at matched radius and speed. Aero-balance sensitivity remains deferred because this configuration has no aero-balance input.
 - Quasi-static suspension travel remains inside configured travel limits across the stated tested load range.
 - Existing P1 checks remain green and the P1 metric disposition remains documented.
-- `just check` passes; demo shows all four wheel loads and the steering-sensitivity curve.
+- The full check components pass; the demo shows all four wheel loads and the steering-sensitivity curve. `just check` itself is not runnable in this environment because `just` is not installed.
 
 ## Verification and Commit Discipline
 
-For every implementation task, add focused failing tests first, run them to confirm the expected failure, implement the minimum change, rerun focused tests, inspect `git diff` and status, then commit one coherent milestone using a plain-language subject. After Task 7, run the complete `just check` gate. Do not mark an exit criterion complete from a hand-built fixture or a CI pass that omits the measured value the criterion asks to record.
+For every implementation task, add focused failing tests first, run them to confirm the expected failure, implement the minimum change, rerun focused tests, inspect `git diff` and status, then commit one coherent milestone using a plain-language subject. After Task 7, run every component listed in `Justfile`'s `check` recipe. Do not mark an exit criterion complete from a hand-built fixture or a CI pass that omits the measured value the criterion asks to record.

@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import json
 import math
+from functools import cache
 from pathlib import Path
 
 import pytest
 
+from f1telemetry.contracts.car_spec import load_car_spec
 from f1telemetry.generated.channels import CHANNELS
+from f1telemetry.testing import scenarios
 from f1telemetry.testing.fixtures import cornering_record, straight_line_record
 from f1telemetry.testing.golden import (
     GoldenReport,
@@ -38,22 +41,48 @@ pytestmark = pytest.mark.golden
 BASELINES = {
     "straight_line": "tests/golden/straight_line.json",
     "cornering": "tests/golden/cornering.json",
+    "steady_state_circle": "tests/golden/steady_state_circle.json",
+    "constant_radius_speed_sweep_105": "tests/golden/constant_radius_speed_sweep_105.json",
 }
 BASELINE_NOTES = {
     "straight_line": (
         "Supplied fixture values, not simulation output. The baseline exists to prove the "
-        "comparison machinery works and to catch a change to the fixture or the harness; "
-        "P1 replaces it with a simulation run."
+        "comparison machinery works and to catch a change to the fixture or the harness. P2 "
+        "simulation snapshots are tracked separately."
     ),
     "cornering": (
         "Supplied fixture values, not simulation output. See straight_line.json for what a "
         "P0 baseline is and is not."
     ),
+    "steady_state_circle": (
+        "Actual P2 simulation output at the current synthetic, untuned coefficients. This is an "
+        "initial advisory regression snapshot, not a calibrated target; review flagged diffs."
+    ),
+    "constant_radius_speed_sweep_105": (
+        "Actual final point of the P2 200 m constant-radius sweep at 105 m/s, using current "
+        "synthetic, untuned coefficients. Initial advisory snapshot only, not a calibrated "
+        "target; review flagged diffs."
+    ),
 }
 
 
 def _record(name: str) -> SampleRecord:
-    return straight_line_record() if name == "straight_line" else cornering_record()
+    if name == "straight_line":
+        return straight_line_record()
+    if name == "cornering":
+        return cornering_record()
+    return _phase2_records()[name]
+
+
+@cache
+def _phase2_records() -> dict[str, SampleRecord]:
+    """Run each real P2 baseline once per pytest process."""
+    config = load_car_spec().kernel_config()
+    circle = scenarios.run_scenario(
+        config, scenarios.build_scenarios(config)["steady_state_circle"]
+    )
+    sweep_final = scenarios.run_constant_radius_speed_sweep(config)[-1]
+    return {circle.record.name: circle.record, sweep_final.record.name: sweep_final.record}
 
 
 def _report_for(repo: Path, name: str) -> GoldenReport:
@@ -80,6 +109,7 @@ def test_baselines_are_committed_and_describe_the_fixture_exactly(
         )
         document = json.loads(path.read_text(encoding="utf-8"))
         assert document["name"] == name
+        assert document["description"] == BASELINE_NOTES[name]
         assert document["steps"] == len(record.frames)
         assert document["dt_s"] == record.dt_s
         assert set(document["series"]) == set(record.channels)

@@ -146,7 +146,7 @@
 ## Checkpoint: Phase 1 exit
 
 - [ ] P1 performance reporting gate closes. **Open pending recorded results.** The transient floor, launch-grip check and tail-settling assertion all passed CI run 37095870013. Record the 0–100 result and exact transient maximum; terminal speed is separate and is not the reachability-floor quantity.
-- [ ] `just check` passes.
+- [x] All `Justfile` check components pass when run directly; the `just` executable is not installed.
 - [x] Calibration inputs, available historical/event-specific references, and the optional solver comparison are recorded for review.
 
 ## Checkpoint: Phase 2 implementation
@@ -160,9 +160,14 @@ slip work. Travel-limit flags are checked across all recorded scenario and sweep
 circle returns about 0.76 g, and the 40–105 m/s sweep's last point produces about 4.11 g. The
 historical 4.0 g plausibility floor is not a calibrated target.
 
-**Still open:** Find a configuration-matched lateral-g reference and test condition, pin advisory
-P2 traces after coefficients stabilize, and capture the requested load-transfer/steering demo.
+**Still open:** Find a configuration-matched lateral-g reference and test condition. Initial
+advisory P2 simulation snapshots are pinned and the load-transfer/steering demo is recorded.
 Pirelli's 2011 4G Pouhon report is recorded only as historical plausibility context; the sweep now
 stays within the published channel ranges. P1 remains open at 6.6598 s to 100 km/h against the
 coarse 2.32 s reference; the engine curve is still synthetic and untuned. Do not close either
 calibration gate from the P2 plausibility floor.
+
+**Verification (2026-10-05):** `uv run --frozen pytest -q` — 970 passed. Ruff lint and formatting,
+basedpyright (0 errors), generated contract check, `npm ci --prefix web` (0 vulnerabilities), and
+`npm run build --prefix web` all pass. `just` is unavailable, so each component of the `Justfile`
+`check` recipe was run directly.

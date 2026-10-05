@@ -67,5 +67,6 @@ Pirelli reported 4G lateral acceleration at Spa's Pouhon for a 2011 F1 car at 29
 ([source](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)). The 4.0 g
 floor is historical plausibility context only: this neutral 200 m simulation has different car,
 corner, aero, surface and tire conditions. A matched source-backed target is still needed before
-P2 calibration can be called complete. Advisory simulation goldens are also deferred until the
-coefficients stabilize.
+P2 calibration can be called complete. Initial advisory goldens are committed for the steady circle
+and 105 m/s sweep endpoint. They capture the present synthetic, untuned coefficients and are not
+calibration targets.
