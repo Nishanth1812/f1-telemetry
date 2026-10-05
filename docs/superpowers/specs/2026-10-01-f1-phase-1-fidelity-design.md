@@ -1,7 +1,7 @@
 # Phase 1 fidelity spec — a regulation-faithful generic 2026 car
 
-Date: 2026-10-01. Scope: the remaining `tasks/todo.md` **Task 4** work (P1-T6/T7 and MGU-K
-drive), followed by the remaining P1 scenarios and checks, targeting a *generic* 2026 car. This
+Date: 2026-10-01. Scope: the remaining P1-T6/T7 and MGU-K drive work in `PHASES.md`, followed by
+the remaining P1 scenarios and checks, targeting a *generic* 2026 car. This
 document sets the design; implementation follows review and approval.
 
 **Regulatory source.** FIA 2026 Formula One Regulations, Section C (Technical), **Issue 20,

@@ -173,6 +173,7 @@ powertrain:
     fuel_energy_flow_partial_load_offset_mj_h: 869.0
     fuel_energy_flow_partial_load_min_mj_h: 380.0
     fuel_to_shaft_efficiency: 0.52
+    ice_inertia_kg_m2: 0.3
     torque_curve_nm:
       - { rpm: 2000.0, torque_nm: 60.0 }
       - { rpm: 4000.0, torque_nm: 150.0 }
@@ -259,6 +260,13 @@ powertrain:
         433 kW of shaft power at it - which is above the 400 kW peak the published figure names,
         so the committed torque curve survives the cap uncut and the cap is a bound rather than a
         hidden calibration of the curve. A lower efficiency would start clipping the top of it.
+      ice_inertia_kg_m2: >-
+        Not a regulation number, and not in Section C at all. This is the synthesised rotational
+        inertia of the ICE plus flywheel needed by the Task 0 ICE-speed state that replaces the
+        P1 wheel-derived rpm clamp; no article states a crankshaft inertia, so 0.3 kg.m^2 is a
+        project placeholder for calibration. It is carried as data so the engine state divides
+        by a configured value rather than a constant in the kernel, exactly as
+        wheel_inertia_kg_m2 does for the wheel state.
       rev_limit_rpm: >-
         Not in Section C. C5.14 (page 76) only requires every high rev limit to sit inside a
         750rpm band and forbids response changes more than 750rpm below the final limit; the
@@ -598,6 +606,20 @@ tyres:
     c: 1.65
     e: 0.97
     mu: 1.7
+  lateral_pacejka:
+    b: 9.0
+    c: 1.5
+    e: 0.95
+    mu: 1.55
+  load_sensitivity:
+    reference_load_n: 4000.0
+    peak: 0.1
+    stiffness: 0.05
+  camber_stiffness_n_per_deg: 800.0
+  relaxation:
+    lateral_length_m: 0.5
+    longitudinal_length_m: 0.3
+    min_speed_m_s: 1.0
   provenance: mixed
   source_date: 2026-10-01
   regulation:
@@ -645,7 +667,7 @@ tyres:
       project choice with a visible consequence: at a standing start the slip ratio is
       `omega r / 1.0`, so a launch sits on the falling branch of the Magic Formula rather than on
       the part of the curve that rises. No regulation fixes a simulation guard, and Task 4 of
-      tasks/plan.md owns the launch model that has to live with it.
+      PHASES.md P1-T4 owns the launch model that has to live with it.
     wheel_inertia_kg_m2: >-
       Wheel-plus-tyre rotational inertia about the spin axis, the `I_w` of
       `I_w d(omega)/dt = T_drive - Fx r`. PLAN.md section 4 gives 0.5-1.2 kg.m^2 as the band an F1
@@ -666,11 +688,36 @@ tyres:
       lands near 0.36 slip ratio, and `mu` is a plausible F1 slick peak longitudinal friction
       coefficient. All four are placeholders for calibration in P1-T9, which should check the
       resulting accelerations against a published source rather than against this file.
+    lateral_pacejka: >-
+      Synthesised lateral Magic Formula shape, added by P2-T3 the same way the longitudinal
+      set was added by P1: `b`, `c`, `e` and `mu` are conventional lateral shape, curvature
+      and peak-friction values, and none of them is a regulation number. No public F1 Pacejka
+      set has been read into this project, so all four are labelled placeholders for
+      calibration and carry no FIA authority. `b` is applied after channel slip angles are converted
+      from degrees to radians. Together with `longitudinal_pacejka.mu` they set
+      the two friction limits the combined-slip ellipse is built from.
+    load_sensitivity: >-
+      Synthesised P2-T3 input, not a regulation number. `reference_load_n` is the vertical load
+      the peak and stiffness sensitivities are normalised to, `peak` is the fractional fall in
+      peak friction per unit of load above the reference, and `stiffness` is the same for the
+      slip stiffness. The values are plausible F1-slick magnitudes and are placeholders for
+      calibration; the point of carrying them as data is that grip is not proportional to load
+      and the non-proportionality is a configured property rather than a hidden constant.
+    camber_stiffness_n_per_deg: >-
+      Synthesised P2-T3 camber response, not a regulation number. 800 N of lateral force per
+      degree of camber at the reference load is a plausible F1-slick magnitude and a
+      placeholder for calibration; no article states a camber stiffness.
+    relaxation: >-
+      Synthesised P2-T5 relaxation lengths, not regulation numbers. `lateral_length_m` and
+      `longitudinal_length_m` are the distances over which slip builds toward its steady value,
+      and `min_speed_m_s` is the finite low-speed floor in the relaxation update so a stopped
+      car does not divide by zero. All three are project placeholders for calibration, the same
+      kind of simulation guard as `slip_ratio_min_speed_m_s`, with no FIA article behind them.
   note: >-
     `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
     replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
     not match Issue 20. `longitudinal_pacejka` and `slip_ratio_min_speed_m_s` arrived with the
-    P1-T3/P1-T6 force work (Task 3 of tasks/plan.md), which needs a longitudinal force, and
+    P1-T3/P1-T6 force work in PHASES.md, which needs a longitudinal force, and
     `wheel_inertia_kg_m2` arrived with the P1-T6/P1-T7 wheel rotational state, which needs
     something to divide the wheel torque balance by. Lateral coefficients, load sensitivity on
     `D` and `B`, relaxation lengths, and any brake or differential model remain P2-T3/P2-T5
@@ -686,6 +733,13 @@ chassis:
   front_weight_fraction: 0.46
   minimum_front_axle_fraction: 0.44
   minimum_rear_axle_fraction: 0.54
+  front_track_m: 1.6
+  rear_track_m: 1.55
+  cg_height_m: 0.3
+  unsprung_mass_kg: 60.0
+  roll_inertia_kg_m2: 200.0
+  pitch_inertia_kg_m2: 1200.0
+  yaw_inertia_kg_m2: 1000.0
   provenance: mixed
   source_date: 2026-10-01
   regulation:
@@ -752,7 +806,142 @@ chassis:
       It is not derived from the C4.2 floors, because those are fractions of a different
       quantity (see c42_enforcement). P2-T2 replaces it with the measured static
       distribution once the roll stiffness distribution is known.
+    front_track_m: >-
+      Synthetic P2-T2 input, not a regulation number. C2.3.1 (page 10) bounds the car's
+      overall width at 1900mm and C10.10.1 (page 115) bounds a wheel origin, but no article
+      states a track width; 1.6m is a plausible 2026 front track inside the overall-width
+      limit and is a placeholder for calibration.
+    rear_track_m: >-
+      Synthetic, as for front_track_m. 1.55m is slightly narrower than the front, the usual
+      layout, with no FIA article behind the figure.
+    cg_height_m: >-
+      Synthetic P2-T2 input, not a regulation number. No article states a CG height; 0.30m
+      is a plausible 2026 figure that makes the load-transfer moments the right order of
+      magnitude. It is a placeholder for calibration, not a measured value, and it carries
+      no implied FIA authority.
+    unsprung_mass_kg: >-
+      Synthetic P2-T1 input, not a regulation number. The four wheels, hubs, brakes and
+      suspension links are not a quantity any clause states; 60kg total is a plausible
+      unsprung mass, leaving `sprung_mass_kg = mass.total_kg - unsprung_mass_kg` for the
+      body inertias. Placeholder for calibration.
+    roll_inertia_kg_m2: >-
+      Synthetic P2-T1 sprung-mass roll inertia (Ixx) about the roll axis, not a regulation
+      number. No article states a body inertia; 200 kg.m^2 is a plausible value for the
+      roll DOF and is a placeholder for calibration.
+    pitch_inertia_kg_m2: >-
+      Synthetic P2-T1 sprung-mass pitch inertia (Iyy), not a regulation number, as for
+      roll_inertia_kg_m2. 1200 kg.m^2 is a plausible value and a placeholder for
+      calibration.
+    yaw_inertia_kg_m2: >-
+      Synthetic P2-T1 sprung-mass yaw inertia (Izz), not a regulation number, as for
+      roll_inertia_kg_m2. 1000 kg.m^2 is a plausible value and a placeholder for
+      calibration.
   note: >-
     `overall_width_m` replaces the P0 `floor_width_m: 1.9`. PLAN.md section 5's "1.9 m floor
     width" is really the C2.3.1 overall-width limit of 1900mm; keeping a key named
     `floor_width_m` would have cited a floor-width clause the regulations do not contain.
+    P2-T1 adds `front_track_m`, `rear_track_m`, `cg_height_m`, `unsprung_mass_kg` and the
+    three body inertias for the lateral/load-transfer model. None is a regulation number:
+    they are synthesised placeholders labelled as such, so none of them can be read as an
+    FIA limit.
+
+suspension:
+  roll_stiffness_front_fraction: 0.6
+  pitch_stiffness_front_fraction: 0.55
+  front_ride_rate_n_per_m: 300000.0
+  rear_ride_rate_n_per_m: 350000.0
+  front_camber_gain_deg_per_m: -40.0
+  rear_camber_gain_deg_per_m: -30.0
+  front_static_camber_deg: -3.0
+  rear_static_camber_deg: -1.5
+  front_bump_steer_deg_per_m: 8.0
+  rear_bump_steer_deg_per_m: 4.0
+  front_travel_limit_m: 0.025
+  rear_travel_limit_m: 0.025
+  provenance: synthesised
+  source_date: 2026-10-03
+  not_regulated:
+    roll_stiffness_front_fraction: >-
+      Synthetic P2-T2 balance knob, not a regulation number. The share of lateral load transfer
+      taken by the front axle is a suspension design choice (springs and anti-roll bars) that
+      no clause states; 0.60 is a plausible front-biased split and a placeholder for
+      calibration. PLAN.md section 5 calls this the balance knob, which is why it is a single
+      configured fraction rather than derived from the ride rates - the anti-roll bars that set
+      it are not represented.
+    pitch_stiffness_front_fraction: >-
+      Synthetic P2-T2 input, not a regulation number, as for
+      roll_stiffness_front_fraction. 0.55 is a plausible front share of pitch stiffness and a
+      placeholder for calibration.
+    front_ride_rate_n_per_m: >-
+      Synthetic P2-T6 quasi-static suspension input, not a regulation number. 300 kN/m is a
+      plausible F1 front wheel rate and is what converts a quasi-static corner load into a
+      suspension travel; the value is a placeholder for calibration.
+    rear_ride_rate_n_per_m: >-
+      Synthetic P2-T6 input, not a regulation number, as for front_ride_rate_n_per_m. 350 kN/m
+      is a plausible rear wheel rate and a placeholder for calibration.
+    front_camber_gain_deg_per_m: >-
+      Synthetic P2-T6 quasi-static kinematics, not a regulation number. Degrees of camber per
+      metre of bump travel; -40 deg/m gives about -1 deg at the 25 mm travel limit, with the
+      negative sign meaning the top of the wheel leans further in under compression. A
+      placeholder for calibration.
+    rear_camber_gain_deg_per_m: >-
+      Synthetic P2-T6 input, not a regulation number, as for front_camber_gain_deg_per_m.
+      -30 deg/m is the usual smaller rear gain and a placeholder for calibration.
+    front_static_camber_deg: >-
+      Synthetic P2-T6 setup value, not a regulation number. -3.0 deg is a plausible F1 front
+      static camber, negative at the top of the wheel, and a placeholder for calibration.
+    rear_static_camber_deg: >-
+      Synthetic P2-T6 input, not a regulation number, as for front_static_camber_deg. -1.5 deg
+      is a plausible rear value and a placeholder for calibration.
+    front_bump_steer_deg_per_m: >-
+      Synthetic P2-T6 quasi-static kinematics, not a regulation number. Degrees of steer change
+      per metre of bump travel, signed positive-left like every steering angle in this file;
+      8 deg/m is a small plausible front bump-steer gradient and a placeholder for calibration.
+    rear_bump_steer_deg_per_m: >-
+      Synthetic P2-T6 input, not a regulation number, as for front_bump_steer_deg_per_m. 4 deg/m
+      is a small plausible rear value and a placeholder for calibration.
+    front_travel_limit_m: >-
+      Synthetic P2-T6 mechanical limit, not a regulation number. 0.025 m matches the magnitude
+      of the suspension_travel channel's declared range and is the travel past which the model
+      must report a limit violation rather than silently clip. A project choice, not an FIA
+      dimension.
+    rear_travel_limit_m: >-
+      Synthetic P2-T6 input, not a regulation number, as for front_travel_limit_m. 0.025 m is a
+      project choice and the value the rear travel is checked against.
+  note: >-
+    P2-T1 adds the per-axle suspension contract Tasks 2 and 6 consume: the roll and pitch
+    stiffness splits that move lateral and longitudinal load transfer, the ride rates that turn
+    a quasi-static load into travel, the camber gain and static camber, the bump-steer gradient
+    and the travel limits. None is a regulation number and none carries FIA authority; they are
+    synthesised placeholders that calibration will move. Travel is positive in bump. The
+    stiffness *fractions* are configured independently of the ride rates on purpose - the
+    anti-roll bars that set the balance are not modelled, so deriving the split from the ride
+    rates would imply a spring-only car.
+
+steering:
+  steering_ratio: 12.0
+  max_steering_wheel_angle_deg: 400.0
+  ackermann_fraction: 0.8
+  provenance: synthesised
+  source_date: 2026-10-03
+  not_regulated:
+    steering_ratio: >-
+      Synthetic P2-T7 input, not a regulation number. The steering-wheel-to-road-wheel ratio;
+      no clause states one. 12:1 is a plausible value, and it is the divisor that turns the
+      scenario's steering-wheel input into the road-wheel angle the tyre model reads, so it is
+      carried as data rather than hardcoded.
+    max_steering_wheel_angle_deg: >-
+      Synthetic P2-T7 limit, not a regulation number. 400 deg is a plausible mechanical steering
+      limit and the angle past which the model must reject a steering command rather than clip
+      it; it is a project choice, not an FIA dimension.
+    ackermann_fraction: >-
+      Synthetic P2-T7 geometry, not a regulation number. 1.0 is full Ackermann and 0.0 is
+      parallel steering; no clause fixes the geometry, so 0.8 is a plausible partial-Ackermann
+      value and a placeholder for calibration. Positive steer is positive-left, matching the
+      steering_angle channel.
+  note: >-
+    P2-T7 adds the steering contract. The scenario input is a *steering-wheel* angle in
+    degrees, positive left, converted to a road-wheel angle through `steering_ratio`; the
+    Ackermann fraction sets how the inner and outer front wheels differ from that mean angle,
+    and `max_steering_wheel_angle_deg` is the mechanical limit the boundary rejects beyond.
+    None of the three carries FIA authority.

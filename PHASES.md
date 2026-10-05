@@ -73,13 +73,19 @@ drive a real dashboard, every later phase is built on sand.
 | P1-T8 | Scenarios: `accelerate_to_speed`, `full_throttle` | Uses the P0 scenario schema stub |
 | P1-T9 | Calibration: tune aero + torque to hit 0–100 km/h and top speed | Measure against the reference points in `PLAN.md` §11.1, not the old §11 sanity bands. Record each coefficient and its source in `calibration.md` as you go |
 | P1-T10 | `fastest-lap` cross-check harness | Run the same `car_spec` through it, diff lap times. Fails gracefully if the dependency won't build — note it, don't block |
-| P1-T11 | **Energy-balance invariant** in CI | `d(KE)/dt` = fuel power − drag work, residual <1%. Catches most powertrain bugs |
+| P1-T11 | **Wheel-boundary energy invariant** in CI | Chassis-plus-wheel kinetic-energy change against wheel-torque work, aero drag and tyre-slip work; residual <1%. This is not a fuel-to-vehicle balance because P1 has no engine or motor rotor state. |
 
 **Exit gate**
-- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios declare `ice_rpm_override: 12000` only while the clutch slips, as documented in `docs/calibration.md` § Phase 1 scenario wiring.
+- [ ] Measure and report the 0–100 km/h time against the **2.32 s** coarse reference, without treating its ±0.30 s sampling uncertainty as a pass/fail tolerance; require the high-speed scenario's transient maximum to reach **≥325.8 km/h**. The first number is a ~3.7 Hz telemetry-derived median; the second is a single-event FIA speed-table reading used only as a reachability floor, since a speed trap is not comparable to terminal or asymptotic speed. The transient maximum — not terminal speed — is checked against 325.8 km/h. `full_throttle` uses a bounded MGU-K deployment followed by an ICE-only tail. The launch scenarios seed `ice_rpm_initial: 12000` during initial clutch slip; the engine integrates delivered torque against reflected clutch load using configured inertia, while a locked clutch applies an ideal wheel-speed constraint. The reproduced engine-state measurements are in `docs/calibration.md`; the 0–100 result misses and the P1 performance gate remains open.
 - [ ] Power curve shape plausible across the rev range
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
+
+The P1 exit gate remains open. The reproduced engine-state baseline reports 6.6598 s to 100 km/h
+(reference 2.32 s), a 338.4295 km/h transient maximum during the configured 20 s MGU-K request, and
+a 307.6027 km/h ICE-only tail. The brake probe reports 1.265 g for caller-supplied wheel torque; it
+is not a brake-capacity result. Longitudinal load transfer and calibration remain open acceleration
+work; see `docs/calibration.md` for the baseline and model limitations.
 - [ ] `fastest-lap` comparison recorded — agree within a few percent, or the discrepancy is explained
 
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written
@@ -94,17 +100,12 @@ Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `doc
 fixed before any parameter edit, so the gate has something to measure against. Both are deliberately
 coarse and neither validates configuration-matched performance: a ~3.7 Hz telemetry-derived 0–100
 median, and a single-event FIA speed-table figure used as a reachability floor rather than a terminal
-speed. The P1 exit gate remains open. No current 0–100 result is recorded after the declared
-12 000 rpm launch wiring; a CI run of the 3 s MGU-K deployment variant measured the transient
-maximum ahead of an ICE-only terminal tail (`docs/calibration.md` § Phase 1 scenario wiring). The
-last pinned pair, a 0–100 km/h time of 6.8998 s against the 2.32 s reference and a 307.4189 km/h
-`full_throttle` maximum, predates that wiring and is stale. CI run 37095870013 passed after extending
-the MGU-K request window, including the 325.8 km/h transient-floor assertion, without changing
-coefficients. The transient maximum is separate from terminal speed and is the quantity the floor
-applies to. The Actions log did not retain the exact speed value, and the revised 0–100 result still
-needs to be recorded. Recording a reference is not a passed gate, and P1 is not complete. Synthetic
-aero, tyres, brakes and powertrain assumptions remain. This work does not establish full F1-car
-fidelity or regulatory compliance.
+speed. The P1 exit gate remains open. The engine-state scenario suite reproduces a 6.6598 s
+0–100 km/h time and a 338.4295 km/h transient maximum against the 2.32 s reference and 325.8 km/h
+reachability floor. The last pinned pair predates the launch wiring and is stale. The 0–100 result
+misses; the transient floor passes. Longitudinal load transfer, plausible power-curve review and
+calibration remain open. Synthetic aero, tyres, brakes and powertrain assumptions remain; this work
+does not establish full F1-car fidelity or regulatory compliance.
 
 ---
 
@@ -115,7 +116,7 @@ fidelity or regulatory compliance.
 
 | ID | Task | Notes |
 |---|---|---|
-| P2-T1 | 6-DOF chassis: `vy`, `r`, `roll`, `pitch`, `heave` (P1 gave you `vx`) | Integrating heave and roll is what P2 buys over a 3-DOF model |
+| P2-T1 | Planar chassis `vy`, `r`, `x`, `y`, `psi`; derive roll, pitch and heave quasi-statically | One yaw-rate state; body/suspension outputs follow the quasi-static suspension contract in `PLAN.md` §2 |
 | P2-T2 | Vertical load transfer: static distribution + longitudinal + lateral, per corner | The core of F1 behaviour. Get the roll stiffness distribution right — it is the balance knob |
 | P2-T3 | Pacejka lateral, **with load sensitivity on D and B** | Non-proportional μ(Fz). A constant-μ tire understates high-speed downforce badly and will silently break P4 |
 | P2-T4 | Combined slip via the similarity method | So the friction ellipse *emerges* rather than being clamped. Needed for P4's speed profile |
@@ -123,18 +124,34 @@ fidelity or regulatory compliance.
 | P2-T6 | Quasi-static suspension: travel, camber gain, bump steer, roll/pitch stiffness split | Documented as a deliberate simplification per `PLAN.md` §2 |
 | P2-T7 | Steering geometry + Ackermann + steering limit | Needed for manual driving later |
 | P2-T8 | Scenarios: `steady_state_circle`, `constant_radius_speed_sweep` | The sweep is the primary calibration tool for lateral g |
-| P2-T9 | Calibration: peak lateral g, understeer gradient monotonicity | Compare against `PLAN.md` §11 target band |
+| P2-T9 | Calibration: peak lateral g, steering-balance sensitivity | Record a source-backed matched target before calibration |
 | P2-T10 | Invariants 2 (friction ellipse), 4 (sign conventions), 5 (symmetry) | Invariant 5 is the cheapest bug-finder in the project — run it constantly |
 
 **Exit gate**
-- [ ] Constant-radius sweep reaches target peak lateral g
-- [ ] Friction ellipse never exceeded, all four corners, all steps
-- [ ] Symmetry holds at zero steer / zero camber / symmetric setup
-- [ ] Understeer gradient is monotonic in front/rear downforce split
-- [ ] Quasi-static suspension travel stays within mechanical limits across the load range (no bottoming out silently)
+- [ ] Constant-radius sweep reaches a configuration-matched, source-backed target peak lateral g
+- [x] Compare the settled sweep with the 4.0 g historical reference; the current untuned model remains below it, and it does not close calibration
+- [x] The friction ellipse and zero-load force bound pass on every wheel in the produced scenarios
+- [x] Zero-steer symmetry passes with camber and bump steer disabled; paired left/right steering runs mirror chassis state and four-wheel force/load outputs
+- [x] Steering demand changes monotonically with `roll_stiffness_front_fraction` at matched 50 m radius and 20 m/s; front/rear aero-balance sensitivity is deferred because the configuration has no aero-balance input
+- [x] Suspension travel-limit flags remain clear throughout the produced scenarios and every sweep run
+
+**Implementation status (2026-10):** The P2 kernel, load transfer, steering, relaxation, combined-slip
+forces, scenario truth and channel publication are implemented on `feat/phase-2`. The 50 m circle
+settles within 5% of its requested radius at about 0.76 g; the 40–105 m/s coasting sweep runs long
+enough for lateral acceleration to settle, matches its 200 m radius, and stays within published
+channel ranges. Its settled high-speed point no longer meets the 4.0 g historical plausibility
+reference from Pirelli's 2011 Pouhon report. That car, corner and condition do not match this
+synthetic neutral-circle sweep, but the earlier transient result above 4.0 g was not a valid
+steady-state comparison. The source-backed, configuration-matched lateral-g target is still unset,
+so the P2 calibration exit gate remains open. Actual simulation snapshots for the 50 m circle and
+105 m/s sweep endpoint are pinned as advisory goldens, with current untuned coefficients recorded
+in their descriptions.
+P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
+`docs/calibration.md`.
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four
 corners, and a steering-sensitivity curve.
+Measured P2 scenario outputs: [`docs/phase2-demo.md`](./docs/phase2-demo.md).
 
 ---
 

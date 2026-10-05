@@ -398,6 +398,18 @@ def test_the_slip_ratio_guards_its_low_speed_denominator(config: KernelConfig) -
     )
 
 
+def test_the_slip_ratio_uses_speed_magnitude_in_reverse(config: KernelConfig) -> None:
+    guard = config.slip_ratio_min_speed_m_s
+    for speed in (-guard * 0.5, -guard * 4.0):
+        denominator = max(abs(speed), guard)
+        assert forces.slip_ratio(speed * 1.2, speed, guard) == pytest.approx(
+            (speed * 1.2 - speed) / denominator
+        )
+        assert forces.slip_ratio(speed * 0.8, speed, guard) == pytest.approx(
+            (speed * 0.8 - speed) / denominator
+        )
+
+
 def test_the_slip_ratio_sign_follows_the_wheel_against_the_road(config: KernelConfig) -> None:
     """Driving slip is positive and braking slip is negative, per the ground-truth convention."""
     guard = config.slip_ratio_min_speed_m_s
@@ -621,6 +633,9 @@ def test_step_forces_refuses_inputs_that_would_produce_nans(
         ("slip_ratio_min_speed_m_s", math.nan),
         ("pacejka_b", 0.0),
         ("pacejka_c", -1.0),
+        ("pacejka_c", 1.0),
+        ("pacejka_c", 2.5),
+        ("pacejka_e", 1.0),
         ("pacejka_e", math.inf),
         ("pacejka_mu", 0.0),
         ("pacejka_mu", math.nan),

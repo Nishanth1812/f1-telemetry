@@ -74,6 +74,7 @@ ignore = [
 "tests/test_numba_toolchain.py" = ["TID251"]
 "tests/test_longitudinal_kernel.py" = ["TID251"]
 "tests/test_forces.py" = ["TID251"]
+"tests/test_loads.py" = ["TID251"]
 "tests/test_powertrain.py" = ["TID251"]
 "tests/test_gearbox.py" = ["TID251"]
 

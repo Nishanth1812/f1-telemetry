@@ -42,7 +42,12 @@ def _unloaded_wheels() -> tuple[WheelTruth, WheelTruth, WheelTruth, WheelTruth]:
 
 @dataclass(frozen=True, slots=True)
 class WheelTruth:
-    """Per-corner physics state. Field names follow PLAN.md section 4's state vector."""
+    """Per-corner physics truth, including separate longitudinal and lateral grip peaks.
+
+    ``mu`` remains the longitudinal peak coefficient for existing P1 fixtures. ``mu_lateral``
+    is the load-adjusted lateral coefficient; ``None`` means a legacy fixture uses ``mu`` for
+    both axes.
+    """
 
     fz_n: float
     fx_n: float
@@ -51,6 +56,8 @@ class WheelTruth:
     kappa: float
     alpha_rad: float
     camber_deg: float
+    mu_lateral: float | None = None
+    effective_alpha_rad: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +70,7 @@ class GroundTruthStep:
     * body frame is x forward, y left, z up
     * ``kappa`` positive in drive, ``fx_n`` positive forward
     * ``alpha_rad`` positive when the tyre generates ``fy_n`` in +y
+    * ``drag_w`` is signed against forward motion, so aerodynamic drag power is negative
     * ``gear`` is -1 reverse, 0 neutral, 1..8
     * ``az_m_s2`` is the chassis vertical acceleration, so the load sum is
       ``mass * (g + az) + downforce``
@@ -86,6 +94,12 @@ class GroundTruthStep:
     wheels: tuple[WheelTruth, WheelTruth, WheelTruth, WheelTruth] = field(
         default_factory=_unloaded_wheels
     )
+    yaw_rate_rad_s: float = 0.0
+    roll_rad: float = 0.0
+    pitch_rad: float = 0.0
+    heave_m: float = 0.0
+    suspension_travel_m: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    travel_limited: tuple[bool, bool, bool, bool] = (False, False, False, False)
 
     @property
     def wheel(self) -> dict[str, WheelTruth]:
@@ -139,9 +153,11 @@ def with_wheel(
     fx_n: float | None = None,
     fy_n: float | None = None,
     mu: float | None = None,
+    mu_lateral: float | None = None,
     kappa: float | None = None,
     alpha_rad: float | None = None,
     camber_deg: float | None = None,
+    effective_alpha_rad: float | None = None,
 ) -> SampleRecord:
     """Return a copy of `record` with one wheel's truth fields replaced.
 
@@ -159,6 +175,10 @@ def with_wheel(
         kappa=_pick(kappa, current.kappa),
         alpha_rad=_pick(alpha_rad, current.alpha_rad),
         camber_deg=_pick(camber_deg, current.camber_deg),
+        mu_lateral=current.mu_lateral if mu_lateral is None else mu_lateral,
+        effective_alpha_rad=(
+            current.effective_alpha_rad if effective_alpha_rad is None else effective_alpha_rad
+        ),
     )
     wheels = list(target.wheels)
     wheels[index] = merged
@@ -181,6 +201,12 @@ def with_step(
     drag_w: float | None = None,
     downforce_n: float | None = None,
     steer_rad: float | None = None,
+    yaw_rate_rad_s: float | None = None,
+    roll_rad: float | None = None,
+    pitch_rad: float | None = None,
+    heave_m: float | None = None,
+    suspension_travel_m: tuple[float, float, float, float] | None = None,
+    travel_limited: tuple[bool, bool, bool, bool] | None = None,
 ) -> SampleRecord:
     """Return a copy of `record` with one ground-truth step's scalars replaced."""
     target = record.ground_truth[step]
@@ -198,6 +224,14 @@ def with_step(
         drag_w=_pick(drag_w, target.drag_w),
         downforce_n=_pick(downforce_n, target.downforce_n),
         steer_rad=_pick(steer_rad, target.steer_rad),
+        yaw_rate_rad_s=_pick(yaw_rate_rad_s, target.yaw_rate_rad_s),
+        roll_rad=_pick(roll_rad, target.roll_rad),
+        pitch_rad=_pick(pitch_rad, target.pitch_rad),
+        heave_m=_pick(heave_m, target.heave_m),
+        suspension_travel_m=(
+            target.suspension_travel_m if suspension_travel_m is None else suspension_travel_m
+        ),
+        travel_limited=target.travel_limited if travel_limited is None else travel_limited,
     )
     return _with_ground_truth(record, step, updated)
 

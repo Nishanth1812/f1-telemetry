@@ -15,7 +15,8 @@ computing the right thing:
     axle loads. Load transfer ``m * ax * h_cg / L`` moves weight rearward; aerodynamic
     downforce from ``car_spec`` at 50 m/s is added and split evenly across the four
     corners, which is a fixture simplification - invariant 3 only constrains the sum.
-    Powers are the 53/47 split of ``m * vx * ax + drag``, and the tire is exercised on
+    Powers are the 53/47 split of ``m * vx * ax`` plus the positive drag-power magnitude;
+    ``drag_w`` stores that resisting term as a negative value. The tire is exercised on
     both axes at the same time (0.20/0.10 on the loaded outside tyres, 0.15/0.06 inside).
 
 ``cornering_record``
@@ -127,7 +128,7 @@ def straight_line_record() -> SampleRecord:
             throttle_pct=100.0,
             ice_power_w=ice_power[index],
             mgu_k_power_w=mgu_power[index],
-            drag_w=1780.5,
+            drag_w=-1780.5,
             downforce_n=6546.5625,
             steer_rad=0.0,
             wheels=wheels,
@@ -179,7 +180,7 @@ def cornering_record() -> SampleRecord:
             throttle_pct=100.0,
             ice_power_w=ice_power[index],
             mgu_k_power_w=mgu_power[index],
-            drag_w=1205.4,
+            drag_w=-1205.4,
             downforce_n=3969.0,
             steer_rad=steer,
             wheels=wheels,

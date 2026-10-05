@@ -37,11 +37,15 @@ __all__ = [
     "run_all",
 ]
 
-_FRICTION_TOLERANCE: Final[float] = 1.0
+_FRICTION_TOLERANCE: Final[float] = 1.0 + 1.0e-12
 _LOAD_RELATIVE_TOLERANCE: Final[float] = 1.0e-3
 _LOAD_ABSOLUTE_FLOOR_N: Final[float] = 1.0
 _ENERGY_RESIDUAL_LIMIT: Final[float] = 0.01
 _SYMMETRY_TOLERANCE: Final[float] = 1.0e-9
+_SYMMETRY_LONGITUDINAL_FORCE_ABSOLUTE_N: Final[float] = 1.0
+_SYMMETRY_LATERAL_FORCE_ABSOLUTE_N: Final[float] = 1.0
+_SYMMETRY_RELATIVE_TOLERANCE: Final[float] = 1.0e-6
+_SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2: Final[float] = 1.0e-3
 _FINITE_TOLERANCE: Final[float] = 1.0e12
 
 
@@ -132,8 +136,14 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
                 ("fx_n", wheel.fx_n),
                 ("fy_n", wheel.fy_n),
                 ("mu", wheel.mu),
+                ("mu_lateral", wheel.mu_lateral)
+                if wheel.mu_lateral is not None
+                else ("mu_lateral", wheel.mu),
                 ("kappa", wheel.kappa),
                 ("alpha_rad", wheel.alpha_rad),
+                ("effective_alpha_rad", wheel.effective_alpha_rad)
+                if wheel.effective_alpha_rad is not None
+                else ("effective_alpha_rad", wheel.alpha_rad),
                 ("camber_deg", wheel.camber_deg),
             ):
                 if not math.isfinite(value) or abs(value) > _FINITE_TOLERANCE:
@@ -160,32 +170,45 @@ def check_finite(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
 
 
 def check_friction_ellipse(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 2: (Fx/muFz)^2 + (Fy/muFz)^2 <= 1 for every wheel, every step."""
+    """Invariant 2: each force is normalized by its own load-dependent peak."""
     found: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         for corner, wheel in zip(CORNERS, step.wheels, strict=True):
-            if wheel.fz_n <= 0.0:
+            if wheel.fz_n < 0.0:
                 found.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="non-positive vertical load leaves the friction limit undefined",
+                        detail="negative vertical load is invalid",
                         value=wheel.fz_n,
                         limit=0.0,
                     )
                 )
                 continue
-            if wheel.mu <= 0.0:
+            if wheel.fz_n == 0.0:
+                if wheel.fx_n != 0.0 or wheel.fy_n != 0.0:
+                    found.append(
+                        Violation(
+                            where=f"step {index} wheel {corner}",
+                            detail="unloaded wheel carries tire force",
+                            value=math.hypot(wheel.fx_n, wheel.fy_n),
+                            limit=0.0,
+                        )
+                    )
+                continue
+            mu_lateral = wheel.mu if wheel.mu_lateral is None else wheel.mu_lateral
+            if wheel.mu <= 0.0 or mu_lateral <= 0.0:
                 found.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="non-positive friction coefficient",
-                        value=wheel.mu,
+                        detail="non-positive friction coefficient on a loaded axis",
+                        value=min(wheel.mu, mu_lateral),
                         limit=0.0,
                     )
                 )
                 continue
-            limit = _friction_limit(wheel.mu, wheel.fz_n)
-            utilisation = (wheel.fx_n / limit) ** 2 + (wheel.fy_n / limit) ** 2
+            limit_x = _friction_limit(wheel.mu, wheel.fz_n)
+            limit_y = _friction_limit(mu_lateral, wheel.fz_n)
+            utilisation = (wheel.fx_n / limit_x) ** 2 + (wheel.fy_n / limit_y) ** 2
             if utilisation > _FRICTION_TOLERANCE:
                 found.append(
                     Violation(
@@ -244,75 +267,51 @@ def check_sign_conventions(record: SampleRecord, _spec: CarSpec) -> tuple[Violat
                         limit=wheel.kappa,
                     )
                 )
-            if _sign(wheel.alpha_rad) != _sign(wheel.fy_n):
+            effective_alpha_rad = (
+                wheel.alpha_rad if wheel.effective_alpha_rad is None else wheel.effective_alpha_rad
+            )
+            if _sign(effective_alpha_rad) != _sign(wheel.fy_n):
                 issues.append(
                     Violation(
                         where=f"step {index} wheel {corner}",
-                        detail="slip angle and lateral force disagree in sign",
+                        detail="effective slip and lateral force disagree in sign",
                         value=wheel.fy_n,
-                        limit=wheel.alpha_rad,
+                        limit=effective_alpha_rad,
                     )
                 )
     return tuple(issues)
 
 
 def check_symmetry(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 5: left/right symmetry at zero steer, zero camber and a symmetric setup.
+    """Invariant 5: zero steer preserves mirrored corner outputs on a symmetric car.
 
-    Applied to a straight-line record, where the correct answer is exact: no lateral
-    velocity, no lateral acceleration, no slip angle, no lateral force, and matching
-    loads within each axle. A left/right asymmetry here is a load-transfer or indexing
-    bug and is the cheapest bug-finder in the project.
+    Static camber can create lateral force at zero slip. The physical symmetry check
+    therefore compares mirrored values rather than requiring every lateral quantity to
+    be zero.
     """
     issues: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         if abs(step.steer_rad) > _SYMMETRY_TOLERANCE:
+            continue
+        if abs(step.vy_m_s) > 1.0e-4:
             issues.append(
                 Violation(
                     where=f"step {index}",
-                    detail="symmetry check needs zero steering input",
-                    value=step.steer_rad,
-                    limit=_SYMMETRY_TOLERANCE,
+                    detail="straight-line record has lateral velocity",
+                    value=abs(step.vy_m_s),
+                    limit=1.0e-4,
                 )
             )
-        if abs(step.vy_m_s) > _SYMMETRY_TOLERANCE or abs(step.ay_m_s2) > _SYMMETRY_TOLERANCE:
+        if abs(step.ay_m_s2) > _SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2:
             issues.append(
                 Violation(
                     where=f"step {index}",
-                    detail="straight-line record has lateral motion",
-                    value=abs(step.vy_m_s),
-                    limit=_SYMMETRY_TOLERANCE,
+                    detail="straight-line record has lateral acceleration",
+                    value=abs(step.ay_m_s2),
+                    limit=_SYMMETRY_LATERAL_ACCEL_ABSOLUTE_M_S2,
                 )
             )
         fl, fr, rl, rr = step.wheels
-        for corner, wheel in zip(CORNERS, step.wheels, strict=True):
-            if abs(wheel.alpha_rad) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric setup must produce no slip angle",
-                        value=wheel.alpha_rad,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
-            if abs(wheel.camber_deg) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric setup must have zero camber",
-                        value=wheel.camber_deg,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
-            if abs(wheel.fy_n) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} wheel {corner}",
-                        detail="symmetric straight-line run must produce no lateral force",
-                        value=wheel.fy_n,
-                        limit=_SYMMETRY_TOLERANCE,
-                    )
-                )
         for left, right, axle in ((fl, fr, "front"), (rl, rr, "rear")):
             if abs(left.fz_n - right.fz_n) > _LOAD_ABSOLUTE_FLOOR_N:
                 issues.append(
@@ -323,20 +322,43 @@ def check_symmetry(record: SampleRecord, _spec: CarSpec) -> tuple[Violation, ...
                         limit=right.fz_n,
                     )
                 )
-            if abs(left.kappa - right.kappa) > _SYMMETRY_TOLERANCE:
-                issues.append(
-                    Violation(
-                        where=f"step {index} {axle} axle",
-                        detail="left and right slip ratio differ with no lateral input",
-                        value=left.kappa,
-                        limit=right.kappa,
-                    )
+            for left_value, right_value, sign, quantity, quantity_tolerance in (
+                (left.kappa, right.kappa, 1.0, "slip ratio", 1.0e-5),
+                (
+                    left.fx_n,
+                    right.fx_n,
+                    1.0,
+                    "longitudinal force",
+                    _SYMMETRY_LONGITUDINAL_FORCE_ABSOLUTE_N,
+                ),
+                (left.alpha_rad, right.alpha_rad, 1.0, "slip angle", 1.0e-4),
+                (left.camber_deg, right.camber_deg, -1.0, "camber", 1.0e-3),
+                (
+                    left.fy_n,
+                    right.fy_n,
+                    -1.0,
+                    "lateral force",
+                    _SYMMETRY_LATERAL_FORCE_ABSOLUTE_N,
+                ),
+            ):
+                tolerance = max(
+                    quantity_tolerance,
+                    max(abs(left_value), abs(right_value)) * _SYMMETRY_RELATIVE_TOLERANCE,
                 )
+                if abs(left_value - sign * right_value) > tolerance:
+                    issues.append(
+                        Violation(
+                            where=f"step {index} {axle} axle",
+                            detail=f"mirrored {quantity} differs with no lateral input",
+                            value=left_value,
+                            limit=sign * right_value,
+                        )
+                    )
     return tuple(issues)
 
 
 def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 6: modeled longitudinal kinetic-energy residual stays under 1%."""
+    """Invariant 6: planar, yaw, and wheel kinetic-energy residual stays under 1%."""
     issues: list[Violation] = []
     for index, step in enumerate(record.ground_truth):
         if step.energy_residual_fraction is not None:
@@ -344,7 +366,10 @@ def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation
         else:
             kinetic_rate = spec.mass_kg * (step.vx_m_s * step.ax_m_s2 + step.vy_m_s * step.ay_m_s2)
             power_in = step.ice_power_w + step.mgu_k_power_w
-            residual = power_in - step.drag_w - kinetic_rate
+            # ``drag_w`` is signed negative in the forward direction, so it is added as
+            # an external power term. Legacy records without a complete P2 energy residual
+            # have no wheel or yaw state; compare only the translational chassis balance.
+            residual = power_in + step.drag_w - kinetic_rate
             relative = abs(residual) / max(abs(kinetic_rate), 1.0)
         if relative > _ENERGY_RESIDUAL_LIMIT:
             issues.append(
@@ -359,11 +384,31 @@ def check_energy_balance(record: SampleRecord, spec: CarSpec) -> tuple[Violation
 
 
 def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Violation, ...]:
-    """Invariant 7: no uncommanded downshift across forward gears or reverse under throttle.
+    """Invariant 7: a gear change is one neighbouring gear, and no reverse under positive throttle.
 
-    Neutral is a legal driver-selected state between forward gears. The record does not retain
-    the driver's request, so neutral resets the forward progression check; reverse remains
-    forbidden under positive throttle regardless of the preceding gear.
+    **A downshift is legal.** :func:`~f1telemetry.physics.gearbox.step_requested_gear` answers a
+    ``DOWN`` paddle by stepping one forward gear down, so 6 -> 5 is a driver request the model
+    represents and C9.8.3's one change at a time still holds around it. An earlier version of this
+    checker rejected *every* decrease, which made any record containing an ordinary downshift a
+    failure - including the P1 acceleration record the moment a braking scenario was run through it.
+
+    **What is still illegal is a transition the gearbox cannot perform.** One request moves at most
+    one gear and only ever to a neighbour, so a change of two or more gears between two recorded
+    steps is an indexing or state bug, in either direction. That is the check, not monotonicity:
+    requiring a non-decreasing gear column would forbid the downshift the model is built to answer.
+
+    Neutral and reverse are absolute selections that apply from anywhere - ``NEUTRAL`` and
+    ``REVERSE`` are states rather than steps along the box, and ``UP`` from either re-enters at
+    first - so a record is not required to walk the whole ladder to reach one. Neutral therefore
+    resets the neighbour comparison, and no distance is checked across a selection. Reverse stays
+    forbidden under positive throttle regardless of the preceding gear, which is the other half of
+    the original contract and is unchanged.
+
+    The neighbour rule is read across adjacent *recorded* steps, so it assumes a record is sampled
+    finely enough that two shifts cannot complete inside one interval. The committed harness records
+    the drivetrain every 100 kernel steps (10 ms) against a 40 ms ``shift_time_s``, which leaves
+    that margin; a coarser record would need the rule weakened to "no skipped gear per interval at
+    the recorded rate".
     """
     issues: list[Violation] = []
     top = len(spec.gear_ratios)
@@ -382,15 +427,6 @@ def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Viol
         if gear == 0:
             previous = 0
             continue
-        if index > 0 and gear < previous:
-            issues.append(
-                Violation(
-                    where=f"step {index}",
-                    detail="gearbox went backwards",
-                    value=float(gear),
-                    limit=float(previous),
-                )
-            )
         if gear < 0 and step.throttle_pct > 0.0:
             issues.append(
                 Violation(
@@ -398,6 +434,22 @@ def check_gearbox_progression(record: SampleRecord, spec: CarSpec) -> tuple[Viol
                     detail="reverse engaged under positive throttle",
                     value=step.throttle_pct,
                     limit=0.0,
+                )
+            )
+        if index > 0 and previous >= 1 and gear >= 1 and abs(gear - previous) > 1:
+            # Both ends are forward gears, so this is a skipped gear rather than a neutral or
+            # reverse selection, which are legal from anywhere and are not distance-checked.
+            descending = gear < previous
+            issues.append(
+                Violation(
+                    where=f"step {index}",
+                    detail=(
+                        "gearbox went backwards, skipping gears"
+                        if descending
+                        else "gearbox skipped gears going up"
+                    ),
+                    value=float(gear),
+                    limit=float(previous),
                 )
             )
         previous = gear

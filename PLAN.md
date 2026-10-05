@@ -145,13 +145,14 @@ Known cost: `@njit` cannot compile arbitrary Python. If a future coefficient is 
 something exotic, compute it *outside* the kernel and pass the result in, rather than reaching for a
 compiled extension.
 
-**State vector:**
-
-```text
-chassis    vx, vy, r, roll, pitch, heave, yaw_rate_blend, x, y, psi
-per wheel  omega, alpha_relax, kappa_relax, Fz, Fy, Fx, temp, pressure
-powertrain ice_rpm, mgu_k_rpm, gear, clutch, eso, boost_remaining
-```
+**P2 kernel state:** the first six columns preserve P1 as `[x, vx, omega_fl, omega_fr,
+omega_rl, omega_rr]`. Append `y, psi, vy, yaw_rate, roll, pitch, heave`, four lateral and four
+longitudinal tire-relaxation states, then previous-step `ax, ay, az` used by the explicit load
+transfer update. There is one yaw-rate value (`r` is its short name); there is no separate
+`yaw_rate_blend`. Roll, pitch and heave are quasi-static outputs derived from the load and
+suspension solution, while `vx, vy, yaw_rate, x, y, psi` are integrated. Per-wheel loads and forces
+are step diagnostics, not state. Temperature, pressure, and powertrain states remain in their
+existing caller-owned buffers and are outside this kernel vector.
 
 **Tire.** Pacejka Magic Formula, lateral and longitudinal, with the four properties without which F1
 behaviour is not believable:
@@ -545,11 +546,11 @@ bounds to be confirmed, not as gospel:
 | 0–100 km/h | reference **2.32 s**, uncertainty of order **±0.30 s** (§11.1) | coarse telemetry-derived median, 2026 Belgian GP race, OpenF1 `car_data` at ~3.7 Hz |
 | Top speed | a high-speed scenario must transiently reach **≥325.8 km/h** (§11.1) | FIA 2026 Australian GP race speed table, Ocon at Intermediate 2 — a reachability floor, not a terminal target |
 | Peak lateral g | ~4.5–5.5 g at high downforce | downforce from `car_spec`, grip from Pacejka `D` |
-| Peak longitudinal decel | ~−5 to −6 g | tire-road μ, brake torque limit, weight transfer |
-| 200–0 km/h braking distance | order ~4–6 s | derived, then checked against published braking data |
+| Peak longitudinal decel | ~−5 to −6 g, legacy sanity estimate only | tire-road μ and brake capacity; no brake-capacity model exists, so this is not a P1/P2 acceptance target |
+| 200–0 km/h braking distance | order ~4–6 s, legacy estimate only | requires brake capacity and validation data; outside P2 acceptance |
 | Cornering balance | understeer gradient consistent with downforce split | own model, checked for monotonicity |
 | Tire equilibrium temp | compound- and surface-dependent, plausible window | published tyre operating windows |
-| Energy balance | residual <1% | CI invariant, §6 |
+| P1 wheel-boundary energy check | residual <1% | CI invariant: chassis-plus-wheel kinetic-energy change vs wheel torque work, aero drag, and tyre-slip work; this is not fuel-to-vehicle conservation |
 
 ### 11.1 Straight-line reference points
 
@@ -559,7 +560,7 @@ first is a median read off a ~3.7 Hz feed, the second is one car's speed at one 
 circuit in one session. Neither is a published performance figure, and neither validates
 configuration-matched performance — a run that lands on either number has not thereby been shown
 to match the real car. Registering them does not close the P1 performance gate; the measured
-values miss both, which `PHASES.md` P1 and `tasks/todo.md` record.
+values miss both, which `PHASES.md` P1 and `docs/calibration.md` record.
 
 **0–100 km/h: reference 2.32 s, uncertainty of order ±0.30 s.**
 
@@ -649,7 +650,7 @@ a known circuit (§4).
 4. slip and force sign conventions consistent across all four corners
 5. longitudinal/lateral symmetry at zero steer, zero camber, symmetric setup
 6. energy conservation (§6), residual <1%
-7. monotonic gearbox progression; no reverse engaged under positive throttle
+7. forward gear changes move by one neighbouring gear per recorded step (up or down); reverse is not engaged under positive throttle
 8. determinism: two identical runs produce byte-identical Parquet
 
 **Regression fixtures.** Golden Parquet files with expected traces. Any physics change re-runs them

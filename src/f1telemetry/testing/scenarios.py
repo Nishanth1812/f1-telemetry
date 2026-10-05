@@ -1,7 +1,7 @@
 """Phase 1 straight-line scenarios: caller-driven traces over the APIs that already exist.
 
-`PHASES.md` P1-T8 asks for scenarios and `tasks/todo.md` Task 5 asks that each one start from
-fixed initial conditions and emit a trace through the existing testing/record pattern. This
+`PHASES.md` P1-T8 asks for scenarios that start from fixed initial conditions and emit traces
+through the existing testing/record pattern. This
 module is that path, and it is deliberately thin: the drivetrain comes from
 :func:`~f1telemetry.physics.gearbox.step_gearbox` and
 :func:`~f1telemetry.physics.powertrain.step_mgu_k`, the four-wheel loop from
@@ -29,15 +29,12 @@ model behaviour rather than validated car performance.
   box to top gear as fast as the shift timer allows, which is a scenario bug the gearbox is
   right to refuse to model away.
 
-* **A launch declares the engine speed its driver is holding.** ``ScenarioSegment.ice_rpm_override``
-  exists because a wheel-derived rpm is pinned at idle while a clutch slips, and the two grid-start
-  scenarios here use it so they model the near-12 000 rpm the 2026 start telemetry already reports
-  for that interval instead of an engine idling inside a stationary car. It is the one engine state
-  a scenario may declare, and it is bounded to the launch - :data:`LAUNCH_ICE_RPM` and the wheel-
-  derived speed either side of it are two different numbers, so the step out of the launch is a
-  declared discontinuity rather than a run-up, and it is a scenario assumption about driver engine
-  management, not a coefficient. Nothing in ``car_spec.yaml`` states a launch speed and none is
-  invented.
+* **The ICE has a speed state while its clutch is open.** ``ScenarioSegment.ice_rpm_initial`` seeds
+  the state from the near-12 000 rpm reported by the 2026 start telemetry. The engine then evolves
+  from delivered crank torque, clutch load reflected through the active ratio and configured ICE
+  inertia. With a fully engaged clutch the model applies an ideal speed-lock constraint to the rear
+  axle; an open clutch or shift cut leaves the engine independent. The seed is a scenario initial
+  condition, not a speed hold or a car coefficient.
 
 * **Per-corner inputs are unit-signed bias *magnitudes*.** A throttle bias of ``1.0`` and a brake
   bias of ``1.0`` mean "the pedal as given, on every wheel", which is how a straight-line driver
@@ -46,16 +43,37 @@ model behaviour rather than validated car performance.
   wheels. Making them magnitudes rather than absent lets a later scenario bias front against rear
   without this module's shape changing.
 
-* **A record carries what the model computes and nothing else.** ``ice_power_w`` is ICE shaft
-  power from the delivered torque; ``mgu_k_power_w`` is the *store-side* electrical power,
-  ``-d(SOC)/dt``, because that is the boundary C5.2.7 and C5.2.9 bound and it is exactly
-  derivable from the state the MGU-K step wrote. Invariant 6 instead uses wheel-side work because
-  the kernel has no engine or motor rotor state.
+* **A record carries what the model computes and nothing else, and each power
+  channel names the boundary it is measured at.** ``ice_power_w`` is the ICE's
+  *gross shaft power at the crankshaft*: the delivered torque against the engine
+  speed the drivetrain sampled, upstream of the gearbox and the clutch. That
+  boundary is a choice, made and documented here, and it is deliberate: the
+  fuel-energy-flow clauses that bound the ICE (C5.2.3, C5.2.4, C5.2.5) are
+  stated against crankshaft power, and the shaft power is exactly derivable
+  from the state the runner already computes - the same test
+  ``mgu_k_power_w`` passes for its own boundary. It is deliberately *not* the
+  power transmitted through the clutch: a shift cut opens the driveline while
+  the engine keeps making power, and a slipping clutch transmits less than the
+  engine delivers, so the two boundaries differ by the whole clutch. The
+  clutch-transmitted quantity is ``drive_torque_nm`` against wheel speed, which
+  the run already carries. An ICE-only clutch-transmitted power is not reported
+  at all, because the MGU-K joins the crankshaft upstream of the clutch
+  (C5.18.2) and the model sums the two sources before it: the torque that
+  crosses the clutch belongs to both, and attributing the clutch's limit to one
+  of them would invent a split the model does not compute. ``mgu_k_power_w`` is
+  the *store-side* electrical power, ``-d(SOC)/dt``, because that is the
+  boundary C5.2.7 and C5.2.9 bound and it is exactly derivable from the state
+  the MGU-K step wrote. Invariant 6 instead uses wheel-side work because the
+  kernel has no engine or motor rotor state.
 
 * **The energy invariant uses the modeled boundary.** The kernel has four wheel states and no
   engine-speed state, so the check balances chassis and wheel kinetic energy against wheel-torque
   work, aerodynamic drag and tyre-slip work. It does not compare crankshaft power directly with
-  chassis acceleration.
+  chassis acceleration, and it is never relabelled as a fuel-to-vehicle conservation law. Every
+  interval of every record is computed from those quantities, the last included: the final
+  recorded row sits on the run's terminal state, where no interval *starts*, so it reports the
+  residual of the final complete control interval - the one that *ends* on that row - and no row
+  is a hard-coded pass.
 
 * **Segments are timed to stay inside the tyres' grip, and two of them are seeded rolling.**
   With no traction control (C9.1.2) a drive demand above the Magic Formula's peak has no
@@ -67,7 +85,7 @@ model behaviour rather than validated car performance.
   torque curve rather than of a real car, and neither is a performance figure. Declaring
   :data:`LAUNCH_ICE_RPM` raises the demand through that same first-gear window by construction, and
   whether the grid launch still clears the tyre peak on the uncalibrated curves has not been
-  re-measured since it was declared - `tasks/todo.md` Task 5 keeps that open.
+  re-measured since it was declared - `docs/calibration.md` keeps that open.
 
 Every drivetrain column is reported **for the step that starts at the recorded trace row**, next to
 the torque that step produced, so a recorded row is internally consistent and a segment's window
@@ -88,7 +106,13 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 
 from f1telemetry.kernels import longitudinal  # noqa: TID251 -- scenarios drive the kernel
-from f1telemetry.physics import forces, gearbox, powertrain  # noqa: TID251 -- and the models
+from f1telemetry.physics import (  # noqa: TID251 -- and the models
+    engine,
+    forces,
+    gearbox,
+    powertrain,
+    tyres,
+)
 from f1telemetry.testing.records import (
     CORNERS,
     GroundTruthStep,
@@ -103,12 +127,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CONTROL_STEPS",
     "LAUNCH_ICE_RPM",
-    "PHASE_ONE_INVARIANTS",
     "DrivetrainTrace",
     "Scenario",
     "ScenarioRun",
     "ScenarioSegment",
     "build_scenarios",
+    "run_constant_radius_speed_sweep",
     "run_scenario",
     "scenario",
 ]
@@ -122,12 +146,9 @@ CONTROL_STEPS: Final[int] = 100
 # rad/s per rpm, the one conversion a runner needs to report engine speed from a wheel speed.
 _RPM_PER_RAD_S: Final[float] = 60.0 / math.tau
 
-# The crank speed the built grid-start launch scenarios declare for their launch segments, from the
-# 2026 start telemetry already cited on :attr:`ScenarioSegment.ice_rpm_override`: the engine is held
-# near 12 000 rpm through the launch, which a wheel-derived speed cannot report while the clutch
-# slips. It is a scenario assumption about what the driver is doing with the engine, not a car
-# coefficient - ``car_spec.yaml`` states no launch speed and none is invented here - and it is only
-# legal because the runner bounds a declared speed to the configured idle..rev-limit window.
+# Initial crank speed for the built grid-start scenarios, from the 2026 start telemetry already
+# cited on :attr:`ScenarioSegment.ice_rpm_initial`. It seeds an evolving engine state during clutch
+# slip; it is not held through the segment and is not a car coefficient.
 LAUNCH_ICE_RPM: Final[float] = 12_000.0
 
 # J per MJ. C5.2.9's usable window and the MGU-K's state of charge are both held in MJ, while the
@@ -135,9 +156,6 @@ LAUNCH_ICE_RPM: Final[float] = 12_000.0
 # buffer over one step is therefore an MJ/s rate, and it has to be converted before it can be
 # compared with anything the regulation states.
 _J_PER_MJ: Final[float] = 1.0e6
-
-# All eight checks run against each produced Phase 1 scenario record.
-PHASE_ONE_INVARIANTS: Final[tuple[int, ...]] = (1, 2, 3, 4, 5, 6, 7, 8)
 
 _UNIT_BRAKE: Final[tuple[float, ...]] = (1.0, 1.0, 1.0, 1.0)
 _REQUEST_CODES: Final[frozenset[int]] = frozenset(int(member) for member in gearbox.GearRequest)
@@ -153,13 +171,11 @@ class ScenarioSegment:
     deployment - instead of a share of ``throttle``: the motor has a pedal of its own and the ICE
     does not have it.
 
-    ``ice_rpm_override`` is the crankshaft speed for the segment when the driver is holding one the
-    wheels cannot report. It is the engine state rather than a pedal, so it is declared separately:
-    while a clutch slips the crank is not geared to the wheels, and the derived speed is then pinned
-    at the configured idle however fast the driver has the engine revving - which is what a
-    stationary launch would otherwise report. 2026 start telemetry has the engine near 12 000 rpm
-    through that interval, so a segment that means to model one says so. ``None``, the default,
-    leaves the speed derived from the wheels, which is what every other segment wants.
+    ``ice_rpm_initial`` seeds the ICE speed state at the start of this segment, for cases where the
+    crank is not locked to the rear wheels (such as a slipping launch clutch). The engine speed is
+    then integrated from configured inertia and net crank torque for each control interval. With a
+    fully engaged clutch outside a shift cut, speed follows an ideal gear lock to the rear axle.
+    ``None``, the default, keeps the current state or lets that gear-lock constraint determine it.
 
     It is the last field because the ones above it are positional in existing callers: inserted
     earlier it would silently move ``request`` and every argument after it.
@@ -173,12 +189,13 @@ class ScenarioSegment:
     brake_torque_nm: float = 0.0
     grid_standing_start: bool = False
     overtake: bool = False
-    ice_rpm_override: float | None = None
+    ice_rpm_initial: float | None = None
+    steer_wheel_deg: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
-    """A named straight-line run from fixed initial conditions.
+    """A named run from fixed initial conditions.
 
     ``initial_gear`` seeds the gearbox buffer, and a rolling start seeds every wheel at the speed
     that would roll without slip, so a rolling scenario does not start with a locked axle.
@@ -201,8 +218,12 @@ class DrivetrainTrace:
     """What the drivetrain was asked and what it did, at the recorded rate.
 
     Arrays rather than objects so a check can read a whole stretch of a run without a Python loop
-    over it, and so a repeat run can be compared byte for byte. ``accel_m_s2`` is the chassis
-    acceleration the kernel produced, which ``GroundTruthStep`` does not carry.
+    over it, and so a repeat run can be compared byte for byte. ``accel_m_s2`` is the body-frame
+    longitudinal acceleration read from the kernel trace, matching ``GroundTruthStep.ax_m_s2``.
+    ``ice_power_w``
+    is the ICE's gross crankshaft shaft power - upstream of the clutch by declaration, see the
+    module docstring - while ``drive_torque_nm`` is the post-clutch driveline torque, so the
+    power the clutch actually transmits is that torque against wheel speed.
     """
 
     gear: np.ndarray
@@ -223,8 +244,12 @@ class ScenarioRun:
     """A completed run: the kernel's own trace, the drivetrain's, and the record built from them.
 
     ``trace`` is the kernel buffer exactly as ``simulate`` left it - the raw, unsummed artefact a
-    determinism claim is about. The caller-owned wheel torque histories stay at kernel rate for
-    the discrete energy balance and because a shift cut is a 40 ms event while records are 10 ms.
+    determinism claim is about. ``step_outputs`` is the caller-owned kernel output buffer the
+    run wrote through: one row per kernel step, carrying the vertical loads, longitudinal tyre
+    forces, suspension travels and travel-limit flags the kernel actually applied. The record
+    reads those applied values rather than recomputing a second set of numbers. The caller-owned
+    wheel torque histories stay at kernel rate for the discrete energy balance and because a
+    shift cut is a 40 ms event while records are 10 ms.
     """
 
     name: str
@@ -237,6 +262,8 @@ class ScenarioRun:
     brake_torque_nm: np.ndarray
     drivetrain: DrivetrainTrace
     record: SampleRecord
+    step_outputs: longitudinal.StepOutputs
+    steer_wheel_deg: np.ndarray
 
     @property
     def record_dt_s(self) -> float:
@@ -262,7 +289,23 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
     brake_nm = -_rear_wheel_torque_nm(config)
     mgu_k_nm = config.mgu_k_torque_limit_nm / config.mgu_k_crankshaft_ratio
     top_gear = int(config.gear_ratios.size)
+    circle_speed_m_s = 20.0
+    circle_radius_m = 50.0
+    circle_steer_wheel_deg = (
+        math.degrees(math.atan(config.wheelbase_m / circle_radius_m)) * config.steering_ratio
+    )
     built = (
+        Scenario(
+            name="steady_state_circle",
+            initial_speed_m_s=circle_speed_m_s,
+            initial_gear=0,
+            description=(
+                "Neutral 20 m/s left-hand circle using the no-slip steering angle for a 50 m "
+                "radius. The short fixed-input run exposes settling, yaw response, lateral load "
+                "transfer and all four suspension outputs."
+            ),
+            segments=(ScenarioSegment(1.0, steer_wheel_deg=circle_steer_wheel_deg),),
+        ),
         Scenario(
             name="standing_launch",
             initial_speed_m_s=0.0,
@@ -278,7 +321,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     throttle=0.25,
                     clutch=0.75,
                     grid_standing_start=True,
-                    ice_rpm_override=LAUNCH_ICE_RPM,
+                    ice_rpm_initial=LAUNCH_ICE_RPM,
                 ),
                 ScenarioSegment(
                     1.0,
@@ -305,7 +348,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     throttle=0.25,
                     clutch=0.75,
                     grid_standing_start=True,
-                    ice_rpm_override=LAUNCH_ICE_RPM,
+                    ice_rpm_initial=LAUNCH_ICE_RPM,
                 ),
                 ScenarioSegment(
                     1.0,
@@ -454,6 +497,8 @@ def run_scenario(
     total = sum(counts)
 
     trace = np.zeros((total + 1, longitudinal.STATE_SIZE), dtype=np.float64)
+    step_outputs = longitudinal.allocate_step_outputs(total)
+    steer_history = np.zeros(total, dtype=np.float64)
     drive = np.zeros(total, dtype=np.float64)
     brake_torque = np.zeros((total, forces.WHEEL_COUNT), dtype=np.float64)
     rpm = np.zeros(total, dtype=np.float64)
@@ -467,6 +512,7 @@ def run_scenario(
 
     gear_state = gearbox.initial_state(float(plan.initial_gear))
     mgu_k_state = powertrain.mgu_k_initial_state(config, plan.soc_mj)
+    engine_rpm = config.idle_rpm
     state = longitudinal.initial_state(
         speed_m_s=plan.initial_speed_m_s,
         wheel_omega_rad_s=plan.initial_speed_m_s / config.rolling_radius_m,
@@ -476,16 +522,36 @@ def run_scenario(
     row = 0
     mgu_k_cap_w = config.mgu_k_peak_power_kw * 1_000.0
     for segment, count in zip(plan.segments, counts, strict=True):
+        steer_history[row : row + count] = segment.steer_wheel_deg
+        if segment.ice_rpm_initial is not None:
+            engine_rpm = float(segment.ice_rpm_initial)
         gear_state[gearbox.CLUTCH_INDEX] = segment.clutch
         brake = _brake_history(segment, plan.brake_bias, count)
         brake_torque[row : row + count] = brake
         for interval in range(0, count, control_steps):
             interval_start = row + interval
             sample = state
-            sampled_rpm = _ice_rpm(config, sample, gear_state, segment.ice_rpm_override)
+            shifting_at_start = gear_state[gearbox.SHIFT_TIMER_INDEX] > 0.0
+            shift_requested = interval == 0 and int(segment.request) != int(
+                gearbox.GearRequest.HOLD
+            )
+            starting_gear = int(gear_state[gearbox.GEAR_INDEX])
+            clutch_open = segment.clutch < 1.0 or starting_gear == gearbox.NEUTRAL_GEAR
+            engine_is_free = clutch_open or shifting_at_start or shift_requested
+            if engine_is_free:
+                if not clutch_open:
+                    # Entering a shift cut from a locked clutch preserves the coupled speed as the
+                    # initial condition of the newly free engine state.
+                    engine_rpm = _wheel_coupled_ice_rpm(config, sample, gear_state)
+                sampled_rpm = engine_rpm
+            else:
+                sampled_rpm = _wheel_coupled_ice_rpm(config, sample, gear_state)
+                engine_rpm = sampled_rpm
             sampled_torque = powertrain.step_ice_torque(config, sampled_rpm, segment.throttle)
             sample_speed = float(sample[longitudinal.V_INDEX])
             torque = np.zeros(control_steps, dtype=np.float64)
+            delivered_torque_sum = 0.0
+            load_torque_sum = 0.0
             for offset in range(control_steps):
                 position = interval_start + offset
                 throttle[position] = segment.throttle
@@ -507,6 +573,16 @@ def run_scenario(
                     segment.request if interval == 0 and offset == 0 else gearbox.GearRequest.HOLD,
                     mgu_k_torque_nm=sampled_mgu_k,
                 )
+                delivered_torque_sum += sampled_torque + sampled_mgu_k
+                current_gear = int(gear_state[gearbox.GEAR_INDEX])
+                if current_gear >= 1:
+                    total_ratio = config.gear_ratios[current_gear - 1] * config.final_drive
+                elif current_gear == gearbox.REVERSE_GEAR:
+                    total_ratio = -config.reverse_ratio * config.final_drive
+                else:
+                    total_ratio = 0.0
+                if total_ratio != 0.0:
+                    load_torque_sum += torque[offset] / total_ratio
                 drive[position] = torque[offset]
                 rpm[position] = sampled_rpm
                 ice[position] = sampled_torque
@@ -528,12 +604,24 @@ def run_scenario(
                 torque,
                 longitudinal.allocate(control_steps),
                 brake[interval : interval + control_steps],
+                step_outputs=_step_output_view(step_outputs, interval_start, control_steps),
+                steer_wheel_deg=steer_history[interval_start : interval_start + control_steps],
             )
             trace[interval_start + 1 : interval_start + control_steps + 1] = out[1:]
             state = out[control_steps].copy()
+            if engine_is_free:
+                engine_rpm = engine.step_engine_speed(
+                    config,
+                    sampled_rpm,
+                    delivered_torque_sum / control_steps,
+                    load_torque_sum / control_steps,
+                    dt_s=control_steps * config.dt_s,
+                )
+            else:
+                engine_rpm = _wheel_coupled_ice_rpm(config, state, gear_state)
         row += count
 
-    accel = np.concatenate((np.diff(trace[:, longitudinal.V_INDEX]) / config.dt_s, np.zeros(1)))
+    accel = trace[:, longitudinal.PREVIOUS_AX_INDEX].copy()
     recorded = _held(rpm, control_steps, total).size
     drivetrain = DrivetrainTrace(
         gear=_held(gear, control_steps, total),
@@ -563,7 +651,117 @@ def run_scenario(
         drive_torque_nm=drive,
         brake_torque_nm=brake_torque,
         drivetrain=drivetrain,
-        record=_build_record(plan, config, trace, drivetrain, drive, brake_torque, control_steps),
+        record=_build_record(
+            plan,
+            config,
+            trace,
+            drivetrain,
+            drive,
+            brake_torque,
+            control_steps,
+            step_outputs,
+            steer_history,
+        ),
+        step_outputs=step_outputs,
+        steer_wheel_deg=steer_history,
+    )
+
+
+def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, ...]:
+    """Run coasting circles from increasing start speeds at a 200 m radius.
+
+    Each point runs long enough for the lateral response to settle. A bisection over steering
+    demand matches the mean measured radius in the final 150 ms, so measured lateral acceleration
+    reflects the turn rather than the sideslip transient.
+    """
+    radius_m = 200.0
+    duration_s = 2.5
+    # Keep the published driver-facing speed inside channels.yaml's 400 km/h range.
+    speed_points_m_s = (40.0, 50.0, 60.0, 70.0, 80.0, 95.0, 105.0)
+    geometric_steer_deg = math.degrees(math.atan(config.wheelbase_m / radius_m)) * (
+        config.steering_ratio
+    )
+    runs: list[ScenarioRun] = []
+    for speed_m_s in speed_points_m_s:
+
+        def measure_radius(steer_deg: float, speed_m_s: float = speed_m_s) -> float:
+            candidate = Scenario(
+                name=f"constant_radius_speed_sweep_{speed_m_s:g}",
+                initial_speed_m_s=speed_m_s,
+                initial_gear=0,
+                description=(
+                    f"Neutral coasting sweep starting at {speed_m_s:g} m/s and targeting a "
+                    f"{radius_m:g} m radius after lateral settling."
+                ),
+                segments=(ScenarioSegment(duration_s, steer_wheel_deg=steer_deg),),
+            )
+            result = run_scenario(config, candidate)
+            tail_steps = max(1, round(0.15 / result.record.dt_s))
+            tail = result.record.ground_truth[-tail_steps:]
+            mean_speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(
+                tail
+            )
+            mean_yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
+            if mean_yaw_rate <= 0.0:
+                if steer_deg == 0.0:
+                    return math.inf
+                msg = f"{speed_m_s:g} m/s sweep point turned opposite its steering input"
+                raise ValueError(msg)
+            return mean_speed / mean_yaw_rate
+
+        max_steer_deg = min(3.0 * geometric_steer_deg, config.max_steering_wheel_angle_deg)
+        if measure_radius(0.0) <= radius_m:
+            msg = f"{speed_m_s:g} m/s sweep point is already inside {radius_m:g} m at zero steer"
+            raise ValueError(msg)
+        lower_deg = 0.0
+        upper_deg = min(1.0, max_steer_deg)
+        while measure_radius(upper_deg) > radius_m:
+            lower_deg = upper_deg
+            if upper_deg >= max_steer_deg:
+                msg = f"{speed_m_s:g} m/s sweep point cannot reach a {radius_m:g} m radius"
+                raise ValueError(msg)
+            upper_deg = min(upper_deg + 1.0, max_steer_deg)
+        for _ in range(12):
+            steer_deg = 0.5 * (lower_deg + upper_deg)
+            if measure_radius(steer_deg) > radius_m:
+                lower_deg = steer_deg
+            else:
+                upper_deg = steer_deg
+        final_steer_deg = 0.5 * (lower_deg + upper_deg)
+        final_plan = Scenario(
+            name=f"constant_radius_speed_sweep_{speed_m_s:g}",
+            initial_speed_m_s=speed_m_s,
+            initial_gear=0,
+            description=(
+                f"Neutral coasting sweep starting at {speed_m_s:g} m/s and targeting a "
+                f"{radius_m:g} m radius after lateral settling."
+            ),
+            segments=(ScenarioSegment(duration_s, steer_wheel_deg=final_steer_deg),),
+        )
+        runs.append(run_scenario(config, final_plan))
+    return tuple(runs)
+
+
+def _step_output_view(
+    step_outputs: longitudinal.StepOutputs, start: int, count: int
+) -> longitudinal.StepOutputs:
+    """The ``count``-row block of the run's step outputs starting at trace row ``start``.
+
+    Every row the kernel writes through the returned object is the same memory as the run's
+    retained buffer, so the block the kernel fills on one control-interval call is the one
+    :attr:`ScenarioRun.step_outputs` keeps for the whole run.
+    """
+    stop = start + count
+    return longitudinal.StepOutputs(
+        load_n=step_outputs.load_n[start:stop],
+        force_x_n=step_outputs.force_x_n[start:stop],
+        force_y_n=step_outputs.force_y_n[start:stop],
+        slip_work_j=step_outputs.slip_work_j[start:stop],
+        slip_ratio=step_outputs.slip_ratio[start:stop],
+        slip_angle_deg=step_outputs.slip_angle_deg[start:stop],
+        camber_deg=step_outputs.camber_deg[start:stop],
+        travel_m=step_outputs.travel_m[start:stop],
+        travel_limited=step_outputs.travel_limited[start:stop],
     )
 
 
@@ -577,30 +775,12 @@ def _held(values: np.ndarray, control_steps: int, total: int) -> np.ndarray:
     return np.concatenate((values[:total:control_steps], values[-1:]))
 
 
-def _ice_rpm(
+def _wheel_coupled_ice_rpm(
     config: KernelConfig,
     row: np.ndarray,
     gear_state: np.ndarray,
-    override: float | None = None,
 ) -> float:
-    """Crankshaft speed the drivetrain is at while the car is in ``row``'s state.
-
-    ``override``, when the segment declares one, *is* the answer and is returned as given: a caller
-    stating the engine speed knows something the wheels do not, and the derivation below cannot
-    recover it while a clutch slips. :func:`_checked_segment` has already bounded it to the
-    configured idle..rev limit band before the run starts, so it needs no clamp here - and clamping
-    would defeat the point, since a declared speed the runner quietly adjusted is the same
-    disagreement with telemetry that declaring it avoids.
-
-    Otherwise the mean of the two rear wheels, geared by the gear the box is *in* - C5.18.2 puts the
-    MGU-K's speed on the same number, so this is also what the motor's part speed and the
-    fuel-energy-flow limits are evaluated at. A driven axle has no differential model (C9.9.1), so
-    the two rear speeds agree to the last bit and the mean is only a way of not caring which one it
-    was. The derived result is clamped to the engine's own band, because a wheel speed that implies
-    an engine speed outside it is a gear-ratio artefact rather than a speed the engine turns at.
-    """
-    if override is not None:
-        return float(override)
+    """Crank speed imposed by an ideally locked clutch in ``row``'s wheel state."""
     wheel_omega = 0.5 * (row[longitudinal.RL_WHEEL_INDEX] + row[longitudinal.RR_WHEEL_INDEX])
     gear = int(gear_state[gearbox.GEAR_INDEX])
     ratio = (
@@ -608,7 +788,7 @@ def _ice_rpm(
         if gear >= 1
         else config.reverse_ratio * config.final_drive
     )
-    coupled_rpm = wheel_omega * ratio * _RPM_PER_RAD_S
+    coupled_rpm = abs(wheel_omega * ratio) * _RPM_PER_RAD_S
     return float(min(config.rev_limit_rpm, max(config.idle_rpm, coupled_rpm)))
 
 
@@ -633,23 +813,30 @@ def _build_record(
     drive_torque_nm: np.ndarray,
     brake_torque_nm: np.ndarray,
     control_steps: int,
+    step_outputs: longitudinal.StepOutputs,
+    steer_history: np.ndarray,
 ) -> SampleRecord:
     """Assemble the :class:`SampleRecord` a scenario produces, decimated to the recorded rate.
 
-    The per-corner numbers are recomputed through the same public primitives the kernel loop
-    calls, at the state each recorded row holds - so the record agrees with the trace it was built
-    from rather than describing a second, slightly different run. ``vy``, ``ay``, ``az``,
-    ``steer_rad``, ``alpha_rad``, ``fy_n`` and ``camber_deg`` are exactly zero: this slice has no
-    lateral or vertical dynamics to report, and a fabricated value for any of them would make the
-    record claim something the model did not compute.
+    The per-corner loads, longitudinal tyre forces, suspension travels and travel-limit
+    flags are the values the kernel actually applied, read from ``step_outputs`` at the row
+    of the step that starts at each recorded trace row. Planar state and yaw are read from
+    the trace; suspension remains quasi-static, so vertical acceleration is zero.
     """
     values = forces.validated_config_scalars(config, "scenarios")
-    weight_n = config.mass_kg * config.gravity_m_s2
+    lateral = tyres.validated_lateral_scalars(config, "scenarios")
     steps: list[GroundTruthStep] = []
     frames: list[SensorFrame] = []
+    # No kernel step starts at the terminal trace row, so it carries the outputs of the
+    # last step, the same repeat `_held` applies to the per-step columns above.
+    last_step_row = step_outputs.load_n.shape[0] - 1
     for index in range(len(drivetrain.gear)):
         row = index * control_steps
-        speed = float(trace[row, longitudinal.V_INDEX])
+        step_row = row if row < step_outputs.load_n.shape[0] else last_step_row
+        input_row = min(row, steer_history.shape[0] - 1)
+        vx = float(trace[row, longitudinal.V_INDEX])
+        vy = float(trace[row, longitudinal.VY_INDEX])
+        speed = math.hypot(vx, vy)
         downforce_n, drag_n = forces.aero_forces(
             speed,
             values["air_density_kg_m3"],
@@ -660,44 +847,58 @@ def _build_record(
         )
         wheels: list[WheelTruth] = []
         for wheel in range(forces.WHEEL_COUNT):
-            omega = float(trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel])
-            load_n = (
-                forces.static_wheel_load_n(weight_n, values["front_weight_fraction"], wheel)
-                + downforce_n / forces.WHEEL_COUNT
-            )
-            kappa = forces.slip_ratio(
-                omega * values["rolling_radius_m"],
-                speed,
-                values["slip_ratio_min_speed_m_s"],
-            )
+            fz_n = float(step_outputs.load_n[step_row, wheel])
+            tyre_camber_deg = float(step_outputs.camber_deg[step_row, wheel])
             wheels.append(
                 WheelTruth(
-                    fz_n=load_n,
-                    fx_n=forces.wheel_tyre_force_n(
-                        speed,
-                        omega,
-                        load_n,
-                        values["rolling_radius_m"],
-                        values["slip_ratio_min_speed_m_s"],
-                        values["pacejka_b"],
-                        values["pacejka_c"],
-                        values["pacejka_e"],
-                        values["pacejka_mu"],
-                    ),
-                    fy_n=0.0,
+                    fz_n=fz_n,
+                    fx_n=float(step_outputs.force_x_n[step_row, wheel]),
+                    fy_n=float(step_outputs.force_y_n[step_row, wheel]),
                     mu=values["pacejka_mu"],
-                    kappa=kappa,
-                    alpha_rad=0.0,
-                    camber_deg=0.0,
+                    mu_lateral=tyres.lateral_peak_friction(
+                        fz_n,
+                        lateral["lateral_pacejka_mu"],
+                        lateral["load_sensitivity_reference_n"],
+                        lateral["load_sensitivity_peak"],
+                    ),
+                    kappa=float(step_outputs.slip_ratio[step_row, wheel]),
+                    alpha_rad=math.radians(float(step_outputs.slip_angle_deg[step_row, wheel])),
+                    camber_deg=tyre_camber_deg,
+                    effective_alpha_rad=math.radians(
+                        float(step_outputs.slip_angle_deg[step_row, wheel])
+                        + tyres.camber_equivalent_slip_deg(
+                            tyre_camber_deg,
+                            lateral["camber_stiffness_n_per_deg"],
+                            tyres.reference_cornering_stiffness_n_per_deg(
+                                lateral["lateral_pacejka_mu"],
+                                lateral["lateral_pacejka_b"],
+                                lateral["lateral_pacejka_c"],
+                                lateral["load_sensitivity_reference_n"],
+                            ),
+                        )
+                    ),
                 )
             )
-        accel = float(drivetrain.accel_m_s2[index])
+        suspension_travel_m = (
+            float(step_outputs.travel_m[step_row, 0]),
+            float(step_outputs.travel_m[step_row, 1]),
+            float(step_outputs.travel_m[step_row, 2]),
+            float(step_outputs.travel_m[step_row, 3]),
+        )
+        travel_limited = (
+            bool(step_outputs.travel_limited[step_row, 0]),
+            bool(step_outputs.travel_limited[step_row, 1]),
+            bool(step_outputs.travel_limited[step_row, 2]),
+            bool(step_outputs.travel_limited[step_row, 3]),
+        )
+        accel = float(trace[row, longitudinal.PREVIOUS_AX_INDEX])
+        ay = float(trace[row, longitudinal.PREVIOUS_AY_INDEX])
         step = GroundTruthStep(
             t_s=index * config.dt_s * control_steps,
-            vx_m_s=speed,
-            vy_m_s=0.0,
+            vx_m_s=vx,
+            vy_m_s=vy,
             ax_m_s2=accel,
-            ay_m_s2=0.0,
+            ay_m_s2=ay,
             az_m_s2=0.0,
             gear=int(drivetrain.gear[index]),
             clutch=float(drivetrain.clutch[index]),
@@ -706,7 +907,7 @@ def _build_record(
             mgu_k_power_w=float(drivetrain.mgu_k_power_w[index]),
             drag_w=drag_n * speed,
             downforce_n=downforce_n,
-            steer_rad=0.0,
+            steer_rad=math.radians(float(steer_history[input_row])),
             energy_residual_fraction=_energy_residual_fraction(
                 trace,
                 drive_torque_nm,
@@ -715,8 +916,15 @@ def _build_record(
                 control_steps,
                 config,
                 values,
+                step_outputs,
             ),
             wheels=(wheels[0], wheels[1], wheels[2], wheels[3]),
+            yaw_rate_rad_s=float(trace[row, longitudinal.YAW_RATE_INDEX]),
+            roll_rad=float(trace[row, longitudinal.ROLL_INDEX]),
+            pitch_rad=float(trace[row, longitudinal.PITCH_INDEX]),
+            heave_m=float(trace[row, longitudinal.HEAVE_INDEX]),
+            suspension_travel_m=suspension_travel_m,
+            travel_limited=travel_limited,
         )
         steps.append(step)
         frames.append(
@@ -730,8 +938,8 @@ def _build_record(
         dt_s=config.dt_s * control_steps,
         description=(
             f"{plan.description} Produced by f1telemetry.testing.scenarios at the "
-            f"{config.dt_s * control_steps!r} s record rate; every value is recomputed from the "
-            "kernel trace at the row it describes."
+            f"{config.dt_s * control_steps!r} s record rate; every value is read from the "
+            "kernel trace and the kernel step outputs at the row it describes."
         ),
         ground_truth=tuple(steps),
         frames=tuple(frames),
@@ -746,22 +954,51 @@ def _energy_residual_fraction(
     count: int,
     config: KernelConfig,
     values: Mapping[str, float],
+    step_outputs: longitudinal.StepOutputs,
 ) -> float:
     """Discrete energy residual for the closed chassis and four-wheel loop.
 
     Work uses midpoint velocity and wheel speed, matching the explicit Euler update exactly.
-    Wheel torque supplies energy; aero drag and tyre slip remove it. ICE/MGU-K crank power is
-    intentionally excluded because P1 has no engine or driveline rotational state.
+    Wheel torque supplies energy; aero drag and tyre slip remove it. Tyre slip work uses the
+    longitudinal forces the kernel actually applied for each step, read from ``step_outputs``,
+    rather than a second recomputation. ICE/MGU-K crank power is intentionally excluded
+    because P1 has no engine or driveline rotational state.
+
+    The interval is ``[start, start + count)``. The run's final recorded row sits on the
+    terminal state, where no interval starts, so it reports the residual of the final
+    complete control interval - the one that *ends* on that row, and the same interval the
+    row before it describes - by shifting the window back one interval. That interval is
+    computed from the same quantities as every other one: no row is a hard-coded pass.
     """
     if start + count >= trace.shape[0]:
-        return 0.0
+        # Only the final recorded row lands here, and it is the one case in
+        # which the interval has to be read backwards: the row describes the
+        # run's terminal state, so the residual it can truthfully carry is the
+        # final complete interval's, the one ending on that state. Every
+        # segment is a whole number of control intervals, so `start` (the
+        # terminal row) is at least `count`, and the shifted window stays
+        # inside the trace.
+        start = trace.shape[0] - 1 - count
     initial = trace[start]
     final = trace[start + count]
-    wheel_columns = range(longitudinal.WHEEL_STATE_OFFSET, longitudinal.STATE_SIZE)
+    wheel_columns = range(
+        longitudinal.WHEEL_STATE_OFFSET,
+        longitudinal.WHEEL_STATE_OFFSET + forces.WHEEL_COUNT,
+    )
     kinetic_change = (
         0.5
         * config.mass_kg
-        * (final[longitudinal.V_INDEX] ** 2 - initial[longitudinal.V_INDEX] ** 2)
+        * (
+            final[longitudinal.V_INDEX] ** 2
+            + final[longitudinal.VY_INDEX] ** 2
+            - initial[longitudinal.V_INDEX] ** 2
+            - initial[longitudinal.VY_INDEX] ** 2
+        )
+    )
+    kinetic_change += (
+        0.5
+        * config.yaw_inertia_kg_m2
+        * (final[longitudinal.YAW_RATE_INDEX] ** 2 - initial[longitudinal.YAW_RATE_INDEX] ** 2)
     )
     inertia = values["wheel_inertia_kg_m2"]
     kinetic_change += (
@@ -776,9 +1013,11 @@ def _energy_residual_fraction(
     for index in range(start, start + count):
         before = trace[index]
         after = trace[index + 1]
-        speed_mid = 0.5 * (before[longitudinal.V_INDEX] + after[longitudinal.V_INDEX])
-        downforce_n, drag_n = forces.aero_forces(
-            float(before[longitudinal.V_INDEX]),
+        speed_mid = 0.5 * math.hypot(
+            before[longitudinal.V_INDEX], before[longitudinal.VY_INDEX]
+        ) + 0.5 * math.hypot(after[longitudinal.V_INDEX], after[longitudinal.VY_INDEX])
+        _downforce_n, drag_n = forces.aero_forces(
+            float(math.hypot(before[longitudinal.V_INDEX], before[longitudinal.VY_INDEX])),
             values["air_density_kg_m3"],
             values["reference_area_m2"],
             config.aero_speed_m_s,
@@ -797,24 +1036,7 @@ def _energy_residual_fraction(
                 * omega_mid
                 * dt_s
             )
-            load_n = forces.static_wheel_load_n(
-                config.mass_kg * config.gravity_m_s2,
-                values["front_weight_fraction"],
-                wheel,
-            )
-            load_n += downforce_n / forces.WHEEL_COUNT
-            fx_n = forces.wheel_tyre_force_n(
-                float(before[longitudinal.V_INDEX]),
-                float(before[column]),
-                load_n,
-                values["rolling_radius_m"],
-                values["slip_ratio_min_speed_m_s"],
-                values["pacejka_b"],
-                values["pacejka_c"],
-                values["pacejka_e"],
-                values["pacejka_mu"],
-            )
-            tyre_slip_work += fx_n * (omega_mid * values["rolling_radius_m"] - speed_mid) * dt_s
+            tyre_slip_work += float(step_outputs.slip_work_j[index, wheel])
     accounted_work = torque_work + drag_work - tyre_slip_work
     scale = max(abs(kinetic_change), abs(accounted_work), 1.0)
     return abs(kinetic_change - accounted_work) / scale
@@ -836,10 +1058,15 @@ def _frame_values(
     angles, temperatures, boost pressure - are absent rather than published as zeros, because a
     published zero is a claim that the sensor read zero.
     """
-    return {
-        "speed": step.vx_m_s * 3.6,
+    values = {
+        "speed": math.hypot(step.vx_m_s, step.vy_m_s) * 3.6,
         "vx": step.vx_m_s,
+        "vy": step.vy_m_s,
+        "yaw_rate": math.degrees(step.yaw_rate_rad_s),
+        "accel_lateral": step.ay_m_s2,
         "accel_longitudinal": step.ax_m_s2,
+        "roll": math.degrees(step.roll_rad),
+        "pitch": math.degrees(step.pitch_rad),
         "ice_rpm": float(drivetrain.ice_rpm[index]),
         "ice_torque_nm": float(drivetrain.ice_torque_nm[index]),
         "mgu_k_rpm": float(drivetrain.ice_rpm[index]) * config.mgu_k_crankshaft_ratio,
@@ -848,9 +1075,10 @@ def _frame_values(
         "throttle_pct": step.throttle_pct,
         "clutch_pct": step.clutch * 100.0,
         "downforce_n": step.downforce_n,
+        "steering_angle": math.degrees(step.steer_rad),
         **{
-            f"wheel_speed_{corner.lower()}": float(
-                trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel]
+            f"wheel_speed_{corner.lower()}": abs(
+                float(trace[row, longitudinal.WHEEL_STATE_OFFSET + wheel])
             )
             * config.rolling_radius_m
             * 3.6
@@ -861,10 +1089,23 @@ def _frame_values(
             for wheel, corner in enumerate(CORNERS)
         },
         **{
+            f"slip_angle_{corner.lower()}": math.degrees(wheels[wheel].alpha_rad)
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
             f"vertical_load_{corner.lower()}": wheels[wheel].fz_n
             for wheel, corner in enumerate(CORNERS)
         },
+        **{
+            f"camber_{corner.lower()}": wheels[wheel].camber_deg
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
+            f"suspension_travel_{corner.lower()}": step.suspension_travel_m[wheel] * 1_000.0
+            for wheel, corner in enumerate(CORNERS)
+        },
     }
+    return values
 
 
 def _rear_wheel_torque_nm(config: KernelConfig) -> float:
@@ -967,6 +1208,16 @@ def _checked_segment(
         if not 0.0 <= pedal <= 1.0:
             msg = f"{label}: throttle and clutch must be in [0, 1], got {pedal!r}"
             raise ValueError(msg)
+    steer = segment.steer_wheel_deg
+    if isinstance(steer, bool) or not isinstance(steer, (int, float)) or not math.isfinite(steer):
+        msg = f"{label}: steer_wheel_deg must be a finite number, got {steer!r}"
+        raise ValueError(msg)
+    if abs(steer) > config.max_steering_wheel_angle_deg:
+        msg = (
+            f"{label}: steer_wheel_deg magnitude {abs(steer)!r} exceeds configured limit "
+            f"{config.max_steering_wheel_angle_deg!r}"
+        )
+        raise ValueError(msg)
     if isinstance(segment.request, bool) or not isinstance(
         segment.request, (gearbox.GearRequest, int)
     ):
@@ -979,22 +1230,25 @@ def _checked_segment(
             f"got {int(segment.request)!r}"
         )
         raise ValueError(msg)
-    override = segment.ice_rpm_override
-    if override is not None:
+    initial_rpm = segment.ice_rpm_initial
+    if initial_rpm is not None:
         if (
-            isinstance(override, bool)
-            or not isinstance(override, (int, float))
-            or not math.isfinite(override)
+            isinstance(initial_rpm, bool)
+            or not isinstance(initial_rpm, (int, float))
+            or not math.isfinite(initial_rpm)
         ):
-            msg = f"{label}: ice_rpm_override must be finite, got {override!r}"
+            msg = f"{label}: ice_rpm_initial must be finite, got {initial_rpm!r}"
             raise ValueError(msg)
-        if not config.idle_rpm <= float(override) <= config.rev_limit_rpm:
+        if not config.idle_rpm <= float(initial_rpm) <= config.rev_limit_rpm:
             msg = (
-                f"{label}: ice_rpm_override must be within the configured idle..rev limit of "
-                f"{config.idle_rpm!r}..{config.rev_limit_rpm!r} rpm, got {override!r}. The engine "
-                "cannot be turning outside its own band, and quietly clamping a declared speed "
-                "would report a different engine speed than the caller asked for - the same lie "
-                "the override exists to remove"
+                f"{label}: ice_rpm_initial must be within the configured idle..rev limit of "
+                f"{config.idle_rpm!r}..{config.rev_limit_rpm!r} rpm, got {initial_rpm!r}. The "
+                "engine state must start inside its configured operating band"
+            )
+            raise ValueError(msg)
+        if not segment.grid_standing_start or segment.clutch >= 1.0:
+            msg = (
+                f"{label}: ice_rpm_initial is only valid for a grid-start segment with clutch slip"
             )
             raise ValueError(msg)
     for quantity, value in (
