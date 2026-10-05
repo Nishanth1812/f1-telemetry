@@ -714,13 +714,13 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
             msg = f"{speed_m_s:g} m/s sweep point is already inside {radius_m:g} m at zero steer"
             raise ValueError(msg)
         lower_deg = 0.0
-        upper_deg = 1.0
-        while upper_deg <= max_steer_deg and measure_radius(upper_deg) > radius_m:
+        upper_deg = min(1.0, max_steer_deg)
+        while measure_radius(upper_deg) > radius_m:
             lower_deg = upper_deg
-            upper_deg += 1.0
-        if upper_deg > max_steer_deg:
-            msg = f"{speed_m_s:g} m/s sweep point cannot reach a {radius_m:g} m radius"
-            raise ValueError(msg)
+            if upper_deg >= max_steer_deg:
+                msg = f"{speed_m_s:g} m/s sweep point cannot reach a {radius_m:g} m radius"
+                raise ValueError(msg)
+            upper_deg = min(upper_deg + 1.0, max_steer_deg)
         for _ in range(12):
             steer_deg = 0.5 * (lower_deg + upper_deg)
             if measure_radius(steer_deg) > radius_m:
