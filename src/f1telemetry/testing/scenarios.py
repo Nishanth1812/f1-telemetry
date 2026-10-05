@@ -683,7 +683,8 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
     )
     runs: list[ScenarioRun] = []
     for speed_m_s in speed_points_m_s:
-        def measure_radius(steer_deg: float) -> float:
+
+        def measure_radius(steer_deg: float, speed_m_s: float = speed_m_s) -> float:
             candidate = Scenario(
                 name=f"constant_radius_speed_sweep_{speed_m_s:g}",
                 initial_speed_m_s=speed_m_s,
@@ -695,14 +696,23 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
                 segments=(ScenarioSegment(duration_s, steer_wheel_deg=steer_deg),),
             )
             result = run_scenario(config, candidate)
-            tail = result.record.ground_truth[-15:]
+            tail_steps = max(1, round(0.15 / result.record.dt_s))
+            tail = result.record.ground_truth[-tail_steps:]
             mean_speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(
                 tail
             )
             mean_yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
-            return math.inf if mean_yaw_rate <= 0.0 else mean_speed / mean_yaw_rate
+            if mean_yaw_rate <= 0.0:
+                if steer_deg == 0.0:
+                    return math.inf
+                msg = f"{speed_m_s:g} m/s sweep point turned opposite its steering input"
+                raise ValueError(msg)
+            return mean_speed / mean_yaw_rate
 
         max_steer_deg = min(3.0 * geometric_steer_deg, config.max_steering_wheel_angle_deg)
+        if measure_radius(0.0) <= radius_m:
+            msg = f"{speed_m_s:g} m/s sweep point is already inside {radius_m:g} m at zero steer"
+            raise ValueError(msg)
         lower_deg = 0.0
         upper_deg = 1.0
         while upper_deg <= max_steer_deg and measure_radius(upper_deg) > radius_m:

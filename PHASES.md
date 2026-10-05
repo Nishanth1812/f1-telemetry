@@ -129,7 +129,7 @@ does not establish full F1-car fidelity or regulatory compliance.
 
 **Exit gate**
 - [ ] Constant-radius sweep reaches a configuration-matched, source-backed target peak lateral g
-- [x] The sweep exceeds a conservative 4.0 g historical plausibility floor drawn from a 2011 Pirelli F1 report; this does not close calibration
+- [x] Compare the settled sweep with the 4.0 g historical reference; the current untuned model remains below it, and it does not close calibration
 - [x] The friction ellipse and zero-load force bound pass on every wheel in the produced scenarios
 - [x] Zero-steer symmetry passes with camber and bump steer disabled; paired left/right steering runs mirror chassis state and four-wheel force/load outputs
 - [x] Steering demand changes monotonically with `roll_stiffness_front_fraction` at matched 50 m radius and 20 m/s; front/rear aero-balance sensitivity is deferred because the configuration has no aero-balance input
@@ -137,14 +137,15 @@ does not establish full F1-car fidelity or regulatory compliance.
 
 **Implementation status (2026-10):** The P2 kernel, load transfer, steering, relaxation, combined-slip
 forces, scenario truth and channel publication are implemented on `feat/phase-2`. The 50 m circle
-settles within 5% of its requested radius at about 0.76 g; the constant-radius sweep spans 40–105
-m/s, matches its 200 m radius, stays within the published channel ranges, and exceeds a 4.0 g
-historical plausibility floor at its high-speed point. The 4.0 g figure comes from Pirelli's 2011
-report of lateral acceleration at Spa's Pouhon; its car, corner and conditions do not match this
-synthetic neutral-circle sweep. It is context, not a calibration target. The source-backed,
-configuration-matched lateral-g target is still unset, so the P2 calibration exit gate remains open.
-Actual simulation snapshots for the 50 m circle and 105 m/s sweep endpoint are pinned as advisory
-goldens, with current untuned coefficients recorded in their descriptions.
+settles within 5% of its requested radius at about 0.76 g; the 40–105 m/s coasting sweep runs long
+enough for lateral acceleration to settle, matches its 200 m radius, and stays within published
+channel ranges. Its settled high-speed point no longer meets the 4.0 g historical plausibility
+reference from Pirelli's 2011 Pouhon report. That car, corner and condition do not match this
+synthetic neutral-circle sweep, but the earlier transient result above 4.0 g was not a valid
+steady-state comparison. The source-backed, configuration-matched lateral-g target is still unset,
+so the P2 calibration exit gate remains open. Actual simulation snapshots for the 50 m circle and
+105 m/s sweep endpoint are pinned as advisory goldens, with current untuned coefficients recorded
+in their descriptions.
 P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 `docs/calibration.md`.
 

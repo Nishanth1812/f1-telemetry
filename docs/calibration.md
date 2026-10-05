@@ -828,13 +828,16 @@ slip, relaxation states, Ackermann steering and quasi-static suspension geometry
 implementation evidence only; no P2 coefficient was tuned to these outputs.
 
 - The 20 m/s steady-circle scenario requests a 50 m radius and settles within 5% of that radius at
-  about 0.76 g. The constant-radius sweep covers 40–105 m/s (144–378 km/h), holds its requested
-  200 m radius, and stays within the declared channel ranges. Its final point exceeds a 4.0 g
-  historical plausibility floor. Pirelli reported 4G lateral acceleration at Spa's Pouhon in
-  2011, with cars at 290 km/h ([Pirelli, 2011](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)).
+  about 0.76 g. The constant-radius sweep starts from 40–105 m/s (144–378 km/h), coasts for 2.5 s
+  to settle lateral response, matches a 200 m radius, stays within declared channel ranges, and
+  passes the finite, friction-ellipse, vertical-load-sum, sign and energy checks. Its settled final
+  point falls below the 4.0 g historical reference. Pirelli reported 4G lateral acceleration at
+  Spa's Pouhon in 2011, with cars at 290 km/h
+  ([Pirelli, 2011](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)).
   The reported car/corner/conditions do not match this simulator's synthetic neutral-circle case;
-  the figure is not a configuration-matched calibration target. P2 calibration remains open until
-  matched source data and test conditions are available.
+  the earlier above-4 g result was a sideslip transient, not a steady-state match. The figure is
+  not a configuration-matched calibration target. P2 calibration remains open until matched
+  source data and test conditions are available.
 - At 50 m radius and 20 m/s, steering demand changes monotonically as
   `roll_stiffness_front_fraction` moves from 0.3 to 0.7 with the other inputs fixed. The test is a
   balance-sensitivity check, not an understeer-gradient calibration.

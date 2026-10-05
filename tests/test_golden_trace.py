@@ -59,9 +59,9 @@ BASELINE_NOTES = {
         "initial advisory regression snapshot, not a calibrated target; review flagged diffs."
     ),
     "constant_radius_speed_sweep_105": (
-        "Actual final point of the P2 200 m constant-radius sweep at 105 m/s, using current "
-        "synthetic, untuned coefficients. Initial advisory snapshot only, not a calibrated "
-        "target; review flagged diffs."
+        "Actual final point of the P2 200 m coasting sweep starting at 105 m/s, using current "
+        "synthetic, untuned coefficients after lateral settling. Advisory snapshot only, not a "
+        "calibrated target; review flagged diffs."
     ),
 }
 

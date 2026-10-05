@@ -22,23 +22,25 @@ flags remain clear throughout the scenario.
 
 ## Constant-radius speed sweep
 
-Each point is a separate 0.5 s neutral run targeting a 200 m radius. The shown acceleration and
-steering values are means or final input over the last 150 ms. Final corner loads are N in
-`FL, FR, RL, RR` order.
+Each point starts at the listed speed, coasts in neutral for 2.5 s, and targets a 200 m radius
+after its lateral response settles. The car slows during each run, so the table also shows its
+mean speed over the final 150 ms. Acceleration, steering and wheel loads are averaged over that same
+tail; loads are N in `FL, FR, RL, RR` order.
 
-| Initial speed (m/s) | Measured radius (m) | Lateral acceleration (g) | Steering wheel (deg) | Final wheel loads (N) |
-| ---: | ---: | ---: | ---: | --- |
-| 40 | 200.50 | 0.745 | 11.470 | 2,392 / 3,066 / 2,860 / 3,323 |
-| 50 | 199.66 | 1.118 | 11.128 | 2,796 / 3,820 / 3,367 / 4,072 |
-| 60 | 200.61 | 1.548 | 10.649 | 3,338 / 4,766 / 4,044 / 5,027 |
-| 70 | 199.31 | 2.054 | 10.238 | 3,984 / 5,889 / 4,855 / 6,166 |
-| 80 | 200.66 | 2.594 | 9.690 | 4,773 / 7,191 / 5,840 / 7,504 |
-| 95 | 199.99 | 3.490 | 8.868 | 6,150 / 9,432 / 7,550 / 9,809 |
-| 105 | 199.72 | 4.108 | 8.252 | 7,237 / 11,127 / 8,891 / 11,568 |
+| Initial speed (m/s) | Tail speed (m/s) | Measured radius (m) | Lateral acceleration (g) | Steering wheel (deg) | Mean wheel loads (N) |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 40 | 36.34 | 200.00 | 0.681 | 11.548 | 2,282 / 2,884 / 2,727 / 3,140 |
+| 50 | 44.47 | 200.00 | 1.025 | 11.096 | 2,572 / 3,477 / 3,100 / 3,722 |
+| 60 | 52.24 | 200.00 | 1.425 | 10.449 | 2,923 / 4,181 / 3,553 / 4,419 |
+| 70 | 59.69 | 200.00 | 1.888 | 9.566 | 3,332 / 4,998 / 4,087 / 5,234 |
+| 80 | 67.05 | 200.01 | 2.400 | 8.414 | 3,790 / 5,908 / 4,687 / 6,145 |
+| 95 | 77.93 | 200.00 | 3.183 | 6.771 | 4,641 / 7,450 / 5,780 / 7,713 |
+| 105 | 85.05 | 199.96 | 3.697 | 5.773 | 5,297 / 8,560 / 6,606 / 8,852 |
 
-The final point is 378 km/h, below the `vx` and `speed` channel maxima. The declared illustrative
-`downforce_n` span was widened to 40 kN because the previous 30 kN maximum clipped the actual
-34 kN output at this point; its quantization full scale was widened with it.
+The table reports coasting tail speeds; the initial 105 m/s value is 378 km/h and remains below
+the `vx` and `speed` channel maxima. The declared illustrative `downforce_n` span was widened to
+40 kN because the earlier 30 kN maximum clipped the actual 34 kN output; its quantization full
+scale was widened with it.
 
 ## Steering sensitivity
 
@@ -65,8 +67,9 @@ calibration and does not vary an aero balance that the current configuration doe
 
 Pirelli reported 4G lateral acceleration at Spa's Pouhon for a 2011 F1 car at 290 km/h
 ([source](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)). The 4.0 g
-floor is historical plausibility context only: this neutral 200 m simulation has different car,
-corner, aero, surface and tire conditions. A matched source-backed target is still needed before
-P2 calibration can be called complete. Initial advisory goldens are committed for the steady circle
+reference is historical context only: the settled neutral 200 m run reaches 3.697 g from a 105 m/s
+start, and uses different car, corner, aero, surface and tire conditions. The earlier 4.108 g was
+a transient before sideslip settled. A matched source-backed target is still needed before P2
+calibration can be called complete. Initial advisory goldens are committed for the steady circle
 and 105 m/s sweep endpoint. They capture the present synthetic, untuned coefficients and are not
 calibration targets.

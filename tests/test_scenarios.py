@@ -1031,7 +1031,8 @@ def test_steady_state_circle_settles_to_its_requested_radius(
 
 
 def test_constant_radius_speed_sweep_matches_radius_and_settles_lateral_acceleration(
-    config: KernelConfig, spec: CarSpec,
+    config: KernelConfig,
+    spec: CarSpec,
 ) -> None:
     sweep = scenarios.run_constant_radius_speed_sweep(config)
     lateral_g: list[float] = []
@@ -1048,7 +1049,8 @@ def test_constant_radius_speed_sweep_matches_radius_and_settles_lateral_accelera
         assert all(not any(step.travel_limited) for step in run.record.ground_truth), (
             f"{run.name} reached a configured suspension travel limit"
         )
-        tail = run.record.ground_truth[-15:]
+        tail_steps = max(1, round(0.15 / run.record.dt_s))
+        tail = run.record.ground_truth[-tail_steps:]
         speed = math.fsum(math.hypot(step.vx_m_s, step.vy_m_s) for step in tail) / len(tail)
         yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
         lateral_acceleration = math.fsum(step.ay_m_s2 for step in tail) / len(tail)

@@ -156,18 +156,19 @@ transfer, load-sensitive combined-slip forces, per-wheel relaxation, steering/Ac
 quasi-static suspension outputs, signed camber truth, and deterministic circle/speed-sweep scenarios.
 Produced runs check force/load/sign invariants; a clean zero-steer control and mirrored-turn pair check
 symmetry; energy records include planar, yaw and wheel kinetic energy plus signed aero drag and tire
-slip work. Travel-limit flags are checked across all recorded scenario and sweep steps. The 50 m
-circle returns about 0.76 g, and the 40–105 m/s sweep's last point produces about 4.11 g. The
-historical 4.0 g plausibility floor is not a calibrated target.
+slip work. Travel-limit flags and P2 force/load/sign/energy invariants are checked across every
+sweep record. The 50 m circle returns about 0.76 g. The 40–105 m/s coasting sweep now waits for
+lateral settling; the earlier 4.11 g transient is no longer treated as a steady-state result.
 
 **Still open:** Find a configuration-matched lateral-g reference and test condition. Initial
 advisory P2 simulation snapshots are pinned and the load-transfer/steering demo is recorded.
-Pirelli's 2011 4G Pouhon report is recorded only as historical plausibility context; the sweep now
-stays within the published channel ranges. P1 remains open at 6.6598 s to 100 km/h against the
-coarse 2.32 s reference; the engine curve is still synthetic and untuned. Do not close either
-calibration gate from the P2 plausibility floor.
+Pirelli's 2011 4G Pouhon report remains historical plausibility context; the settled sweep stays
+within the published channel ranges, but the current synthetic coefficients do not reach 4.0 g.
+P1 remains open at 6.6598 s to 100 km/h against the coarse 2.32 s reference; the engine curve is
+still synthetic and untuned. Do not close either calibration gate from the P2 plausibility check.
 
-**Verification (2026-10-05):** `uv run --frozen pytest -q` — 970 passed. Ruff lint and formatting,
-basedpyright (0 errors), generated contract check, `npm ci --prefix web` (0 vulnerabilities), and
-`npm run build --prefix web` all pass. `just` is unavailable, so each component of the `Justfile`
-`check` recipe was run directly.
+**Verification (2026-10-05):** `uv run --frozen pytest -q` — 970 passed in 851.75 s before the
+final sweep edge guards; afterward, the focused settled-sweep regression passed (1 test in 343.21 s).
+Ruff lint and formatting, basedpyright (0 errors), generated contract check, `npm ci --prefix web`
+(0 vulnerabilities), and `npm run build --prefix web` all pass. `just` is unavailable, so each
+component of the `Justfile` `check` recipe was run directly.
