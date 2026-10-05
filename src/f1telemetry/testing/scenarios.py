@@ -668,14 +668,14 @@ def run_scenario(
 
 
 def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, ...]:
-    """Run neutral circles at increasing speed, adjusting steering to hold a 200 m radius.
+    """Run coasting circles from increasing start speeds at a 200 m radius.
 
-    Each point is a separate 0.5 s fixed-input run. A bisection over steering demand matches the
-    mean measured radius in the final 150 ms, so this sweep reports the grip available at a fixed
-    path radius instead of conflating it with a fixed steering command.
+    Each point runs long enough for the lateral response to settle. A bisection over steering
+    demand matches the mean measured radius in the final 150 ms, so measured lateral acceleration
+    reflects the turn rather than the sideslip transient.
     """
     radius_m = 200.0
-    duration_s = 0.5
+    duration_s = 2.5
     # Keep the published driver-facing speed inside channels.yaml's 400 km/h range.
     speed_points_m_s = (40.0, 50.0, 60.0, 70.0, 80.0, 95.0, 105.0)
     geometric_steer_deg = math.degrees(math.atan(config.wheelbase_m / radius_m)) * (
@@ -683,17 +683,14 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
     )
     runs: list[ScenarioRun] = []
     for speed_m_s in speed_points_m_s:
-        lower_deg = 0.0
-        upper_deg = min(3.0 * geometric_steer_deg, config.max_steering_wheel_angle_deg)
-        for _ in range(9):
-            steer_deg = 0.5 * (lower_deg + upper_deg)
+        def measure_radius(steer_deg: float) -> float:
             candidate = Scenario(
                 name=f"constant_radius_speed_sweep_{speed_m_s:g}",
                 initial_speed_m_s=speed_m_s,
                 initial_gear=0,
                 description=(
-                    f"Neutral speed sweep point targeting a {radius_m:g} m radius at "
-                    f"{speed_m_s:g} m/s; steering is adjusted to match measured radius."
+                    f"Neutral coasting sweep starting at {speed_m_s:g} m/s and targeting a "
+                    f"{radius_m:g} m radius after lateral settling."
                 ),
                 segments=(ScenarioSegment(duration_s, steer_wheel_deg=steer_deg),),
             )
@@ -703,8 +700,20 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
                 tail
             )
             mean_yaw_rate = math.fsum(step.yaw_rate_rad_s for step in tail) / len(tail)
-            measured_radius = math.inf if mean_yaw_rate <= 0.0 else mean_speed / mean_yaw_rate
-            if measured_radius > radius_m:
+            return math.inf if mean_yaw_rate <= 0.0 else mean_speed / mean_yaw_rate
+
+        max_steer_deg = min(3.0 * geometric_steer_deg, config.max_steering_wheel_angle_deg)
+        lower_deg = 0.0
+        upper_deg = 1.0
+        while upper_deg <= max_steer_deg and measure_radius(upper_deg) > radius_m:
+            lower_deg = upper_deg
+            upper_deg += 1.0
+        if upper_deg > max_steer_deg:
+            msg = f"{speed_m_s:g} m/s sweep point cannot reach a {radius_m:g} m radius"
+            raise ValueError(msg)
+        for _ in range(12):
+            steer_deg = 0.5 * (lower_deg + upper_deg)
+            if measure_radius(steer_deg) > radius_m:
                 lower_deg = steer_deg
             else:
                 upper_deg = steer_deg
@@ -714,8 +723,8 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
             initial_speed_m_s=speed_m_s,
             initial_gear=0,
             description=(
-                f"Neutral speed sweep point targeting a {radius_m:g} m radius at "
-                f"{speed_m_s:g} m/s; steering is adjusted to match measured radius."
+                f"Neutral coasting sweep starting at {speed_m_s:g} m/s and targeting a "
+                f"{radius_m:g} m radius after lateral settling."
             ),
             segments=(ScenarioSegment(duration_s, steer_wheel_deg=final_steer_deg),),
         )
