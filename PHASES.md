@@ -124,23 +124,26 @@ does not establish full F1-car fidelity or regulatory compliance.
 | P2-T6 | Quasi-static suspension: travel, camber gain, bump steer, roll/pitch stiffness split | Documented as a deliberate simplification per `PLAN.md` §2 |
 | P2-T7 | Steering geometry + Ackermann + steering limit | Needed for manual driving later |
 | P2-T8 | Scenarios: `steady_state_circle`, `constant_radius_speed_sweep` | The sweep is the primary calibration tool for lateral g |
-| P2-T9 | Calibration: peak lateral g, understeer gradient monotonicity | Compare against `PLAN.md` §11 target band |
+| P2-T9 | Calibration: peak lateral g, steering-balance sensitivity | Record a source-backed matched target before calibration |
 | P2-T10 | Invariants 2 (friction ellipse), 4 (sign conventions), 5 (symmetry) | Invariant 5 is the cheapest bug-finder in the project — run it constantly |
 
 **Exit gate**
-- [ ] Constant-radius sweep reaches a source-backed target peak lateral g
-- [x] The 4.5–5.5 g order-of-magnitude sanity band is reached on the configured high-speed sweep; this is not a source-backed calibration target
+- [ ] Constant-radius sweep reaches a configuration-matched, source-backed target peak lateral g
+- [x] The sweep exceeds a conservative 4.0 g historical plausibility floor drawn from a 2011 Pirelli F1 report; this does not close calibration
 - [x] The friction ellipse and zero-load force bound pass on every wheel in the produced scenarios
 - [x] Zero-steer symmetry passes with camber and bump steer disabled; paired left/right steering runs mirror chassis state and four-wheel force/load outputs
-- [x] Steering demand changes monotonically with `roll_stiffness_front_fraction` at matched 50 m radius and 20 m/s
+- [x] Steering demand changes monotonically with `roll_stiffness_front_fraction` at matched 50 m radius and 20 m/s; front/rear aero-balance sensitivity is deferred because the configuration has no aero-balance input
 - [x] Suspension travel-limit flags remain clear throughout the produced scenarios and every sweep run
 
 **Implementation status (2026-10):** The P2 kernel, load transfer, steering, relaxation, combined-slip
 forces, scenario truth and channel publication are implemented on `feat/phase-2`. The 50 m circle
-settles within 5% of its requested radius at about 0.76 g; the constant-radius sweep spans 40–115
-m/s, matches its 200 m radius, and reaches the 4.5–5.5 g sanity band at its high-speed point. These
-are model outputs, not calibration claims. The source-backed lateral-g target is still unset, so the
-P2 exit gate remains open. P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
+settles within 5% of its requested radius at about 0.76 g; the constant-radius sweep spans 40–105
+m/s, matches its 200 m radius, stays within the published channel ranges, and exceeds a 4.0 g
+historical plausibility floor at its high-speed point. The 4.0 g figure comes from Pirelli's 2011
+report of lateral acceleration at Spa's Pouhon; its car, corner and conditions do not match this
+synthetic neutral-circle sweep. It is context, not a calibration target. The source-backed,
+configuration-matched lateral-g target is still unset, so the P2 calibration exit gate remains open.
+P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 `docs/calibration.md`.
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four

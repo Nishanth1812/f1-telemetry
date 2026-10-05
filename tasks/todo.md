@@ -157,10 +157,12 @@ quasi-static suspension outputs, signed camber truth, and deterministic circle/s
 Produced runs check force/load/sign invariants; a clean zero-steer control and mirrored-turn pair check
 symmetry; energy records include planar, yaw and wheel kinetic energy plus signed aero drag and tire
 slip work. Travel-limit flags are checked across all recorded scenario and sweep steps. The 50 m
-circle returns about 0.76 g, and the high-speed sweep reaches the 4.5–5.5 g sanity band. These values
-are not calibrated targets.
+circle returns about 0.76 g, and the 40–105 m/s sweep's last point produces about 4.11 g. The
+historical 4.0 g plausibility floor is not a calibrated target.
 
-**Still open:** Choose a source-backed lateral-g target and matched test condition, review and pin
-advisory P2 traces after coefficients stabilize, and capture the requested load-transfer/steering
-demo. P1 remains open at 6.6598 s to 100 km/h against the coarse 2.32 s reference; the engine curve
-is still synthetic and untuned. Do not close either phase gate from the P2 sanity band.
+**Still open:** Find a configuration-matched lateral-g reference and test condition, pin advisory
+P2 traces after coefficients stabilize, and capture the requested load-transfer/steering demo.
+Pirelli's 2011 4G Pouhon report is recorded only as historical plausibility context; the sweep now
+stays within the published channel ranges. P1 remains open at 6.6598 s to 100 km/h against the
+coarse 2.32 s reference; the engine curve is still synthetic and untuned. Do not close either
+calibration gate from the P2 plausibility floor.

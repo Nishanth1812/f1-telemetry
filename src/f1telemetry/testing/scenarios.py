@@ -676,7 +676,8 @@ def run_constant_radius_speed_sweep(config: KernelConfig) -> tuple[ScenarioRun, 
     """
     radius_m = 200.0
     duration_s = 0.5
-    speed_points_m_s = (40.0, 50.0, 60.0, 70.0, 80.0, 95.0, 115.0)
+    # Keep the published driver-facing speed inside channels.yaml's 400 km/h range.
+    speed_points_m_s = (40.0, 50.0, 60.0, 70.0, 80.0, 95.0, 105.0)
     geometric_steer_deg = math.degrees(math.atan(config.wheelbase_m / radius_m)) * (
         config.steering_ratio
     )

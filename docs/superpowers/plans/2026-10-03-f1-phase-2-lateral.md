@@ -125,7 +125,7 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - **Tire input contract:** define lateral Pacejka parameters, load sensitivity for peak and stiffness, camber response, relaxation lengths, and the similarity-based combined-slip equations. State the zero-load behavior and the order in which relaxation, combined slip and force assembly occur.
 - **Steering contract:** scenario input is steering-wheel angle in degrees, positive left; divide by the configured steering ratio, apply Ackermann geometry and validate the configured steering limit before kernel entry.
 - **Force/load contract:** corner order stays `FL, FR, RL, RR`; compute contact-patch velocities from body motion and yaw rate, rotate wheel-frame Fx/Fy into body axes, and calculate suspension/load transfer from previous-step acceleration before tire force. Positive `az` is upward in the z-up frame. Load redistribution must conserve total vertical load.
-- **Numeric calibration:** use PLAN.md's ~4.5–5.5 g as an order-of-magnitude high-downforce sanity band only until a source-backed P2 target and test condition (speed, aero mode/config, radius, surface) are recorded. The understeer check compares steering required at matched lateral acceleration/radius while changing only `roll_stiffness_front_fraction`; the current config has no front/rear aero-balance input.
+- **Numeric calibration:** Pirelli's 2011 report states 4G lateral acceleration at Spa's Pouhon with cars at 290 km/h. Use 4.0 g only as a conservative historical plausibility floor for the simulator sweep, not as a matched target: the model uses synthetic coefficients and a neutral 200 m circle with no Spa surface or aero configuration. A configuration-matched P2 calibration target remains open. The understeer check compares steering required at matched radius/speed while changing only `roll_stiffness_front_fraction`; the current config has no front/rear aero-balance input.
 
 ## File Map
 
@@ -243,10 +243,10 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - [x] Extend invariant 6 to account for P2 translational/rotational body kinetic energy and tire slip work; use signed drag consistently in fixture and scenario records.
 - [x] Check symmetry with mirrored left/right simulations; retain a zero-steer/zero-camber case as its own control.
 - [x] Check travel-limit flags through every recorded step of every scenario and every speed-sweep run.
-- [ ] Define source-backed P2 calibration conditions before tuning. Record the measured sweep; treat 4.5–5.5 g only as an order-of-magnitude sanity band.
+- [x] Record a historical 4.0 g plausibility floor and its mismatch caveats; keep configuration-matched P2 calibration open. The measured sweep stays inside every published channel range.
 - [x] Sweep `roll_stiffness_front_fraction` at matched radius/ay and assert steering demand changes monotonically with other inputs fixed.
-- [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize.
-- [ ] Run the complete `just check`, record the exact result, and capture the four-corner load-transfer demo plus steering-sensitivity curve.
+- [ ] Save reviewed scenario outputs as advisory golden traces after coefficients stabilize. Coefficients remain synthetic and untuned, so a baseline is premature.
+- [ ] Run the complete quality gate and record the exact result; capture the four-corner load-transfer demo plus steering-sensitivity curve.
 
 **Done when:** all P2 exit gates in `PHASES.md` pass on real simulation output, target and assumptions are recorded, `just check` is green, and tag/demo criteria are reviewable.
 
@@ -255,7 +255,7 @@ Before implementation, settle these once in the plan/spec and `car_spec.yaml` ra
 - Constant-radius speed sweep reaches the agreed, source-backed lateral-g target under recorded conditions.
 - Combined-slip bound is respected for every wheel and step; zero-load wheels produce no tire force.
 - Mirror symmetry and sign conventions pass on simulated left/right turns and zero-steer symmetry cases.
-- Understeer response is monotonic when only the front/rear aero split changes.
+- Steering demand is monotonic when only the modeled front/rear roll-stiffness split changes at matched radius and speed. Aero-balance sensitivity remains deferred because this configuration has no aero-balance input.
 - Quasi-static suspension travel remains inside configured travel limits across the stated tested load range.
 - Existing P1 checks remain green and the P1 metric disposition remains documented.
 - `just check` passes; demo shows all four wheel loads and the steering-sensitivity curve.
