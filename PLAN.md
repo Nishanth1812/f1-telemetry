@@ -560,7 +560,7 @@ first is a median read off a ~3.7 Hz feed, the second is one car's speed at one 
 circuit in one session. Neither is a published performance figure, and neither validates
 configuration-matched performance — a run that lands on either number has not thereby been shown
 to match the real car. Registering them does not close the P1 performance gate; the measured
-values miss both, which `PHASES.md` P1 and `tasks/todo.md` record.
+values miss both, which `PHASES.md` P1 and `docs/calibration.md` record.
 
 **0–100 km/h: reference 2.32 s, uncertainty of order ±0.30 s.**
 

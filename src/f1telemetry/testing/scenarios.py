@@ -1,7 +1,7 @@
 """Phase 1 straight-line scenarios: caller-driven traces over the APIs that already exist.
 
-`PHASES.md` P1-T8 asks for scenarios and `tasks/todo.md` Task 5 asks that each one start from
-fixed initial conditions and emit a trace through the existing testing/record pattern. This
+`PHASES.md` P1-T8 asks for scenarios that start from fixed initial conditions and emit traces
+through the existing testing/record pattern. This
 module is that path, and it is deliberately thin: the drivetrain comes from
 :func:`~f1telemetry.physics.gearbox.step_gearbox` and
 :func:`~f1telemetry.physics.powertrain.step_mgu_k`, the four-wheel loop from
@@ -85,7 +85,7 @@ model behaviour rather than validated car performance.
   torque curve rather than of a real car, and neither is a performance figure. Declaring
   :data:`LAUNCH_ICE_RPM` raises the demand through that same first-gear window by construction, and
   whether the grid launch still clears the tyre peak on the uncalibrated curves has not been
-  re-measured since it was declared - `tasks/todo.md` Task 5 keeps that open.
+  re-measured since it was declared - `docs/calibration.md` keeps that open.
 
 Every drivetrain column is reported **for the step that starts at the recorded trace row**, next to
 the torque that step produced, so a recorded row is internally consistent and a segment's window

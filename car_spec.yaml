@@ -667,7 +667,7 @@ tyres:
       project choice with a visible consequence: at a standing start the slip ratio is
       `omega r / 1.0`, so a launch sits on the falling branch of the Magic Formula rather than on
       the part of the curve that rises. No regulation fixes a simulation guard, and Task 4 of
-      tasks/plan.md owns the launch model that has to live with it.
+      PHASES.md P1-T4 owns the launch model that has to live with it.
     wheel_inertia_kg_m2: >-
       Wheel-plus-tyre rotational inertia about the spin axis, the `I_w` of
       `I_w d(omega)/dt = T_drive - Fx r`. PLAN.md section 4 gives 0.5-1.2 kg.m^2 as the band an F1
@@ -717,7 +717,7 @@ tyres:
     `front_width_mm` and `rear_width_mm` are the regulation's tyre *mounting* widths and
     replace the P0 single `nominal_width_mm: 305.0`, which is a 2022-era front width and did
     not match Issue 20. `longitudinal_pacejka` and `slip_ratio_min_speed_m_s` arrived with the
-    P1-T3/P1-T6 force work (Task 3 of tasks/plan.md), which needs a longitudinal force, and
+    P1-T3/P1-T6 force work in PHASES.md, which needs a longitudinal force, and
     `wheel_inertia_kg_m2` arrived with the P1-T6/P1-T7 wheel rotational state, which needs
     something to divide the wheel torque balance by. Lateral coefficients, load sensitivity on
     `D` and `B`, relaxation lengths, and any brake or differential model remain P2-T3/P2-T5

@@ -1,7 +1,7 @@
 """Phase 1 straight-line scenarios run over the existing physics APIs.
 
-`PHASES.md` P1-T8 asks for scenarios, and `tasks/todo.md` Task 5 asks that each one run from
-fixed initial conditions and emit traces through the existing testing/record pattern. This
+`PHASES.md` P1-T8 asks for scenarios that run from fixed initial conditions and emit traces
+through the existing testing/record pattern. This
 file covers that path and nothing wider:
 
 * **The behaviour each scenario exists to show.** A standing launch starts from rest in first
@@ -373,7 +373,7 @@ def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_refer
     That reference is a median of six ~3.7 Hz telemetry crossings: a coarse observation with no
     published figure behind it, whose ±0.30 s is the feed's quantisation rather than a tolerance
     on this car. So this test **reports** the gap instead of asserting a pass, and there is no
-    band here to widen - the P1 performance gate stays open in `tasks/todo.md` until someone
+    band here to widen - the P1 performance gate stays open in `docs/calibration.md` until someone
     measures both numbers deliberately and records the result.
     """
     run = runs["accelerate_to_speed"]
@@ -511,11 +511,9 @@ def test_the_launch_grip_keeps_the_rear_tyres_inside_their_peak(
     still. That is the correct behaviour of the model, but it is not a usable scenario trace,
     so the launch is required to stay below the demand that would cause it.
 
-    **Open since the launch declared its engine speed.** ``scenarios.LAUNCH_ICE_RPM`` raises the
-    first-gear demand several times over on these synthetic tyres, so this assertion is expected
-    to need re-deriving against a measured run rather than to be quietly weakened; nothing was run
-    after that wiring went in, so which way it goes is not recorded. `tasks/todo.md` Task 5 keeps
-    it open.
+    The current synthetic configuration passes this check. Keep it as a regression guard, but
+    treat it as model consistency rather than launch calibration; the P1 performance gate remains
+    open in `docs/calibration.md`.
     """
     run = runs["standing_launch"]
     for corner in ("RL", "RR"):

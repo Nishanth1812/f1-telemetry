@@ -151,6 +151,7 @@ P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four
 corners, and a steering-sensitivity curve.
+Measured P2 scenario outputs: [`docs/phase2-demo.md`](./docs/phase2-demo.md).
 
 ---
 
