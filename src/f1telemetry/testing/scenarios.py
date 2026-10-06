@@ -93,12 +93,27 @@ lines up with the steps that segment drove. The state is caller-owned throughout
 buffer, the gearbox buffer, the MGU-K buffer and the torque histories are allocated here and
 stepped in place, no clock or random source is read, and two runs of one scenario are
 byte-identical.
+
+**A scenario can also be driven by a control law.** A law is a callable that
+receives the :class:`ControlState` each control interval starts from - the
+kernel state at the interval's first step - and returns one
+:class:`~f1telemetry.reference_driver.DriverRequest`: the steering and pedal
+requests that then hold across the whole interval, exactly the way a segment's
+declared inputs hold. Passing one to :func:`run_scenario` is how the P4
+reference driver (pure pursuit on the racing line, feedforward from the solved
+speed profile) drives the same fixed-step kernel a fixed segment drives; the
+composition lives in :mod:`f1telemetry.testing.reference_lap`. Everything the
+law does not control - clutch, gear request, MGU-K request, flags - stays with
+the segment the interval belongs to, and a request the boundary could not use
+is refused there rather than clamped into a different demand than the driver
+asked for. With no law, a run is byte-identical to one whose segments carry
+the same requests as constants.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -114,6 +129,7 @@ from f1telemetry.physics import (  # noqa: TID251 -- and the models
     thermal,
     tyres,
 )
+from f1telemetry.reference_driver import DriverRequest
 from f1telemetry.testing.records import (
     CORNERS,
     GroundTruthStep,
@@ -128,10 +144,18 @@ if TYPE_CHECKING:
 __all__ = [
     "CONTROL_STEPS",
     "LAUNCH_ICE_RPM",
+    "TRACE_PSI_INDEX",
+    "TRACE_STATE_SIZE",
+    "TRACE_X_INDEX",
+    "TRACE_Y_INDEX",
+    "ControlLaw",
+    "ControlState",
+    "DriverRequest",
     "DrivetrainTrace",
     "Scenario",
     "ScenarioRun",
     "ScenarioSegment",
+    "allocate_step_outputs",
     "build_scenarios",
     "run_constant_radius_speed_sweep",
     "run_scenario",
@@ -143,6 +167,14 @@ __all__ = [
 # the module docstring. It is a harness rate, not a car coefficient: nothing in ``car_spec.yaml``
 # states one, and the trace does not depend on it being any particular value.
 CONTROL_STEPS: Final[int] = 100
+
+# Public trace layout for test and analysis code that builds a ``ScenarioRun`` without importing
+# the kernel layer directly. ``scenarios`` owns the kernel boundary and remains the source of truth.
+TRACE_STATE_SIZE: Final[int] = longitudinal.STATE_SIZE
+TRACE_X_INDEX: Final[int] = longitudinal.X_INDEX
+TRACE_Y_INDEX: Final[int] = longitudinal.Y_INDEX
+TRACE_PSI_INDEX: Final[int] = longitudinal.PSI_INDEX
+allocate_step_outputs = longitudinal.allocate_step_outputs
 
 # rad/s per rpm, the one conversion a runner needs to report engine speed from a wheel speed.
 _RPM_PER_RAD_S: Final[float] = 60.0 / math.tau
@@ -161,6 +193,37 @@ _J_PER_MJ: Final[float] = 1.0e6
 _UNIT_BRAKE: Final[tuple[float, ...]] = (1.0, 1.0, 1.0, 1.0)
 _REQUEST_CODES: Final[frozenset[int]] = frozenset(int(member) for member in gearbox.GearRequest)
 _SEGMENT_GRID_TOLERANCE_S: Final[float] = 1.0e-9
+
+
+@dataclass(frozen=True, slots=True)
+class ControlState:
+    """The simulation state at the start of one control interval.
+
+    A control law reads exactly this - the state the interval's first
+    kernel step starts from, in the ground frame the kernel integrates:
+    ``time_s`` is that step's simulation time, ``x_m``/``y_m`` the CG
+    position in metres, ``heading_rad`` the CG heading counterclockwise
+    from ``+x`` (the frame :mod:`f1telemetry.physics.kinematics`
+    integrates in), and ``speed_m_s`` the ground speed
+    ``hypot(vx, vy)``. The law owns nothing else: gear, clutch and
+    MGU-K requests stay with the segment the interval belongs to,
+    because those are scenario declarations, not driver control
+    requests.
+    """
+
+    time_s: float
+    x_m: float
+    y_m: float
+    heading_rad: float
+    speed_m_s: float
+
+
+# One reference-driver control request per control interval: the law is
+# called at each interval's first kernel step with the state that step
+# starts from, and the steering and pedal requests it returns hold
+# across the whole interval - the same hold a segment's declared
+# inputs have.
+ControlLaw = Callable[[ControlState], DriverRequest]
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +266,13 @@ class Scenario:
     ``soc_mj`` seeds the MGU-K's ``[state_of_charge, lap_recharge]`` buffer; ``None`` means the
     whole of C5.2.9's window, which is what a car at the line has. ``brake_bias`` holds four
     per-corner share magnitudes.
+
+    ``initial_x_m``/``initial_y_m``/``initial_heading_rad`` seed the CG's
+    ground position and heading - the frame the kernel integrates - so a
+    scenario can start anywhere, such as on a track's start/finish line
+    heading along its centreline tangent, instead of only at the origin
+    on ``+x``. Every existing scenario defaults to the origin, so a
+    scenario that does not declare a pose starts exactly as it did before.
     """
 
     name: str
@@ -213,6 +283,9 @@ class Scenario:
     soc_mj: float | None = None
     brake_bias: tuple[float, ...] = _UNIT_BRAKE
     tyre_leak_rate_kg_s: float = 0.0
+    initial_x_m: float = 0.0
+    initial_y_m: float = 0.0
+    initial_heading_rad: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,6 +582,8 @@ def run_scenario(
     plan: Scenario,
     *,
     control_steps: int = CONTROL_STEPS,
+    control_law: ControlLaw | None = None,
+    max_brake_torque_nm: float = 0.0,
 ) -> ScenarioRun:
     """Run one scenario and return its trace, its drivetrain history and its record.
 
@@ -520,9 +595,23 @@ def run_scenario(
     or of control intervals, a pedal outside ``[0, 1]``, a gear request that is not a
     ``GearRequest``, a nonfinite MGU-K request, brake torque that is not signed against forward
     rotation, a bias vector of the wrong length, and an initial speed or gear that the drivetrain
-    could not start from.
+    could not start from. A supplied ``control_law`` replaces interval throttle, steering and
+    brake; ``max_brake_torque_nm`` maps normalized brake output to wheel torque.
     """
     counts = _checked_segments(plan, config, control_steps)
+    if (
+        isinstance(max_brake_torque_nm, bool)
+        or not isinstance(max_brake_torque_nm, (int, float))
+        or not math.isfinite(max_brake_torque_nm)
+        or max_brake_torque_nm < 0.0
+    ):
+        raise ValueError("max_brake_torque_nm must be finite and >= 0")
+    if control_law is not None:
+        candidate_control_law: object = control_law
+        if not callable(candidate_control_law):
+            raise TypeError(  # pyright: ignore[reportUnreachable] -- preserve guard for untyped callers
+                "control_law must be callable"
+            )
     total = sum(counts)
 
     trace = np.zeros((total + 1, longitudinal.STATE_SIZE), dtype=np.float64)
@@ -543,8 +632,11 @@ def run_scenario(
     mgu_k_state = powertrain.mgu_k_initial_state(config, plan.soc_mj)
     engine_rpm = config.idle_rpm
     state = longitudinal.initial_state(
+        distance_m=plan.initial_x_m,
         speed_m_s=plan.initial_speed_m_s,
         wheel_omega_rad_s=plan.initial_speed_m_s / config.rolling_radius_m,
+        y_m=plan.initial_y_m,
+        heading_rad=plan.initial_heading_rad,
     )
     trace[0] = state
 
@@ -560,6 +652,33 @@ def run_scenario(
         for interval in range(0, count, control_steps):
             interval_start = row + interval
             sample = state
+            driver_throttle = segment.throttle
+            driver_steer_deg = segment.steer_wheel_deg
+            if control_law is not None:
+                request = control_law(
+                    ControlState(
+                        time_s=interval_start * config.dt_s,
+                        x_m=float(sample[longitudinal.X_INDEX]),
+                        y_m=float(sample[longitudinal.Y_INDEX]),
+                        heading_rad=float(sample[longitudinal.PSI_INDEX]),
+                        speed_m_s=math.hypot(
+                            float(sample[longitudinal.V_INDEX]),
+                            float(sample[longitudinal.VY_INDEX]),
+                        ),
+                    )
+                )
+                _check_driver_request(request, config)
+                driver_throttle = request.throttle
+                driver_steer_deg = math.degrees(request.steering_wheel_rad)
+                if request.brake > 0.0 and max_brake_torque_nm <= 0.0:
+                    raise ValueError("max_brake_torque_nm must be > 0 for a braking control law")
+                brake[interval : interval + control_steps] = np.asarray(
+                    [-max_brake_torque_nm * request.brake * abs(share) for share in plan.brake_bias]
+                )
+                brake_torque[interval_start : interval_start + control_steps] = brake[
+                    interval : interval + control_steps
+                ]
+                steer_history[interval_start : interval_start + control_steps] = driver_steer_deg
             shifting_at_start = gear_state[gearbox.SHIFT_TIMER_INDEX] > 0.0
             shift_requested = interval == 0 and int(segment.request) != int(
                 gearbox.GearRequest.HOLD
@@ -576,14 +695,14 @@ def run_scenario(
             else:
                 sampled_rpm = _wheel_coupled_ice_rpm(config, sample, gear_state)
                 engine_rpm = sampled_rpm
-            sampled_torque = powertrain.step_ice_torque(config, sampled_rpm, segment.throttle)
+            sampled_torque = powertrain.step_ice_torque(config, sampled_rpm, driver_throttle)
             sample_speed = float(sample[longitudinal.V_INDEX])
             torque = np.zeros(control_steps, dtype=np.float64)
             delivered_torque_sum = 0.0
             load_torque_sum = 0.0
             for offset in range(control_steps):
                 position = interval_start + offset
-                throttle[position] = segment.throttle
+                throttle[position] = driver_throttle
                 charge_before = float(mgu_k_state[powertrain.SOC_INDEX])
                 sampled_mgu_k = powertrain.step_mgu_k(
                     config,
@@ -598,7 +717,7 @@ def run_scenario(
                     config,
                     gear_state,
                     sampled_rpm,
-                    segment.throttle,
+                    driver_throttle,
                     segment.request if interval == 0 and offset == 0 else gearbox.GearRequest.HOLD,
                     mgu_k_torque_nm=sampled_mgu_k,
                 )
@@ -856,16 +975,28 @@ def _build_record(
     """
     values = forces.validated_config_scalars(config, "scenarios")
     lateral = tyres.validated_lateral_scalars(config, "scenarios")
+    thermal_values = thermal.validated_thermal_scalars(config, "scenarios")
     steps: list[GroundTruthStep] = []
     frames: list[SensorFrame] = []
     thermal_inputs = _thermal_inputs(
-        trace, drivetrain, drive_torque_nm, brake_torque_nm, control_steps, config, step_outputs
+        trace,
+        drivetrain,
+        drive_torque_nm,
+        brake_torque_nm,
+        control_steps,
+        config,
+        step_outputs,
+        thermal_values,
     )
     thermal_trace = thermal.simulate_thermal_trace(
+        config,
         dt_s=config.dt_s * control_steps,
+        speed_m_s=thermal_inputs["speed_m_s"],
+        tyre_slip_work_j=thermal_inputs["tyre_slip_work_j"],
+        brake_work_j=thermal_inputs["brake_work_j"],
+        engine_heat_j=thermal_inputs["engine_heat_j"],
+        gearbox_heat_j=thermal_inputs["gearbox_heat_j"],
         leak_rate_kg_s=tyre_leak_rate_kg_s,
-        ambient_temp_c=config.air_temperature_k - 273.15,
-        **thermal_inputs,
     )
     # No kernel step starts at the terminal trace row, so it carries the outputs of the
     # last step, the same repeat `_held` applies to the per-step columns above.
@@ -1172,8 +1303,16 @@ def _thermal_inputs(
     control_steps: int,
     config: KernelConfig,
     step_outputs: longitudinal.StepOutputs,
+    values: thermal.ThermalScalars,
 ) -> dict[str, np.ndarray]:
-    """Collect interval energies from the state and diagnostics the kernel actually used."""
+    """Collect interval energies from the state and diagnostics the kernel actually used.
+
+    The two drivetrain heat shares are configured rather than written here: the engine node
+    takes its share of the fuel energy the shaft did not receive, and the gearbox node its share
+    of the shaft work done against rear-wheel speed. Both are read from the validated thermal
+    configuration, so the split between a node and its surroundings is a ``car_spec.yaml`` edit
+    rather than a constant in this module.
+    """
     intervals = len(drivetrain.gear)
     slip_work = np.empty((intervals, forces.WHEEL_COUNT), dtype=np.float64)
     brake_work = np.empty_like(slip_work)
@@ -1205,11 +1344,17 @@ def _thermal_inputs(
         )
         shaft_w = max(float(drivetrain.ice_power_w[index]), 0.0)
         engine_heat[index] = (
-            shaft_w * (1.0 / config.fuel_to_shaft_efficiency - 1.0) * 0.35 * interval_s
+            shaft_w
+            * (1.0 / config.fuel_to_shaft_efficiency - 1.0)
+            * values.engine_waste_heat_share
+            * interval_s
         )
         rear_omega = omega[:, 2:].mean()
         gearbox_heat[index] = (
-            max(float(drive_torque_nm[start:stop].mean()), 0.0) * rear_omega * interval_s * 0.05
+            max(float(drive_torque_nm[start:stop].mean()), 0.0)
+            * rear_omega
+            * interval_s
+            * values.gearbox_loss_share
         )
     return {
         "speed_m_s": speed,
@@ -1243,6 +1388,18 @@ def _checked_segments(plan: Scenario, config: KernelConfig, control_steps: int) 
     if speed < 0.0:
         msg = f"{plan.name}: initial_speed_m_s must be >= 0, got {speed!r}"
         raise ValueError(msg)
+    for label, value in (
+        ("initial_x_m", plan.initial_x_m),
+        ("initial_y_m", plan.initial_y_m),
+        ("initial_heading_rad", plan.initial_heading_rad),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            msg = f"{plan.name}: {label} must be finite, got {value!r}"
+            raise ValueError(msg)
     gear_count = float(config.gear_ratios.size)
     if (
         isinstance(plan.initial_gear, bool)
@@ -1398,3 +1555,27 @@ def _checked_segment(
             msg = f"{label}: grid_standing_start and overtake must be True or False, got {flag!r}"
             raise ValueError(msg)
     return count
+
+
+def _check_driver_request(request: DriverRequest, config: KernelConfig) -> None:
+    """Refuse a control-law output the scenario boundary cannot apply as requested."""
+    candidate_request: object = request
+    if not isinstance(candidate_request, DriverRequest):
+        raise TypeError(  # pyright: ignore[reportUnreachable] -- preserve guard for untyped callers
+            "control_law must return a DriverRequest"
+        )
+    values = (
+        request.steering_wheel_rad,
+        request.throttle,
+        request.brake,
+        request.target_speed_m_s,
+    )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("driver request values must be finite")
+    if not 0.0 <= request.throttle <= 1.0 or not 0.0 <= request.brake <= 1.0:
+        raise ValueError("driver throttle and brake requests must be in [0, 1]")
+    if request.target_speed_m_s < 0.0:
+        raise ValueError("driver target speed must be >= 0")
+    max_steer_rad = math.radians(config.max_steering_wheel_angle_deg)
+    if abs(request.steering_wheel_rad) > max_steer_rad:
+        raise ValueError("driver steering request exceeds configured steering-wheel limit")

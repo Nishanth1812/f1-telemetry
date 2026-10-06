@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from f1telemetry.laps import project_position
 from f1telemetry.racing_line import LateralOffsetSolution, SpeedProfile
 from f1telemetry.tracks import Track
 
@@ -55,7 +56,8 @@ def pure_pursuit_request(
         raise ValueError("cannot follow a racing line whose solver did not converge")
     if line.s_m.shape != line.lateral_m.shape or profile.s_m.shape != profile.speed_m_s.shape:
         raise ValueError("line and speed profile arrays have inconsistent dimensions")
-
+    if not np.array_equal(line.s_m, track.s_m) or not np.array_equal(profile.s_m, track.s_m):
+        raise ValueError("line and speed profile arc lengths must align with the track knots")
     progress = _project(track, x_m, y_m)
     lookahead = max(2.0, 0.5 * speed_m_s) if lookahead_m is None else lookahead_m
     if not math.isfinite(lookahead) or lookahead <= 0.0:
@@ -81,18 +83,15 @@ def pure_pursuit_request(
 
 
 def _project(track: Track, x_m: float, y_m: float) -> float:
-    """Project onto every centerline segment; smallest distance wins deterministically."""
-    best_s, best_distance = 0.0, math.inf
-    for index in range(track.waypoint_count):
-        following = (index + 1) % track.waypoint_count
-        ax, ay = float(track.x_m[index]), float(track.y_m[index])
-        dx, dy = float(track.x_m[following] - ax), float(track.y_m[following] - ay)
-        fraction = min(1.0, max(0.0, ((x_m - ax) * dx + (y_m - ay) * dy) / (dx * dx + dy * dy)))
-        px, py = ax + fraction * dx, ay + fraction * dy
-        distance = (x_m - px) ** 2 + (y_m - py) ** 2
-        if distance < best_distance:
-            best_distance = distance
-            best_s = (
-                float(track.s_m[index]) + fraction * float(track.ds_m[index])
-            ) % track.length_m
-    return best_s
+    """The position's arc length on the shared lap-timing projection.
+
+    The driver projects through :func:`f1telemetry.laps.project_position`
+    - the same dense spline-polyline projection, seam convention and
+    wrapping that :func:`f1telemetry.laps.assess_lap` times a lap with -
+    so the arc length the driver steers by and the arc length a sector
+    or lap event is timed at are one quantity. A projection of its own,
+    such as the raw waypoint chords, would drift from the timing
+    module's between knots and put the driver's target on a different
+    part of the lap than the one the events report.
+    """
+    return project_position(track, x_m, y_m).s_m

@@ -17,9 +17,10 @@ else.
 
 **Progress.** :func:`project_position` inverts
 :func:`~f1telemetry.tracks.Track.point_at`: a world position is
-projected onto the closed centerline polyline by searching every
-segment - the closing one included, so the start/finish seam is no
-different from any other join - for its nearest point. The
+projected onto a dense deterministic polyline sampled from the
+centreline spline, by searching every segment - the closing one
+included, so the start/finish seam is no different from any other
+join - for its nearest point. The
 projection carries the arc length of that point wrapped into
 ``[0, length_m)`` so it addresses the same knot on every lap, the
 signed lateral offset along the nearest segment's normal (positive
@@ -29,12 +30,12 @@ distance to the polyline. The distance equals the lateral's
 magnitude only where the perpendicular foot lands inside a segment;
 wherever the nearest point is a clamped segment end, the lateral is
 measured along that segment's normal while the true nearest point is
-the shared waypoint. An exact tie between two segments resolves to
-the later one - the outgoing segment at a shared waypoint, the
+the shared knot. An exact tie between two segments resolves to
+the later one - the outgoing segment at a shared knot, the
 right-continuous convention :meth:`~f1telemetry.tracks.Track.frame_at`
-uses - so a position exactly on a waypoint projects
-deterministically. The search is linear in the waypoint count,
-which a track file keeps small, so no spatial index exists to drift
+uses - so a sample exactly on the centreline projects
+deterministically. The search is linear in the sample count,
+which a track keeps small, so no spatial index exists to drift
 out of sync with the polyline it indexes.
 
 **Events.** :func:`crossing_events` turns a stream of timed samples
@@ -113,6 +114,7 @@ from f1telemetry.tracks import Track
 __all__ = [
     "LapAssessment",
     "LapValidity",
+    "ReferenceLap",
     "TrackEvent",
     "TrackEventKind",
     "TrackProjection",
@@ -122,6 +124,8 @@ __all__ = [
     "crossing_events",
     "evaluate_lap_validity",
     "project_position",
+    "reference_lap_delta",
+    "reference_lap_from_samples",
     "wheel_positions",
     "wheels_within_track_limits",
 ]
@@ -290,8 +294,59 @@ class LapAssessment:
     projections: tuple[TrackProjection, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceLap:
+    """A completed lap represented as elapsed time at sampled arc lengths."""
+
+    lap_length_m: float
+    lap_time_s: float
+    progress_m: tuple[float, ...]
+    time_s: tuple[float, ...]
+
+    def time_at(self, s_m: float) -> float:
+        """Interpolate elapsed reference time at a wrapped track position."""
+        position = _check("s_m", s_m) % self.lap_length_m
+        return float(np.interp(position, self.progress_m, self.time_s))
+
+
+def reference_lap_from_samples(track: Track, samples: Sequence[TrackSample]) -> ReferenceLap:
+    """Build a one-lap time-distance reference from a stream starting at the line."""
+    checked = _checked_samples(samples)
+    if len(checked) < 2:
+        raise ValueError("a reference lap needs at least two samples")
+    projections = _project_samples(track, checked)
+    unwrapped = _unwrap_progress(track, projections)
+    start = unwrapped[0]
+    if min(projections[0].s_m, track.length_m - projections[0].s_m) > 1e-6:
+        raise ValueError("reference lap must start at the start/finish line")
+    lap_events = [
+        event for event in _crossings(track, checked, unwrapped) if event.kind is TrackEventKind.LAP
+    ]
+    if not lap_events:
+        raise ValueError("reference samples must contain a completed lap")
+    finish_time = lap_events[0].time_s
+    progress = [0.0]
+    elapsed = [0.0]
+    for sample, distance in zip(checked[1:], unwrapped[1:], strict=True):
+        relative = distance - start
+        if relative >= track.length_m:
+            break
+        if relative > progress[-1]:
+            progress.append(relative)
+            elapsed.append(sample.time_s - checked[0].time_s)
+    if progress[-1] < track.length_m:
+        progress.append(track.length_m)
+        elapsed.append(finish_time - checked[0].time_s)
+    return ReferenceLap(track.length_m, elapsed[-1], tuple(progress), tuple(elapsed))
+
+
+def reference_lap_delta(reference: ReferenceLap, *, s_m: float, lap_time_s: float) -> float:
+    """Signed time gap at the same position; positive means behind the reference."""
+    return _check("lap_time_s", lap_time_s) - reference.time_at(s_m)
+
+
 def project_position(track: Track, x_m: float, y_m: float) -> TrackProjection:
-    """The nearest point of the closed centerline polyline to one position.
+    """The nearest point of the dense centreline polyline to one position.
 
     Every segment competes, the closing one included, so the
     start/finish seam is found by the same search as any other join:
@@ -310,54 +365,38 @@ def project_position(track: Track, x_m: float, y_m: float) -> TrackProjection:
     travel.
 
     Inputs: ``x_m``/``y_m``, a world position in the ground frame,
-    metres. The projection is exact for the polyline the file
-    describes; it is not a projection onto the racing line or any
-    other offset curve.
+    metres. The projection is exact for the dense polyline the
+    module samples from the smooth centreline - it is a
+    deterministic approximation of the spline, accurate to its
+    chord error - and it is not a projection onto the racing line
+    or any other offset curve.
     """
     x = _check("x_m", x_m)
     y = _check("y_m", y_m)
-    start_x = track.x_m
-    start_y = track.y_m
-    # Each segment's direction, including the closing one, which
-    # `roll` forms from the last waypoint back to the first without
-    # the file repeating that waypoint. Segment lengths are positive -
-    # `load_track` refuses zero-length segments - so the denominator
-    # cannot vanish.
+    start_x, start_y, knot_s = track.centerline_polyline(subdivisions=32)
     delta_x = np.roll(start_x, -1) - start_x
     delta_y = np.roll(start_y, -1) - start_y
-    # The closest point on a segment is its perpendicular foot,
-    # clamped to the segment; every segment competes, and the
-    # winner is picked from the distances below.
-    parameter = ((x - start_x) * delta_x + (y - start_y) * delta_y) / (
-        delta_x * delta_x + delta_y * delta_y
-    )
+    chords = np.hypot(delta_x, delta_y)
+    parameter = ((x - start_x) * delta_x + (y - start_y) * delta_y) / (chords * chords)
     parameter = np.clip(parameter, 0.0, 1.0)
     closest_x = start_x + parameter * delta_x
     closest_y = start_y + parameter * delta_y
     distance_squared = (x - closest_x) ** 2 + (y - closest_y) ** 2
-    # `argmin` over the reversed distances keeps the *last* minimum in
-    # segment order, so an exact tie between two segments resolves to
-    # the later one - the outgoing segment at a shared waypoint, the
-    # same right-continuous convention `frame_at` uses - and a
-    # position exactly on a waypoint projects consistently with the
-    # frame at its arc length.
     index = len(distance_squared) - 1 - int(np.argmin(distance_squared[::-1]))
-
-    fraction = float(parameter[index])
-    s_m = float(track.s_m[index]) + fraction * float(track.ds_m[index])
-    # The closing segment's far end is the first waypoint, whose arc
-    # length is zero: wrap so both ways of reaching it address the
-    # same knot on the lap.
-    s_m %= track.length_m
-    # Lateral offset along the nearest segment's normal, the same
-    # normal `point_at` adds its `lateral_m` to, so the sign matches.
-    tangent_x = float(track.tangent_x_m[index])
-    tangent_y = float(track.tangent_y_m[index])
-    residual_x = x - float(closest_x[index])
-    residual_y = y - float(closest_y[index])
-    lateral_m = residual_x * (-tangent_y) + residual_y * tangent_x
+    next_s = float(knot_s[(index + 1) % len(knot_s)])
+    if index == len(knot_s) - 1:
+        next_s = track.length_m
+    s_m = (
+        float(knot_s[index]) + float(parameter[index]) * (next_s - float(knot_s[index]))
+    ) % track.length_m
+    if min(s_m, track.length_m - s_m) < 1e-7:
+        s_m = 0.0
+    closest_x_m, closest_y_m = track.centerline_at(s_m)
+    tangent_x, tangent_y = track.tangent_at(s_m)
+    residual_x, residual_y = x - closest_x_m, y - closest_y_m
+    lateral_m = residual_x * -tangent_y + residual_y * tangent_x
     distance_m = math.sqrt(float(distance_squared[index]))
-    return TrackProjection(s_m=s_m, lateral_m=lateral_m, distance_m=distance_m)
+    return TrackProjection(s_m, lateral_m, distance_m)
 
 
 def wheel_positions(
@@ -420,15 +459,15 @@ def wheels_within_track_limits(
 ) -> bool:
     """Whether all four wheels are inside the local half-width, at once.
 
-    Each wheel is projected onto the centerline and its signed
-    lateral offset compared against half the width
-    :func:`~f1telemetry.tracks.Track.frame_at` reports at that arc
-    length - the local half-width, interpolated piecewise-linearly
-    between waypoints exactly as every other per-waypoint quantity.
+    Each wheel is projected onto the centreline and its signed
+    lateral offset checked against the local extent on the side
+    it actually falls on: it must lie in
+    ``[-width_right_m, +width_left_m]`` at that arc length, the
+    interval :func:`~f1telemetry.tracks.Track.frame_at` reports.
     A wheel exactly on the limit is inside; ``tolerance_m`` widens
     the limit by a stated, nonnegative amount for callers whose
     positions carry rounding, and defaults to zero so the limit is
-    the file's width and nothing else. The check is per wheel and
+    the file's widths and nothing else. The check is per wheel and
     per instant: one wheel, one sample outside is enough to return
     ``False``.
     """
@@ -436,7 +475,9 @@ def wheels_within_track_limits(
     for x_m, y_m in wheels.positions():
         projection = project_position(track, x_m, y_m)
         frame = track.frame_at(projection.s_m)
-        if abs(projection.lateral_m) > 0.5 * frame.width_m + tolerance:
+        if projection.lateral_m > frame.width_left_m + tolerance:
+            return False
+        if projection.lateral_m < -frame.width_right_m - tolerance:
             return False
     return True
 
@@ -577,9 +618,7 @@ def assess_lap(
 
     return LapAssessment(
         events=events,
-        validity=evaluate_lap_validity(
-            completed_lap, wheels_within_limits, dnf, invalid
-        ),
+        validity=evaluate_lap_validity(completed_lap, wheels_within_limits, dnf, invalid),
         progress_m=unwrapped,
         projections=projections,
     )
@@ -719,8 +758,7 @@ def _checked_samples(samples: Sequence[TrackSample]) -> tuple[TrackSample, ...]:
         _check("heading_rad", sample.heading_rad)
         if time_s < previous_time:
             raise ValueError(
-                f"sample time_s must be nondecreasing, got {time_s} s "
-                f"after {previous_time} s"
+                f"sample time_s must be nondecreasing, got {time_s} s after {previous_time} s"
             )
         previous_time = time_s
         checked.append(sample)

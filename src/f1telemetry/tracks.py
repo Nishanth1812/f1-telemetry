@@ -27,33 +27,50 @@ constant: every metre comes from the track file.
 waypoint is joined back to the first, so the loop closes by construction and
 the first waypoint is never repeated at the end (a repeat would make the
 closing segment zero-length, which the loader refuses). ``widths_m`` holds
-one positive width per waypoint, aligned by position - the loader checks the
+one width per waypoint, aligned by position - the loader checks the
 count, because a shifted width list would describe a different track than
-the one drawn. ``sectors`` holds the lap's sector boundaries as arc lengths
+the one drawn. Each entry is either a positive total width in metres, or a
+mapping carrying the distance to each edge (``left_m`` / ``right_m``, or
+the TUMFTM survey aliases ``w_tr_left_m`` / ``w_tr_right_m``), so
+asymmetric tracks keep both sides instead of being averaged. ``left`` is
+the side a positive lateral offset addresses. ``sectors`` holds the lap's
+sector boundaries as arc lengths
 in metres, strictly increasing and strictly inside the lap length, so no
 boundary sits on the start/finish line.
 
-**The geometry.** The centerline is interpolated piecewise-linearly and
-periodically: a query at arc length ``s`` finds the segment it falls in and
-interpolates along it, with ``s`` wrapped modulo the lap length so negative
-and beyond-the-lap values address the same point on an adjacent lap. Arc
-length is measured along the polyline itself, so ``s`` is exact rather than
-an approximation of some smoother curve. Per-waypoint quantities - width and
-curvature - interpolate the same way, over the same knots.
+**The geometry.** The centreline is a periodic cubic spline through
+the waypoints, built in two passes. First a ``C2`` cubic interpolant
+of the closed waypoint list is solved - each segment is a cubic between
+adjacent waypoints whose first and second derivatives join continuously
+across every knot, including the start/finish seam. Second, the curve is
+reparameterised by arc length: a fixed dense quadrature of each segment
+gives its length, and a query at arc length ``s`` finds the segment it
+falls in, converts the remaining distance along that segment to the
+spline's own parameter with the segment's length table, and evaluates
+the spline there, with ``s`` wrapped modulo the lap length so negative
+and beyond-the-lap values address the same point on an adjacent lap.
+Only the width still interpolates per-waypoint: it is a property of the
+track, not a derivative of the centreline.
 
-The tangent is the segment's unit direction, constant within a segment, and
-a query exactly on a waypoint is right-continuous: it returns the outgoing
-segment's frame. The normal is the tangent rotated a quarter turn left,
+Why a cubic spline rather than the raw polyline or a Catmull-Rom: the
+speed profile (P4-T5) and the minimum-curvature line (P4-T3) both
+consume curvature, and a polyline has none on its segment interiors, so
+its curvature would be a sum of deltas at the waypoints. A Catmull-Rom
+spline makes position and tangent continuous but leaves curvature
+jumping at the knots, which would put false braking/turning events into
+the speed profile. The periodic cubic is the smallest interpolant that
+makes position, tangent *and* curvature continuous (it is ``C2``), it
+interpolates every waypoint exactly, and it is deterministic: the same
+fixture solves to the same coefficients and the same knots.
+
+The tangent is the spline's derivative, normalised; a query exactly on
+a waypoint is right-continuous: it returns the outgoing segment's
+derivative. The normal is the tangent rotated a quarter turn left,
 ``(-t_y, t_x)``; the ground frame is right-handed, so a positive lateral
-offset in :meth:`Track.point_at` is to the left of the direction of travel.
-
-Curvature needs one decision, because a polyline has none on its segment
-interiors. The per-waypoint estimate is the signed turning angle at the
-waypoint - the angle from the incoming segment to the outgoing one, wrapped
-to ``(-pi, pi]`` - divided by the mean of the two adjacent segment lengths,
-and those estimates are interpolated piecewise-linearly over ``s`` like any
-other per-waypoint quantity. Positive curvature is a left (counterclockwise)
-turn, the same sign convention as the normal.
+offset in :meth:`Track.point_at` is to the left of the direction of
+travel. Curvature is the analytic spline quantity
+``(x'y'' - y'x'') / (x'^2 + y'^2)^(3/2)``, in 1/m, positive for a left
+(counterclockwise) turn - the same sign convention as the normal.
 
 **Lateral offset is unbounded.** :meth:`Track.point_at` adds ``lateral_m``
 times the normal to the centerline and refuses nothing: the racing-line
@@ -100,6 +117,9 @@ __all__ = [
 _MIN_WAYPOINTS: Final[int] = 3
 _CENTERLINE_KEYS: Final[frozenset[str]] = frozenset({"x_m", "y_m"})
 _TWO_PI: Final[float] = 2.0 * math.pi
+# Dense quadrature points per spline segment for the arc-length tables:
+# fixed, so a fixture always solves to the same knots and length.
+_SPLINE_SAMPLES: Final[int] = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +139,8 @@ class TrackFrame:
     normal_y_m: float
     curvature_per_m: float
     width_m: float
+    width_left_m: float
+    width_right_m: float
 
     @property
     def heading_rad(self) -> float:
@@ -137,15 +159,32 @@ class Track:
     * ``x_m``, ``y_m`` - the waypoints in order, metres, in the right-handed
       ground frame. The loop closes from the last waypoint back to the first;
       the first waypoint is not repeated at the end.
-    * ``width_m`` - the track width at each waypoint, metres, positive.
-    * ``s_m`` - the arc length at each waypoint along the polyline, metres,
+    * ``width_m`` - the total track width at each waypoint, metres,
+      positive: ``width_left_m[i] + width_right_m[i]``.
+    * ``width_left_m``, ``width_right_m`` - the distance from the
+      centreline to the left and right track edges at each waypoint,
+      metres, positive. Both sides are kept separately because surveyed
+      centrelines (TUMFTM's ``w_tr_left_m`` / ``w_tr_right_m``) place
+      them asymmetrically; a positive lateral offset addresses the
+      left side, and a position is on track only between
+      ``-width_right_m`` and ``+width_left_m``.
+    * ``s_m`` - the arc length at each waypoint along the spline, metres,
       strictly increasing from ``s_m[0] == 0`` to ``s_m[-1] < length_m``.
-    * ``ds_m`` - the length of each segment, metres, including the closing
-      segment ``ds_m[-1]`` from the last waypoint back to the first; all
-      positive, and they sum to :attr:`length_m`.
-    * ``tangent_x_m``, ``tangent_y_m`` - each segment's unit direction.
-    * ``curvature_per_m`` - the signed per-waypoint curvature estimate, in
-      1/m, positive for a left turn.
+    * ``ds_m`` - the arc length of each spline segment, metres, including
+      the closing segment ``ds_m[-1]`` from the last waypoint back to
+      the first; all positive, and they sum to :attr:`length_m`.
+    * ``tangent_x_m``, ``tangent_y_m`` - the unit tangent at each knot,
+      from the spline's own derivative (right-continuous at the knot).
+    * ``curvature_per_m`` - the signed centreline curvature at each
+      knot, in 1/m, positive for a left turn.
+    * ``spline_second_x``, ``spline_second_y`` - the second derivatives
+      of the cubic spline at each knot; with the waypoints they fix
+      the interpolant a query evaluates.
+    * ``spline_table_parameter``, ``spline_table_length`` - the fixed
+      dense quadrature of each segment: the spline parameter at each
+      sample, and the cumulative arc length within that segment, so a
+      distance along the curve can be mapped back to the parameter the
+      spline is evaluated at.
 
     Built by :func:`load_track`, which enforces every invariant above; the
     dataclass itself is a record, not a second validation path.
@@ -159,11 +198,17 @@ class Track:
     x_m: np.ndarray
     y_m: np.ndarray
     width_m: np.ndarray
+    width_left_m: np.ndarray
+    width_right_m: np.ndarray
     s_m: np.ndarray
     ds_m: np.ndarray
     tangent_x_m: np.ndarray
     tangent_y_m: np.ndarray
     curvature_per_m: np.ndarray
+    spline_second_x: np.ndarray
+    spline_second_y: np.ndarray
+    spline_table_parameter: np.ndarray
+    spline_table_length: np.ndarray
 
     @property
     def waypoint_count(self) -> int:
@@ -175,22 +220,38 @@ class Track:
 
         ``s_m`` wraps modulo :attr:`length_m`, so negative values and values
         past the lap length address the same point on an adjacent lap. The
-        interpolation is piecewise-linear between waypoints; a query exactly
-        on a waypoint returns that waypoint, on the segment that starts there.
+        spline is evaluated at the matched point on its own parameter, and
+        a query exactly on a waypoint returns that waypoint, on the
+        segment that starts there.
         """
         self._check("s_m", s_m)
         index, fraction = self._location(s_m)
-        return self._lerp_centerline(index, fraction)
+        x_m, y_m, _, _, _ = self._spline_eval(index, fraction * float(self.ds_m[index]))
+        return (x_m, y_m)
 
     def width_at(self, s_m: float) -> float:
-        """The track width at arc length ``s_m``, in metres.
+        """The total track width at arc length ``s_m``, in metres.
 
-        The per-waypoint widths interpolate piecewise-linearly over the same
-        knots as the centerline, so a width never jumps between waypoints.
+        The per-waypoint widths interpolate piecewise-linearly over the
+        same knots as the centreline, so a width never jumps between
+        waypoints. Consumers that need the side-specific extent should
+        use :meth:`width_left_at` and :meth:`width_right_at`.
         """
         self._check("s_m", s_m)
         index, fraction = self._location(s_m)
         return self._lerp(self.width_m, index, fraction)
+
+    def width_left_at(self, s_m: float) -> float:
+        """The distance from the centreline to the left edge at ``s_m``, metres."""
+        self._check("s_m", s_m)
+        index, fraction = self._location(s_m)
+        return self._lerp(self.width_left_m, index, fraction)
+
+    def width_right_at(self, s_m: float) -> float:
+        """The distance from the centreline to the right edge at ``s_m``, metres."""
+        self._check("s_m", s_m)
+        index, fraction = self._location(s_m)
+        return self._lerp(self.width_right_m, index, fraction)
 
     def tangent_at(self, s_m: float) -> tuple[float, float]:
         """The unit tangent at ``s_m``: the direction of the segment it falls in.
@@ -200,8 +261,9 @@ class Track:
         a query exactly on one returns the outgoing segment's direction.
         """
         self._check("s_m", s_m)
-        index, _ = self._location(s_m)
-        return (float(self.tangent_x_m[index]), float(self.tangent_y_m[index]))
+        index, fraction = self._location(s_m)
+        _, _, tangent_x, tangent_y, _ = self._spline_eval(index, fraction * float(self.ds_m[index]))
+        return (tangent_x, tangent_y)
 
     def normal_at(self, s_m: float) -> tuple[float, float]:
         """The unit normal at ``s_m``: the tangent rotated a quarter turn left.
@@ -211,21 +273,21 @@ class Track:
         lateral offset in :meth:`point_at` is to the left.
         """
         self._check("s_m", s_m)
-        index, _ = self._location(s_m)
-        tangent_x = float(self.tangent_x_m[index])
-        tangent_y = float(self.tangent_y_m[index])
+        tangent_x, tangent_y = self.tangent_at(s_m)
         return (-tangent_y, tangent_x)
 
     def curvature_at(self, s_m: float) -> float:
         """The signed curvature at ``s_m``, in 1/m, positive for a left turn.
 
-        The per-waypoint curvature estimates interpolate piecewise-linearly
-        over the same knots as the centerline, so the curvature profile is
-        continuous around the lap.
+        The spline is ``C2``, so the curvature is continuous around the
+        lap, including across the start/finish seam; it is evaluated
+        analytically from the spline's derivatives, not interpolated
+        from per-waypoint estimates.
         """
         self._check("s_m", s_m)
         index, fraction = self._location(s_m)
-        return self._lerp(self.curvature_per_m, index, fraction)
+        _, _, _, _, curvature = self._spline_eval(index, fraction * float(self.ds_m[index]))
+        return curvature
 
     def frame_at(self, s_m: float) -> TrackFrame:
         """Position, tangent, normal, curvature and width at ``s_m``, once.
@@ -237,9 +299,9 @@ class Track:
         """
         self._check("s_m", s_m)
         index, fraction = self._location(s_m)
-        x_m, y_m = self._lerp_centerline(index, fraction)
-        tangent_x = float(self.tangent_x_m[index])
-        tangent_y = float(self.tangent_y_m[index])
+        x_m, y_m, tangent_x, tangent_y, curvature = self._spline_eval(
+            index, fraction * float(self.ds_m[index])
+        )
         return TrackFrame(
             x_m=x_m,
             y_m=y_m,
@@ -247,8 +309,10 @@ class Track:
             tangent_y_m=tangent_y,
             normal_x_m=-tangent_y,
             normal_y_m=tangent_x,
-            curvature_per_m=self._lerp(self.curvature_per_m, index, fraction),
+            curvature_per_m=curvature,
             width_m=self._lerp(self.width_m, index, fraction),
+            width_left_m=self._lerp(self.width_left_m, index, fraction),
+            width_right_m=self._lerp(self.width_right_m, index, fraction),
         )
 
     def point_at(self, s_m: float, lateral_m: float = 0.0) -> tuple[float, float]:
@@ -264,10 +328,10 @@ class Track:
         self._check("s_m", s_m)
         self._check("lateral_m", lateral_m)
         index, fraction = self._location(s_m)
-        x_m, y_m = self._lerp_centerline(index, fraction)
-        normal_x = -float(self.tangent_y_m[index])
-        normal_y = float(self.tangent_x_m[index])
-        return (x_m + lateral_m * normal_x, y_m + lateral_m * normal_y)
+        x_m, y_m, tangent_x, tangent_y, _ = self._spline_eval(
+            index, fraction * float(self.ds_m[index])
+        )
+        return (x_m + lateral_m * (-tangent_y), y_m + lateral_m * tangent_x)
 
     def to_dict(self) -> dict[str, Any]:
         """A JSON-ready view of the track, for inspection and transport."""
@@ -279,6 +343,8 @@ class Track:
             "waypoint_count": self.waypoint_count,
             "centerline": [[float(x), float(y)] for x, y in zip(self.x_m, self.y_m, strict=True)],
             "widths_m": [float(width) for width in self.width_m],
+            "width_left_m": [float(width) for width in self.width_left_m],
+            "width_right_m": [float(width) for width in self.width_right_m],
             "sector_boundaries_m": list(self.sector_boundaries_m),
         }
 
@@ -295,21 +361,94 @@ class Track:
         fraction = (wrapped - float(self.s_m[index])) / float(self.ds_m[index])
         return index, fraction
 
+    def _spline_eval(
+        self, index: int, distance_m: float
+    ) -> tuple[float, float, float, float, float]:
+        """The spline's (x, y, unit tangent, signed curvature) at one segment.
+
+        ``distance_m`` is the arc length from the start of segment
+        ``index`` along the curve, in metres; the segment's dense length
+        table maps it back to the spline's own parameter, and the cubic,
+        its first and its second derivative are evaluated there. The
+        tangent is normalised and the curvature is the analytic
+        ``(x'y'' - y'x'') / (x'^2 + y'^2)^(3/2)`` of that derivative, so
+        the returned tuple is consistent with the centreline by
+        construction.
+        """
+        table_u = self.spline_table_parameter[index]
+        table_l = self.spline_table_length[index]
+        # The dense length table is monotone by construction, so a
+        # binary search finds the span; degenerate (stationary) spans
+        # divide by zero only for a self-intersecting fixture, which the
+        # loader's duplicate-waypoint check rejects upstream.
+        span_index = int(np.searchsorted(table_l, distance_m, side="right")) - 1
+        span_index = min(max(span_index, 0), table_l.shape[0] - 2)
+        span = float(table_l[span_index + 1]) - float(table_l[span_index])
+        fraction = 0.0 if span <= 0.0 else (distance_m - float(table_l[span_index])) / span
+        u = float(table_u[span_index]) + fraction * (
+            float(table_u[span_index + 1]) - float(table_u[span_index])
+        )
+        return self._spline_eval_u(index, u)
+
+    def centerline_polyline(
+        self, subdivisions: int = 16
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """A dense deterministic sampling of the smooth centreline.
+
+        Returns ``(x_m, y_m, s_m)``: the spline evaluated at
+        ``subdivisions`` equal parameter steps per segment, the
+        corresponding arc lengths interpolated from the integration
+        table, and the closing segment's far end identified with the
+        lap length so the polyline closes. Projection consumers use this
+        rather than the waypoint polyline, which the spline
+        deliberately no longer follows exactly between knots.
+        """
+        if isinstance(subdivisions, bool) or not isinstance(subdivisions, int) or subdivisions < 1:
+            raise ValueError(f"subdivisions must be an int >= 1, got {subdivisions!r}")
+        xs: list[float] = []
+        ys: list[float] = []
+        arc_s: list[float] = []
+        for index in range(self.waypoint_count):
+            for j in range(subdivisions):
+                u = j / subdivisions
+                x, y, _, _, _ = self._spline_eval_u(index, u)
+                xs.append(x)
+                ys.append(y)
+                arc_s.append(
+                    float(self.s_m[index])
+                    + float(
+                        np.interp(
+                            u, self.spline_table_parameter[index], self.spline_table_length[index]
+                        )
+                    )
+                )
+        x_arr = np.asarray(xs, dtype=np.float64)
+        y_arr = np.asarray(ys, dtype=np.float64)
+        return (x_arr, y_arr, np.asarray(arc_s, dtype=np.float64))
+
+    def _spline_eval_u(self, index: int, u: float) -> tuple[float, float, float, float, float]:
+        """The spline quantities at segment ``index``'s own parameter ``u``."""
+        following = (index + 1) % self.waypoint_count
+        x0 = float(self.x_m[index])
+        y0 = float(self.y_m[index])
+        x1 = float(self.x_m[following])
+        y1 = float(self.y_m[following])
+        m0x = float(self.spline_second_x[index])
+        m1x = float(self.spline_second_x[following])
+        m0y = float(self.spline_second_y[index])
+        m1y = float(self.spline_second_y[following])
+        x, y = _spline_point(x0, y0, x1, y1, m0x, m1x, m0y, m1y, u)
+        dx, dy, d2x, d2y = _spline_derivative(x0, y0, x1, y1, m0x, m1x, m0y, m1y, u)
+        speed = math.hypot(dx, dy)
+        curvature = (dx * d2y - dy * d2x) / (speed * speed * speed)
+        return (x, y, dx / speed, dy / speed, curvature)
+
     def _lerp(self, values: np.ndarray, index: int, fraction: float) -> float:
         """One per-waypoint quantity, piecewise-linearly interpolated over ``s``."""
         following = (index + 1) % self.waypoint_count
         start = float(values[index])
         end = float(values[following])
         return start + fraction * (end - start)
-
-    def _lerp_centerline(self, index: int, fraction: float) -> tuple[float, float]:
-        """The centerline point at ``fraction`` along the segment starting at ``index``."""
-        following = (index + 1) % self.waypoint_count
-        start_x = float(self.x_m[index])
-        start_y = float(self.y_m[index])
-        end_x = float(self.x_m[following])
-        end_y = float(self.y_m[following])
-        return (start_x + fraction * (end_x - start_x), start_y + fraction * (end_y - start_y))
 
     def _check(self, label: str, value: object) -> float:
         """Narrow one query argument to a finite ``float``, or fail before interpolating.
@@ -390,9 +529,12 @@ def load_track(path: Path | None = None) -> Track:
             "aligned by position, so a shifted list would describe a different "
             "track than the one drawn"
         )
-    widths = [
-        _positive(entry, f"{where}: widths_m[{index}]") for index, entry in enumerate(widths_raw)
-    ]
+    widths_left: list[float] = []
+    widths_right: list[float] = []
+    for index, entry in enumerate(widths_raw):
+        left, right = _parse_width_entry(entry, f"{where}: widths_m[{index}]")
+        widths_left.append(left)
+        widths_right.append(right)
 
     sectors = _require_list(root.get("sectors"), f"{where}: sectors")
     if not sectors:
@@ -415,7 +557,8 @@ def load_track(path: Path | None = None) -> Track:
         description=description,
         centerline_xs=xs,
         centerline_ys=ys,
-        widths=widths,
+        widths_left=widths_left,
+        widths_right=widths_right,
         sector_boundaries=boundaries,
         where=where,
     )
@@ -428,7 +571,8 @@ def _build_track(
     description: str,
     centerline_xs: Sequence[float],
     centerline_ys: Sequence[float],
-    widths: Sequence[float],
+    widths_left: Sequence[float],
+    widths_right: Sequence[float],
     sector_boundaries: Sequence[float],
     where: str,
 ) -> Track:
@@ -443,41 +587,82 @@ def _build_track(
     """
     x = np.array(centerline_xs, dtype=np.float64)
     y = np.array(centerline_ys, dtype=np.float64)
-    width = np.array(widths, dtype=np.float64)
+    width_left = np.array(widths_left, dtype=np.float64)
+    width_right = np.array(widths_right, dtype=np.float64)
+    width = width_left + width_right
 
     # The closing segment joins the last waypoint back to the first, so the
     # loop is closed by construction; `roll` indexes every segment, including
     # that one, without the first waypoint being repeated in the file.
     delta_x = np.roll(x, -1) - x
     delta_y = np.roll(y, -1) - y
-    ds = np.hypot(delta_x, delta_y)
-    if not bool(np.all(ds > 0.0)):
-        index = int(np.argmin(ds))
+    chords = np.hypot(delta_x, delta_y)
+    if not bool(np.all(chords > 0.0)):
+        index = int(np.argmin(chords))
         raise ContractError(
-            f"{where}: centerline: waypoints {index} and {(index + 1) % ds.shape[0]} "
-            f"are the same point (segment length {float(ds[index])} m); every "
+            f"{where}: centerline: waypoints {index} and {(index + 1) % chords.shape[0]} "
+            f"are the same point (segment length {float(chords[index])} m); every "
             "segment must be nonzero, so the first waypoint must not be repeated "
             "at the end either - the closing segment is the join from the last "
             "waypoint back to the first"
         )
 
+    # The periodic cubic spline through the waypoints: C2 across every knot,
+    # including the start/finish seam. Solving the second-derivative system
+    # fixes the interpolant, and the dense per-segment length tables turn
+    # arc-length queries into parameter evaluations.
+    spline_second_x, spline_second_y = _periodic_spline_second(x, y)
+    count = x.shape[0]
+    table_parameter = np.zeros((count, _SPLINE_SAMPLES + 1), dtype=np.float64)
+    table_length = np.zeros((count, _SPLINE_SAMPLES + 1), dtype=np.float64)
+    ds = np.zeros(count, dtype=np.float64)
+    for index in range(count):
+        points: list[tuple[float, float]] = []
+        for step in range(_SPLINE_SAMPLES + 1):
+            u = step / _SPLINE_SAMPLES
+            table_parameter[index, step] = u
+            x_at, y_at = _spline_point(
+                float(x[index]),
+                float(y[index]),
+                float(x[(index + 1) % count]),
+                float(y[(index + 1) % count]),
+                float(spline_second_x[index]),
+                float(spline_second_x[(index + 1) % count]),
+                float(spline_second_y[index]),
+                float(spline_second_y[(index + 1) % count]),
+                u,
+            )
+            points.append((x_at, y_at))
+        for step in range(1, _SPLINE_SAMPLES + 1):
+            px, py = points[step - 1]
+            qx, qy = points[step]
+            table_length[index, step] = table_length[index, step - 1] + math.hypot(qx - px, qy - py)
+        ds[index] = table_length[index, _SPLINE_SAMPLES]
+
     knots = np.concatenate(([0.0], np.cumsum(ds)[:-1]))
     length_m = float(np.sum(ds))
-    tangent_x = delta_x / ds
-    tangent_y = delta_y / ds
 
-    # Curvature: a polyline is straight on every segment interior, so the
-    # curvature lives at the waypoints. The estimate at a waypoint is the
-    # signed turning angle - the angle from the incoming segment to the
-    # outgoing one, wrapped to (-pi, pi] - over the mean of the two adjacent
-    # segment lengths. Positive is a left turn, matching the left normal.
-    heading = np.arctan2(tangent_y, tangent_x)
-    heading_periodic = np.concatenate((heading[-1:], heading))
-    turning = np.diff(heading_periodic)
-    turning = (turning + math.pi) % _TWO_PI - math.pi
-    ds_periodic = np.concatenate((ds[-1:], ds))
-    mean_ds = 0.5 * (ds_periodic[:-1] + ds_periodic[1:])
-    curvature = turning / mean_ds
+    tangent_x = np.zeros(count, dtype=np.float64)
+    tangent_y = np.zeros(count, dtype=np.float64)
+    curvature = np.zeros(count, dtype=np.float64)
+    for index in range(count):
+        # The knot value is the outgoing segment's derivative at u=0, so a
+        # query exactly on a waypoint is right-continuous, as documented.
+        dx, dy, d2x, d2y = _spline_derivative(
+            float(x[index]),
+            float(y[index]),
+            float(x[(index + 1) % count]),
+            float(y[(index + 1) % count]),
+            float(spline_second_x[index]),
+            float(spline_second_x[(index + 1) % count]),
+            float(spline_second_y[index]),
+            float(spline_second_y[(index + 1) % count]),
+            0.0,
+        )
+        speed = math.hypot(dx, dy)
+        tangent_x[index] = dx / speed
+        tangent_y[index] = dy / speed
+        curvature[index] = (dx * d2y - dy * d2x) / (speed * speed * speed)
 
     if any(boundary <= previous for previous, boundary in pairwise(sector_boundaries)):
         raise ContractError(
@@ -493,7 +678,22 @@ def _build_track(
             )
 
     # Read-only from here on: a Track is the file's geometry, frozen at load.
-    for array in (x, y, width, knots, ds, tangent_x, tangent_y, curvature):
+    for array in (
+        x,
+        y,
+        width,
+        width_left,
+        width_right,
+        knots,
+        ds,
+        tangent_x,
+        tangent_y,
+        curvature,
+        spline_second_x,
+        spline_second_y,
+        table_parameter,
+        table_length,
+    ):
         array.setflags(write=False)
 
     return Track(
@@ -505,12 +705,82 @@ def _build_track(
         x_m=x,
         y_m=y,
         width_m=width,
+        width_left_m=width_left,
+        width_right_m=width_right,
         s_m=knots,
         ds_m=ds,
         tangent_x_m=tangent_x,
         tangent_y_m=tangent_y,
         curvature_per_m=curvature,
+        spline_second_x=spline_second_x,
+        spline_second_y=spline_second_y,
+        spline_table_parameter=table_parameter,
+        spline_table_length=table_length,
     )
+
+
+def _periodic_spline_second(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The second derivatives of the closed cubic interpolant at the knots.
+
+    One standard system per coordinate: ``M[i-1] + 4 M[i] + M[i+1] =
+    6 (p[i-1] - 2 p[i] + p[i+1])`` under a uniform per-segment
+    parameter, with the ring closing across the seam. Solving it gives
+    the C2 interpolant through every waypoint; the uniform parameter
+    is reparameterised by arc length when queries are made.
+    """
+    count = int(x.shape[0])
+    system = np.zeros((count, count), dtype=np.float64)
+    for index in range(count):
+        system[index, (index - 1) % count] = 1.0
+        system[index, index] = 4.0
+        system[index, (index + 1) % count] = 1.0
+    rhs_x = np.array(
+        [6.0 * (x[(i - 1) % count] - 2.0 * x[i] + x[(i + 1) % count]) for i in range(count)],
+        dtype=np.float64,
+    )
+    rhs_y = np.array(
+        [6.0 * (y[(i - 1) % count] - 2.0 * y[i] + y[(i + 1) % count]) for i in range(count)],
+        dtype=np.float64,
+    )
+    return (np.linalg.solve(system, rhs_x), np.linalg.solve(system, rhs_y))
+
+
+def _spline_point(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    m0x: float,
+    m1x: float,
+    m0y: float,
+    m1y: float,
+    u: float,
+) -> tuple[float, float]:
+    """The cubic segment's position at parameter ``u`` in ``[0, 1]``."""
+    one = 1.0 - u
+    x = m0x * (one**3) / 6.0 + m1x * (u**3) / 6.0 + (x0 - m0x / 6.0) * one + (x1 - m1x / 6.0) * u
+    y = m0y * (one**3) / 6.0 + m1y * (u**3) / 6.0 + (y0 - m0y / 6.0) * one + (y1 - m1y / 6.0) * u
+    return (x, y)
+
+
+def _spline_derivative(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    m0x: float,
+    m1x: float,
+    m0y: float,
+    m1y: float,
+    u: float,
+) -> tuple[float, float, float, float]:
+    """The cubic segment's first and second derivative at ``u``."""
+    one = 1.0 - u
+    dx = -m0x * (one**2) / 2.0 + m1x * (u**2) / 2.0 + (x1 - x0) - (m1x - m0x) / 6.0
+    dy = -m0y * (one**2) / 2.0 + m1y * (u**2) / 2.0 + (y1 - y0) - (m1y - m0y) / 6.0
+    d2x = m0x * one + m1x * u
+    d2y = m0y * one + m1y * u
+    return (dx, dy, d2x, d2y)
 
 
 def _require_mapping(node: Any, where: str) -> Mapping[str, Any]:
@@ -532,6 +802,32 @@ def _number(node: Any, where: str) -> float:
     if not math.isfinite(value):
         raise ContractError(f"{where}: expected a finite number, got {node!r}")
     return value
+
+
+def _parse_width_entry(entry: Any, where: str) -> tuple[float, float]:
+    """One waypoint's width on each side of the centreline, in metres.
+
+    Two forms are accepted. A plain positive number is the symmetric
+    total width and splits in half. A mapping carries the distances
+    from the centreline to each edge directly, so asymmetric surveyed
+    data survives the schema: the keys ``left_m`` / ``right_m`` are
+    used, and the TUMFTM survey naming ``w_tr_left_m`` / ``w_tr_right_m``
+    is accepted as an alias for the same quantities. ``left`` is the
+    side a positive lateral offset addresses, matching
+    :meth:`Track.point_at`'s sign convention.
+    """
+    if isinstance(entry, Mapping):
+        left = entry.get("left_m", entry.get("w_tr_left_m"))
+        right = entry.get("right_m", entry.get("w_tr_right_m"))
+        if left is None or right is None:
+            raise ContractError(
+                f"{where}: expected 'left_m' and 'right_m' (or the 'w_tr_left_m'/"
+                f"'w_tr_right_m' aliases), got keys {sorted(map(str, entry))}"
+            )
+        return (_positive(left, f"{where}.left_m"), _positive(right, f"{where}.right_m"))
+    total = _positive(entry, where)
+    half = total / 2.0
+    return (half, half)
 
 
 def _positive(node: Any, where: str) -> float:

@@ -262,6 +262,67 @@ def test_a_standing_launch_starts_from_rest_in_first_gear(runs: Mapping[str, Sce
     assert float(run.drivetrain.accel_m_s2.max()) > 0.0
 
 
+def test_thermal_scenarios_publish_finite_temperature_and_pressure_channels(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    for name in ("thermal_soak", "brake_duty_cycle"):
+        frames = runs[name].record.frames
+        assert frames
+        for frame in frames:
+            assert np.isfinite(
+                [
+                    frame.values["tyre_temp_fl"],
+                    frame.values["tyre_pressure_fl"],
+                    frame.values["brake_temp_fl"],
+                    frame.values["engine_temp"],
+                    frame.values["gearbox_temp"],
+                ]
+            ).all()
+    brake = runs["brake_duty_cycle"].record.series("brake_temp_fl")
+    assert max(brake) > brake[0]
+
+
+def test_control_law_receives_scenario_pose_and_controls_interval(config: KernelConfig) -> None:
+    states: list[scenarios.ControlState] = []
+    plan = scenarios.Scenario(
+        name="control_law_pose",
+        initial_speed_m_s=10.0,
+        initial_x_m=4.0,
+        initial_y_m=7.0,
+        initial_heading_rad=0.2,
+        description="control-law boundary",
+        segments=(scenarios.ScenarioSegment(duration_s=0.02),),
+    )
+
+    def law(state: scenarios.ControlState) -> scenarios.DriverRequest:
+        states.append(state)
+        return scenarios.DriverRequest(0.0, 0.25, 0.0, 20.0)
+
+    run = scenarios.run_scenario(config, plan, control_steps=100, control_law=law)
+    assert len(states) == 2
+    assert (states[0].x_m, states[0].y_m) == (4.0, 7.0)
+    assert states[0].heading_rad == 0.2
+    assert run.drivetrain.throttle[0] == 0.25
+
+
+def test_control_law_brake_maps_to_signed_wheel_torque(config: KernelConfig) -> None:
+    plan = scenarios.Scenario(
+        name="control_law_brake",
+        initial_speed_m_s=20.0,
+        description="normalized brake boundary",
+        segments=(scenarios.ScenarioSegment(duration_s=0.01),),
+    )
+    request = scenarios.DriverRequest(0.0, 0.0, 0.5, 0.0)
+    run = scenarios.run_scenario(
+        config,
+        plan,
+        control_steps=100,
+        control_law=lambda _: request,
+        max_brake_torque_nm=100.0,
+    )
+    assert np.all(run.brake_torque_nm == -50.0)
+
+
 def test_each_segment_applies_its_caller_supplied_clutch_state(
     runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario]
 ) -> None:

@@ -945,3 +945,115 @@ steering:
     Ackermann fraction sets how the inner and outer front wheels differ from that mean angle,
     and `max_steering_wheel_angle_deg` is the mechanical limit the boundary rejects beyond.
     None of the three carries FIA authority.
+
+thermal:
+  nodes:
+    tyre:
+      initial_temp_c: 25.0
+      heat_capacity_j_per_k: 9000.0
+      cooling_area_m2: 0.30
+      emissivity: 0.8
+      airflow_heat_transfer_base_w_m2_k: 55.0
+      airflow_heat_transfer_speed_gain_w_m2_k_per_m_s: 3.0
+    brake:
+      initial_temp_c: 25.0
+      heat_capacity_j_per_k: 8000.0
+      cooling_area_m2: 0.10
+      emissivity: 0.8
+      airflow_heat_transfer_base_w_m2_k: 90.0
+      airflow_heat_transfer_speed_gain_w_m2_k_per_m_s: 2.0
+    engine:
+      initial_temp_c: 90.0
+      heat_capacity_j_per_k: 450000.0
+      cooling_area_m2: 2.5
+      emissivity: 0.8
+      airflow_heat_transfer_base_w_m2_k: 90.0
+      airflow_heat_transfer_speed_gain_w_m2_k_per_m_s: 6.0
+    gearbox:
+      initial_temp_c: 65.0
+      heat_capacity_j_per_k: 65000.0
+      cooling_area_m2: 0.6
+      emissivity: 0.8
+      airflow_heat_transfer_base_w_m2_k: 45.0
+      airflow_heat_transfer_speed_gain_w_m2_k_per_m_s: 2.0
+  brake_heat_fraction: 0.75
+  engine_waste_heat_share: 0.35
+  gearbox_loss_share: 0.05
+  tyre_gas:
+    volume_m3: 0.030
+    gas_constant_j_per_kg_k: 287.05
+    initial_pressure_psi_gauge: 22.0
+  provenance: synthesised
+  source_date: 2026-10-06
+  not_regulated:
+    nodes: >-
+      Synthetic P3 lumped-node record, not regulation numbers. No article in Section C Issue 20
+      states a heat capacity, a cooling area, an emissivity or a coolant/airflow coefficient for
+      any part of the car: the regulations bound what a component may *do* (fuel energy flow in
+      C5.2.3-C5.2.5, tyre mounting widths in C10.7.2, the idle ceiling in C5.13.4) and never a
+      thermal property of the hardware. `heat_capacity_j_per_k` is the `m c` of
+      `m c dT/dt = Q_in - hA(T - T_amb) - eps sigma A(T^4 - T_amb^4)` and is the divisor of the
+      whole step, so a value at or below zero there is a node with no thermal mass rather than a
+      cold car. `cooling_area_m2` and `emissivity` set the two signed losses; `emissivity` is a
+      surface property bounded by one because a surface cannot emit more than a blackbody.
+      The airflow coefficient is deliberately linear in road speed,
+      `h = base + speed_gain * v`, which is the simplest form that satisfies P3-T4's "cooling
+      scaled by airflow, which should rise with speed"; no ducting or boundary-layer model is
+      attempted. `initial_temp_c` is a scenario seed at the ambient the constants section
+      declares, except for the engine and gearbox, which start hot because a scenario that
+      begins with a cold powertrain measures soak time rather than a thermal response.
+      All four records are placeholders for calibration: they are calibrated per compound and
+      per surface in P3-T7, which has not been done, so no temperature any model reports is
+      evidence about a real car.
+    brake_heat_fraction: >-
+      Synthetic P3 brake-node split, not a regulation number. It is the share of the dissipated
+      brake power at `tau_brake * omega_wheel` that lands in *this* node (the rotor), with the
+      remainder going to the caliper, the pads, the other brake masses and the air. The
+      regulations say nothing about brake thermal mass or heat paths: C10 prescribes brake
+      geometry and dimensions, and no clause states what fraction of the energy stays in the
+      disc. 0.75 is a placeholder for calibration on the same principle as the node records
+      above, and it is the reason the same code path would give a different disc temperature if
+      a measurement ever replaced it.
+    engine_waste_heat_share: >-
+      Synthetic P3 engine-node split, not a regulation number. The scenario boundary derives
+      engine heat from the configured `fuel_to_shaft_efficiency`: the fuel energy the shaft did
+      not receive, `shaft_w * (1/efficiency - 1)`, is what the engine rejected as heat, and this
+      share of it is what the engine node absorbs rather than the exhaust and the coolant
+      circuit. 0.35 is a placeholder for calibration. The underlying efficiency is itself a
+      project number - see `powertrain.ice.fuel_to_shaft_efficiency` - so the product of the two
+      is the weakest quantity in this section.
+    gearbox_loss_share: >-
+      Synthetic P3 gearbox-node split, not a regulation number. The scenario boundary feeds the
+      gearbox node a share of the shaft work done against rear-wheel angular speed, and this is
+      that share; the remainder is the clutch and the differential. No article states gearbox or
+      differential efficiency (C9.6.2 makes the ratios team-nominated and says nothing about
+      losses), so 0.05 is a placeholder for calibration.
+    tyre_gas: >-
+      Synthetic P3 tyre-pressure state, not regulation numbers. No clause fixes a cold
+      inflation pressure, a tyre carcass volume or a fill gas: C10.6.1 makes the pressures a
+      matter of a supplier declaration rather than an article, and the only regulated tyre
+      quantities in this file are the C10.7.2 mounting widths and rim diameter. `volume_m3` is
+      the fixed air volume the ideal gas law divides by, deliberately constant because no
+      carcass deflection or thermal expansion is modelled; `gas_constant_j_per_kg_k` is dry air,
+      and 287.05 J/(kg K) is a real property of air rather than a placeholder - it is the air
+      figure used because the model does not distinguish nitrogen from air. What *is* a
+      placeholder is `initial_pressure_psi_gauge`: it seeds the declared gas mass at the tyre
+      node's own initial temperature, and 22 psi is a plausible cold-track value rather than a
+      measured one. The gauge-to-absolute conversion uses the standard atmosphere and the
+      conventional 6894.757 Pa/psi, both of which are unit definitions rather than calibration.
+  note: >-
+    P3 moves the illustrative thermal parameters out of `physics/thermal.py` and
+    `testing/scenarios.py` and into this section, so that thermal calibration is a data edit on
+    the same footing as every other coefficient in the file. One node record per thermal mass -
+    tyre, brake, engine, gearbox - rather than a flat list of per-quantity keys, because the
+    six quantities describe a node rather than the car: the tyre and brake records are shared by
+    all four corners in the committed data, which is the synthetic four-corner symmetry C11.1.2
+    asks for on the setup side and which per-corner records would later replace. The node order
+    is fixed by the loader and by `physics/thermal.py` in the same sequence
+    (tyre, brake, engine, gearbox) and is not configurable, so a kernel can index a node by
+    position; the two definitions are pinned against each other by `tests/test_thermal.py`.
+    This section is read by the scenario/thermal boundary, not by the fixed-step longitudinal
+    kernel, so nothing here enters a compiled loop and no existing kernel interface changes.
+    Moving the numbers here does not calibrate them: no operating-temperature source data has
+    been matched to this configuration and no equilibrium bands have been measured, so P3-T7
+    remains open. See `docs/calibration.md`.
