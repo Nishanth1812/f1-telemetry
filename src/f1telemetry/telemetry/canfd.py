@@ -15,7 +15,10 @@ from typing import Final
 
 ID_MAX: Final = (1 << 29) - 1
 COUNTER_MAX: Final = (1 << 32) - 1
-_DLC_BYTES: Final = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64)
+# Standard CAN-FD DLC-to-byte-count mapping. Public so the bus model
+# (and its tests) can validate payload sizes against the same table the
+# codec enforces; a scheduled message must be encodable on the wire.
+DLC_PAYLOAD_BYTES: Final = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64)
 _HEADER: Final = struct.Struct("<IBBIQ")  # id, DLC, flags, counter, simulated µs
 _CRC: Final = struct.Struct("<I")
 
@@ -42,7 +45,7 @@ class Frame:
 
 def _dlc_for_length(size: int) -> int:
     try:
-        return _DLC_BYTES.index(size)
+        return DLC_PAYLOAD_BYTES.index(size)
     except ValueError as exc:
         raise FrameError(f"payload length {size} is not a CAN-FD DLC length") from exc
 
@@ -88,12 +91,12 @@ def decode_frame(data: bytes) -> Frame:
     identifier, dlc, raw_flags, counter, timestamp_us = _HEADER.unpack_from(data)
     if identifier > ID_MAX:
         raise FrameError("identifier has bits outside the 29-bit range")
-    if dlc >= len(_DLC_BYTES):
+    if dlc >= len(DLC_PAYLOAD_BYTES):
         raise FrameError(f"DLC {dlc} is invalid")
-    payload_end = _HEADER.size + _DLC_BYTES[dlc]
+    payload_end = _HEADER.size + DLC_PAYLOAD_BYTES[dlc]
     if len(data) != payload_end + _CRC.size:
         raise FrameError("frame length does not match its DLC")
-    if _DLC_BYTES[dlc] % 4:
+    if DLC_PAYLOAD_BYTES[dlc] % 4:
         raise FrameError("columnar CAN-FD payload length must be a multiple of float32 size")
     if raw_flags & ~7:
         raise FrameError("flags contain reserved bits")

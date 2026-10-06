@@ -8,8 +8,14 @@ from typing import Protocol
 
 
 class _TimedFrame(Protocol):
-    t_s: float
-    values: object
+    """A frame carrying a timestamp. Declared read-only so the frozen
+    :class:`f1telemetry.testing.records.SensorFrame` satisfies it."""
+
+    @property
+    def t_s(self) -> float: ...
+
+    @property
+    def values(self) -> object: ...
 
 
 class LiveBuffer:

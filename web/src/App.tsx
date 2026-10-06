@@ -1,4 +1,5 @@
 import { ConnectionIndicator } from './components/ConnectionIndicator';
+import { EventPanel } from './components/EventPanel';
 import { TileGrid } from './components/TileGrid';
 import { TracePanel } from './components/TracePanel';
 import { useTelemetrySocket } from './hooks/useTelemetrySocket';
@@ -19,6 +20,7 @@ export function App() {
           <TileGrid />
         </section>
         <TracePanel />
+        <EventPanel />
       </main>
     </div>
   );

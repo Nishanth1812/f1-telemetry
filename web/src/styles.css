@@ -278,6 +278,68 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.events__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.events__heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.events__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.events__item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+}
+
+.events__item--fault {
+  border-left: 3px solid var(--warn);
+}
+
+.events__item--channel {
+  border-left: 3px solid var(--accent);
+}
+
+.events__time {
+  flex-shrink: 0;
+  min-width: 5.5rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.events__text {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 480px) {
   .tile-grid {
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

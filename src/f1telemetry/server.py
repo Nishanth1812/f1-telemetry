@@ -22,6 +22,12 @@ Design constraints this file honours:
 
 Run it with ``just serve`` (or ``uv run f1-serve``); the default endpoint is
 ``ws://localhost:8765/ws``, matching ``web/src/telemetry/config.ts``.
+
+With ``--replay-parquet`` the source is a saved run instead of synthetic data
+(P5-T9). The run's saved fault annotations are attached to the replay source, so
+the dashboard's event view shows the injections along with the channel stream -
+the frames themselves keep the live contract, annotations ride the optional
+``events`` key.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 
 from f1telemetry.contracts.channels import load_channel_contract
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
+from f1telemetry.telemetry.pipeline import read_annotations
 from f1telemetry.testing.replay import ReplaySource
 
 __all__ = [
@@ -221,6 +228,16 @@ def _bound_port(server: Server, fallback: int) -> int:
     return int(sockets[0].getsockname()[1])
 
 
+def replay_source(path: Path) -> ReplaySource:
+    """A replay source with the run's saved fault annotations attached.
+
+    Legacy files without the annotation metadata key read as "no annotations"
+    (:func:`f1telemetry.telemetry.pipeline.read_annotations`), so an old saved
+    run still replays exactly as before.
+    """
+    return ReplaySource(path, annotations=read_annotations(path))
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="f1-serve",
@@ -266,7 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.replay_parquet is None:
         source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
     else:
-        source = ReplaySource(args.replay_parquet)
+        source = replay_source(args.replay_parquet)
     server = TelemetryServer(
         source,
         host=args.host,
@@ -278,8 +295,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
         rate = source.contract.samples_per_second()
         print(f"sampling {rate:.0f} channel-samples/s of contract rate")
-    else:
-        print(f"replaying {args.replay_parquet} at {server.url}")
+    elif isinstance(source, ReplaySource):
+        print(
+            f"replaying {args.replay_parquet} at {server.url} "
+            f"({len(source.annotations)} saved fault annotations)"
+        )
     try:
         asyncio.run(_serve_forever(server))
     except KeyboardInterrupt:

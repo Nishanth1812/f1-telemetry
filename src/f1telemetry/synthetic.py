@@ -64,6 +64,7 @@ from f1telemetry.contracts.channels import (
 __all__ = [
     "BROADCAST_HZ",
     "Frame",
+    "FrameEvent",
     "SampleFn",
     "SyntheticError",
     "SyntheticSource",
@@ -98,23 +99,68 @@ injection. The hook is handed the channel so it can read ``range``, ``noise_mode
 
 
 @dataclass(frozen=True, slots=True)
+class FrameEvent:
+    """One occurrence attached to a frame, serialised under the optional ``events`` key.
+
+    The ``channels`` mapping carries *values*; events carry *occurrences*. Today the
+    only producer is the replay path, which surfaces a saved run's injected-fault
+    annotations as ``kind == "fault"`` events; the session event channels
+    (``lap_index`` and friends) stay ordinary channels on the wire and need no kind
+    of their own. Every field after ``time_us`` is optional and is omitted from the
+    payload when ``None``, so an event costs exactly the keys it needs and a frame
+    with no events serialises exactly as it always has.
+    """
+
+    kind: str
+    time_us: int
+    fault_type: str | None = None
+    channel: str | None = None
+    severity: float | None = None
+    duration_samples: int | None = None
+    label: bool | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        """JSON-ready event; ``None`` fields are omitted, ``False`` and ``0`` kept."""
+        payload: dict[str, object] = {"kind": self.kind, "time_us": int(self.time_us)}
+        if self.fault_type is not None:
+            payload["fault_type"] = self.fault_type
+        if self.channel is not None:
+            payload["channel"] = self.channel
+        if self.severity is not None:
+            payload["severity"] = float(self.severity)
+        if self.duration_samples is not None:
+            payload["duration_samples"] = int(self.duration_samples)
+        if self.label is not None:
+            payload["label"] = bool(self.label)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class Frame:
     """One batch of samples, and exactly the WebSocket payload shape.
 
     ``time_us`` is an integer count of simulated microseconds from ``t = 0``;
     ``channels`` maps channel name to a finite float. Event channels ride in the same
     mapping when something publishes them, but the generator never schedules them.
+    ``events`` carries discrete occurrences - saved fault annotations on the replay
+    path - and is serialised only when non-empty, so a frame without events is
+    byte-identical to the pre-event contract and live and replay frames keep one
+    shape.
     """
 
     time_us: int
     channels: dict[str, float]
+    events: tuple[FrameEvent, ...] = ()
 
     def to_wire(self) -> dict[str, object]:
         """JSON-ready payload, matching ``TelemetryFrame`` in the web client."""
-        return {
+        payload: dict[str, object] = {
             "time_us": int(self.time_us),
             "channels": {name: float(value) for name, value in self.channels.items()},
         }
+        if self.events:
+            payload["events"] = [event.to_wire() for event in self.events]
+        return payload
 
     def value(self, name: str) -> float:
         return self.channels[name]
