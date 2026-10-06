@@ -50,6 +50,7 @@ async function loadTs(relativePath) {
 
 const { decodeFrame } = await loadTs('telemetry/types.ts');
 const { TraceHistory } = await loadTs('telemetry/history.ts');
+const { CHANNELS } = await loadTs('generated/channels.ts');
 
 // ---------------------------------------------------------------------------
 // 1. decodeFrame preserves the optional sample batch, and legacy frames
@@ -220,4 +221,29 @@ test('TraceHistory gives a sparse channel only its own real samples', () => {
   assert.equal(imuCount, 3, 'every imu instant is kept');
   assert.deepEqual(Array.from(times.slice(0, imuCount)), [0, 5_000, 10_000]);
   assert.deepEqual(Array.from(values.slice(0, imuCount)), [1, 2, 3]);
+});
+
+test('TraceHistory retains sixty seconds at the generated speed rate', () => {
+  const rate = CHANNELS.speed.rateHz;
+  const capacity = Math.ceil(rate * 60) + 1;
+  const history = new TraceHistory();
+  for (let i = 0; i < capacity + rate; i += 1) {
+    history.push({ time_us: i * 1e6 / rate, channels: { speed: i } });
+  }
+  const times = new Float64Array(capacity + 1);
+  const values = new Float32Array(capacity + 1);
+  const count = history.fill('speed', capacity + 1, times, values);
+  assert.equal(count, capacity);
+  assert.equal(times[count - 1] - times[0], 60e6);
+});
+
+test('TraceHistory discards the previous timeline when replay rewinds', () => {
+  const history = new TraceHistory(8);
+  history.push({ time_us: 100, channels: { speed: 2 } });
+  history.push({ time_us: 0, channels: { speed: 1 } });
+  const times = new Float64Array(8);
+  const values = new Float32Array(8);
+  assert.equal(history.fill('speed', 8, times, values), 1);
+  assert.equal(times[0], 0);
+  assert.equal(history.latestTimeUs(), 0);
 });
