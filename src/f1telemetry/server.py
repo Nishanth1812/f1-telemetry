@@ -31,13 +31,15 @@ import asyncio
 import contextlib
 import json
 import signal
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Protocol
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 
 from f1telemetry.contracts.channels import load_channel_contract
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
+from f1telemetry.testing.replay import ReplaySource
 
 __all__ = [
     "DEFAULT_HOST",
@@ -61,6 +63,15 @@ class TransportError(ValueError):
     """Raised for a transport configuration that must not be served."""
 
 
+class FrameSource(Protocol):
+    """Minimal source contract required by the WebSocket publisher."""
+
+    @property
+    def now_us(self) -> int: ...
+
+    def iter_frames(self, duration_us: int, *, max_hz: float) -> Iterator[Frame]: ...
+
+
 class TelemetryServer:
     """Fan-out of synthetic frames to every connected dashboard.
 
@@ -75,7 +86,7 @@ class TelemetryServer:
 
     def __init__(
         self,
-        source: SyntheticSource,
+        source: FrameSource,
         *,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
@@ -89,7 +100,7 @@ class TelemetryServer:
             )
         if not 0 <= port <= 65535:
             raise TransportError(f"port must be in 0..65535, got {port}")
-        self._source: SyntheticSource = source
+        self._source: FrameSource = source
         self._host: str = host.lower()
         self._port: int = port
         self._path: str = path
@@ -136,9 +147,11 @@ class TelemetryServer:
         """
         start = loop.time() - self._source.now_us / 1_000_000
         while not self._stop_set():
+            emitted = False
             for frame in self._source.iter_frames(_CHUNK_US, max_hz=self._max_hz):
                 if self._stop_set():
                     return
+                emitted = True
                 await self._broadcast(frame)
                 delay = (start + frame.time_us / 1_000_000) - loop.time()
                 if delay <= 0:
@@ -146,6 +159,13 @@ class TelemetryServer:
                 assert self._stop is not None
                 with contextlib.suppress(TimeoutError):
                     _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
+            if not emitted and getattr(self._source, "exhausted", False):
+                return
+            if not emitted:
+                delay = (start + self._source.now_us / 1_000_000) - loop.time()
+                if delay > 0 and self._stop is not None:
+                    with contextlib.suppress(TimeoutError):
+                        _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
 
     def _stop_set(self) -> bool:
         return self._stop is not None and self._stop.is_set()
@@ -212,6 +232,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="contract to drive (default: the repository channels.yaml)",
     )
+    _ = parser.add_argument(
+        "--replay-parquet",
+        type=Path,
+        default=None,
+        help="replay saved frames from a Parquet file instead of synthetic data",
+    )
     _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
     _ = parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help="TCP port, 0 to auto-pick"
@@ -236,7 +262,11 @@ async def _serve_forever(server: TelemetryServer) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
+    source: FrameSource
+    if args.replay_parquet is None:
+        source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
+    else:
+        source = ReplaySource(args.replay_parquet)
     server = TelemetryServer(
         source,
         host=args.host,
@@ -244,9 +274,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         path=args.path,
         max_hz=args.hz,
     )
-    print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
-    rate = source.contract.samples_per_second()
-    print(f"sampling {rate:.0f} channel-samples/s of contract rate")
+    if isinstance(source, SyntheticSource):
+        print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
+        rate = source.contract.samples_per_second()
+        print(f"sampling {rate:.0f} channel-samples/s of contract rate")
+    else:
+        print(f"replaying {args.replay_parquet} at {server.url}")
     try:
         asyncio.run(_serve_forever(server))
     except KeyboardInterrupt:

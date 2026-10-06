@@ -12,7 +12,9 @@ frames a record carries, in contract order, and nothing else.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
@@ -20,7 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from f1telemetry.contracts.channels import DTYPES
-from f1telemetry.testing.records import SampleRecord
+from f1telemetry.testing.records import SampleRecord, SensorFrame
 
 __all__ = [
     "ARROW_TYPES",
@@ -28,6 +30,7 @@ __all__ = [
     "METADATA",
     "TIME_COLUMN",
     "build_table",
+    "read_frames",
     "serialise_frames",
     "write_frames",
 ]
@@ -109,3 +112,30 @@ def write_frames(
 def serialise_frames(record: SampleRecord, metadata: Mapping[str, str] | None = None) -> bytes:
     """Byte-identical Parquet encoding of the record's published frames."""
     return write_frames(record, metadata).getvalue().to_pybytes()
+
+
+def read_frames(source: bytes | Path) -> tuple[SensorFrame, ...]:
+    """Read saved logical frames for replay without rerunning physics."""
+    table = (
+        pq.read_table(pa.BufferReader(source))
+        if isinstance(source, bytes)
+        else pq.read_table(source)
+    )
+    if TIME_COLUMN not in table.column_names:
+        raise ValueError(f"Parquet replay requires {TIME_COLUMN!r}")
+    times = table[TIME_COLUMN].to_pylist()
+    names = [name for name in table.column_names if name != TIME_COLUMN]
+    columns = {name: table[name].to_pylist() for name in names}
+    frames: list[SensorFrame] = []
+    previous = -1.0
+    for index, timestamp in enumerate(times):
+        if timestamp is None or not math.isfinite(timestamp) or timestamp <= previous:
+            raise ValueError("Parquet replay timestamps must be finite and strictly increasing")
+        previous = float(timestamp)
+        frames.append(
+            SensorFrame(
+                t_s=float(timestamp),
+                values={name: float(columns[name][index]) for name in names},
+            )
+        )
+    return tuple(frames)
