@@ -157,6 +157,9 @@ Measured P2 scenario outputs: [`docs/phase2-demo.md`](./docs/phase2-demo.md).
 
 ## P3 — Thermal (lumped) {#p3}
 
+The implementation and VM verification record is in [`docs/phase3-5-demo.md`](docs/phase3-5-demo.md).
+The checkboxes below reflect evidenced criteria; phase tags remain open until every exit criterion passes.
+
 **Goal:** tyre, brake, engine and gearbox temperatures that respond to what the car is doing.
 **Depends on:** P1 (needs wheel ω and force). **Parallel with:** P2. **Effort:** ~1 week.
 
@@ -174,9 +177,9 @@ Cheap, and it unblocks the entire tyre-temperature half of the analytics story. 
 
 **Exit gate**
 - [ ] Equilibrium temperatures land in plausible windows per compound
-- [ ] Pressure responds to temperature and to an injected leak
-- [ ] A test proves slip-velocity (not road-speed) drives tyre heating
-- [ ] Thermal state survives a long headless run without NaN
+- [x] Pressure responds to temperature and to an injected leak
+- [x] A test proves slip-velocity (not road-speed) drives tyre heating
+- [x] Thermal state survives a long headless run without NaN
 
 **Tag:** `v0.4-thermal` · **Demo:** brake duty cycle with a visible temperature ramp and cooldown.
 
@@ -204,10 +207,10 @@ not let it drift right.
 | P4-T10 | Lap-time plausibility check vs published circuit records | Loose band — the model is not validated yet, but a wild miss means a bug |
 
 **Exit gate**
-- [ ] Racing line uses available track width sensibly and is smooth
-- [ ] Speed profile contains no physically impossible corner
+- [x] Racing line uses available track width sensibly and is smooth
+- [x] Speed profile contains no physically impossible corner
 - [ ] Reference driver completes valid laps; lap and sector times are stable run-to-run
-- [ ] Lap validity correctly rejects a lap with a deliberate track-limits excursion
+- [x] Lap validity correctly rejects a lap with a deliberate track-limits excursion
 - [ ] Line visibly resembles a real racing line on a real circuit
 
 **Tag:** `v0.5-track` · **Demo:** reference driver doing a clean flying lap with live sector deltas.
@@ -235,11 +238,11 @@ durable storage, and a replay that is bit-exact.
 | P5-T11 | **Determinism invariant in CI** (byte-identical Parquet across two runs) | The gate for the entire project's credibility |
 
 **Exit gate**
-- [ ] Bus load <70% at full sensor rate; a 200 Hz IMU message does not starve the 10 Hz engine message
-- [ ] All 10 fault types reproduce deterministically from a seed
-- [ ] Anti-aliasing verified: decimate a known high-frequency signal, confirm no alias
-- [ ] Parquet round-trips; a channel added in P0 flows through with no other edit
-- [ ] Two identical runs produce byte-identical Parquet
+- [x] Bus load <70% at full sensor rate; a 200 Hz IMU message does not starve the 10 Hz engine message
+- [x] All 10 fault types reproduce deterministically from a seed
+- [x] Anti-aliasing verified: decimate a known high-frequency signal, confirm no alias
+- [x] Parquet round-trips; a channel added in P0 flows through with no other edit
+- [x] Two identical runs produce byte-identical Parquet
 - [ ] Replay is indistinguishable from live to the dashboard
 
 **Tag:** `v0.6-telemetry` · **Demo:** the dashboard now showing *simulated* car telemetry, and a fault
