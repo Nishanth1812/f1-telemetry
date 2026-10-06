@@ -28,6 +28,9 @@ export class TraceHistory {
   }
 
   push(frame: TelemetryFrame): void {
+    if (Object.keys(frame.channels).length === 0) {
+      return;
+    }
     if (this.series.size < MAX_TRACKED_CHANNELS) {
       for (const name of Object.keys(frame.channels)) {
         if (!this.series.has(name)) {
