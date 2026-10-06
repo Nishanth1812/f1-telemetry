@@ -855,3 +855,18 @@ implementation evidence only; no P2 coefficient was tuned to these outputs.
 P1 remains open: the latest recorded 0–100 km/h result is 6.6598 s against the coarse 2.32 s
 reference, and the synthesized ICE curve remains uncalibrated. The 338.4295 km/h transient
 reachability result does not close that acceleration miss or validate the car model.
+
+## Phase 3 thermal implementation checkpoint
+
+The simulator now computes lumped tyre, brake, engine and gearbox temperatures and tyre pressure
+from scenario energy inputs. Tyre heat uses the kernel's signed contact-patch slip work, summed as
+absolute per-step dissipation; brake heat uses brake torque and midpoint wheel speed. Engine heat
+uses the existing synthetic fuel-to-shaft efficiency from `car_spec.yaml`. A scenario may declare a
+non-negative tyre gas leak rate, which lowers pressure through the ideal-gas state independently of
+the fault injector. `thermal_soak` and `brake_duty_cycle` are available in the scenario catalog.
+
+Cooling areas and coefficients, node heat capacities, brake heat fraction, engine coolant share,
+gearbox loss share, initial thermal states, tyre volume and gas mass remain illustrative values in
+the thermal implementation. No operating-temperature source data has been matched to the car
+configuration, and no equilibrium bands have been measured. This checkpoint records model wiring;
+it does not close P3 calibration or the P1/P2 calibration gates.

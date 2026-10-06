@@ -111,6 +111,7 @@ from f1telemetry.physics import (  # noqa: TID251 -- and the models
     forces,
     gearbox,
     powertrain,
+    thermal,
     tyres,
 )
 from f1telemetry.testing.records import (
@@ -211,6 +212,7 @@ class Scenario:
     initial_gear: int = 1
     soc_mj: float | None = None
     brake_bias: tuple[float, ...] = _UNIT_BRAKE
+    tyre_leak_rate_kg_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,6 +464,33 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                 ScenarioSegment(1.2, mgu_k_request_nm=-mgu_k_nm),
             ),
         ),
+        Scenario(
+            name="thermal_soak",
+            initial_speed_m_s=35.0,
+            initial_gear=6,
+            description=(
+                "Fixed-state, sustained-throttle thermal response. Temperatures are synthetic "
+                "lumped-model outputs and are not calibration evidence for a real car."
+            ),
+            segments=(ScenarioSegment(30.0, throttle=0.65),),
+        ),
+        Scenario(
+            name="brake_duty_cycle",
+            initial_speed_m_s=30.0,
+            initial_gear=4,
+            description=(
+                "Repeated throttle and brake intervals exercise synthetic per-corner disc heating "
+                "and cooling without claiming brake-system calibration."
+            ),
+            segments=tuple(
+                segment
+                for _ in range(4)
+                for segment in (
+                    ScenarioSegment(1.0, throttle=0.3),
+                    ScenarioSegment(0.5, brake_torque_nm=brake_nm),
+                )
+            ),
+        ),
     )
     return MappingProxyType({entry.name: entry for entry in built})
 
@@ -661,6 +690,7 @@ def run_scenario(
             control_steps,
             step_outputs,
             steer_history,
+            plan.tyre_leak_rate_kg_s,
         ),
         step_outputs=step_outputs,
         steer_wheel_deg=steer_history,
@@ -815,6 +845,7 @@ def _build_record(
     control_steps: int,
     step_outputs: longitudinal.StepOutputs,
     steer_history: np.ndarray,
+    tyre_leak_rate_kg_s: float,
 ) -> SampleRecord:
     """Assemble the :class:`SampleRecord` a scenario produces, decimated to the recorded rate.
 
@@ -827,6 +858,15 @@ def _build_record(
     lateral = tyres.validated_lateral_scalars(config, "scenarios")
     steps: list[GroundTruthStep] = []
     frames: list[SensorFrame] = []
+    thermal_inputs = _thermal_inputs(
+        trace, drivetrain, drive_torque_nm, brake_torque_nm, control_steps, config, step_outputs
+    )
+    thermal_trace = thermal.simulate_thermal_trace(
+        dt_s=config.dt_s * control_steps,
+        leak_rate_kg_s=tyre_leak_rate_kg_s,
+        ambient_temp_c=config.air_temperature_k - 273.15,
+        **thermal_inputs,
+    )
     # No kernel step starts at the terminal trace row, so it carries the outputs of the
     # last step, the same repeat `_held` applies to the per-step columns above.
     last_step_row = step_outputs.load_n.shape[0] - 1
@@ -930,7 +970,9 @@ def _build_record(
         frames.append(
             SensorFrame(
                 t_s=step.t_s,
-                values=_frame_values(step, wheels, drivetrain, index, config, trace, row),
+                values=_frame_values(
+                    step, wheels, drivetrain, index, config, trace, row, thermal_trace
+                ),
             )
         )
     return SampleRecord(
@@ -1050,13 +1092,13 @@ def _frame_values(
     config: KernelConfig,
     trace: np.ndarray,
     row: int,
+    thermal_trace: thermal.ThermalTrace,
 ) -> dict[str, float]:
     """The contract channels one produced step publishes, and nothing else.
 
-    Every name here is a real channel and every value is one this run computed: the channels
-    ``channels.yaml`` declares for parts of the car P1 has no model for - brake pressure, flap
-    angles, temperatures, boost pressure - are absent rather than published as zeros, because a
-    published zero is a claim that the sensor read zero.
+    Every name here is a real channel and every value is one this run computed. Unsupported
+    channels such as brake pressure and active-aero flap angles remain absent rather than being
+    published as invented zeroes.
     """
     values = {
         "speed": math.hypot(step.vx_m_s, step.vy_m_s) * 3.6,
@@ -1104,8 +1146,78 @@ def _frame_values(
             f"suspension_travel_{corner.lower()}": step.suspension_travel_m[wheel] * 1_000.0
             for wheel, corner in enumerate(CORNERS)
         },
+        **{
+            f"tyre_temp_{corner.lower()}": float(thermal_trace.tyre_temp_c[index, wheel])
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
+            f"tyre_pressure_{corner.lower()}": float(thermal_trace.tyre_pressure_psi[index, wheel])
+            for wheel, corner in enumerate(CORNERS)
+        },
+        **{
+            f"brake_temp_{corner.lower()}": float(thermal_trace.brake_temp_c[index, wheel])
+            for wheel, corner in enumerate(CORNERS)
+        },
+        "engine_temp": float(thermal_trace.engine_temp_c[index]),
+        "gearbox_temp": float(thermal_trace.gearbox_temp_c[index]),
     }
     return values
+
+
+def _thermal_inputs(
+    trace: np.ndarray,
+    drivetrain: DrivetrainTrace,
+    drive_torque_nm: np.ndarray,
+    brake_torque_nm: np.ndarray,
+    control_steps: int,
+    config: KernelConfig,
+    step_outputs: longitudinal.StepOutputs,
+) -> dict[str, np.ndarray]:
+    """Collect interval energies from the state and diagnostics the kernel actually used."""
+    intervals = len(drivetrain.gear)
+    slip_work = np.empty((intervals, forces.WHEEL_COUNT), dtype=np.float64)
+    brake_work = np.empty_like(slip_work)
+    speed = np.empty(intervals, dtype=np.float64)
+    engine_heat = np.empty(intervals, dtype=np.float64)
+    gearbox_heat = np.empty(intervals, dtype=np.float64)
+    total_steps = trace.shape[0] - 1
+    interval_s = control_steps * config.dt_s
+    for index in range(intervals):
+        start = min(index * control_steps, total_steps - control_steps)
+        stop = start + control_steps
+        slip_work[index] = np.abs(step_outputs.slip_work_j[start:stop]).sum(axis=0)
+        omega = np.abs(
+            0.5
+            * (
+                trace[
+                    start:stop,
+                    longitudinal.WHEEL_STATE_OFFSET : longitudinal.WHEEL_STATE_OFFSET + 4,
+                ]
+                + trace[
+                    start + 1 : stop + 1,
+                    longitudinal.WHEEL_STATE_OFFSET : longitudinal.WHEEL_STATE_OFFSET + 4,
+                ]
+            )
+        )
+        brake_work[index] = (np.abs(brake_torque_nm[start:stop]) * omega * config.dt_s).sum(axis=0)
+        speed[index] = math.hypot(
+            float(trace[start, longitudinal.V_INDEX]), float(trace[start, longitudinal.VY_INDEX])
+        )
+        shaft_w = max(float(drivetrain.ice_power_w[index]), 0.0)
+        engine_heat[index] = (
+            shaft_w * (1.0 / config.fuel_to_shaft_efficiency - 1.0) * 0.35 * interval_s
+        )
+        rear_omega = omega[:, 2:].mean()
+        gearbox_heat[index] = (
+            max(float(drive_torque_nm[start:stop].mean()), 0.0) * rear_omega * interval_s * 0.05
+        )
+    return {
+        "speed_m_s": speed,
+        "tyre_slip_work_j": slip_work,
+        "brake_work_j": brake_work,
+        "engine_heat_j": engine_heat,
+        "gearbox_heat_j": gearbox_heat,
+    }
 
 
 def _rear_wheel_torque_nm(config: KernelConfig) -> float:
@@ -1156,6 +1268,18 @@ def _checked_segments(plan: Scenario, config: KernelConfig, control_steps: int) 
                 raise ValueError(msg)
     if plan.soc_mj is not None and not math.isfinite(plan.soc_mj):
         msg = f"{plan.name}: soc_mj must be a finite number, got {plan.soc_mj!r}"
+        raise ValueError(msg)
+    leak = plan.tyre_leak_rate_kg_s
+    if (
+        isinstance(leak, bool)
+        or not isinstance(leak, (int, float))
+        or not math.isfinite(leak)
+        or leak < 0.0
+    ):
+        msg = (
+            f"{plan.name}: tyre_leak_rate_kg_s must be finite and >= 0, "
+            f"got {plan.tyre_leak_rate_kg_s!r}"
+        )
         raise ValueError(msg)
     if not plan.segments:
         msg = f"{plan.name}: a scenario needs at least one segment"
