@@ -25,7 +25,10 @@ Two iterators, deliberately:
   on a ``max_hz`` grid (30 Hz by default, matching PLAN.md section 8.4 and
   ``web/src/telemetry/types.ts``), each frame carrying the most recent value of every
   channel. Aggregation only changes delivery, never sampling, so a 200 Hz channel is
-  still drawn from the RNG 200 times a second and simply appears 30 times.
+  still drawn from the RNG 200 times a second and simply appears 30 times. Each
+  delivery frame also carries those very draws in its optional ``samples`` batch, so
+  the full-rate instants are still countable on the wire instead of being summed away
+  by the newest-value snapshot.
 
 Two invariants the rest of the project depends on:
 
@@ -146,11 +149,19 @@ class Frame:
     path - and is serialised only when non-empty, so a frame without events is
     byte-identical to the pre-event contract and live and replay frames keep one
     shape.
+
+    ``samples`` carries the full-rate draws a delivery frame aggregated away, in the
+    same shape a frame itself has: each entry holds the channels actually sampled at
+    that instant. It is optional on the wire and omitted when empty, so a frame with
+    no batch - every replay frame, every snapshot-only producer - serialises exactly
+    as before. It comes after ``events`` so the existing positional third argument
+    keeps meaning what it meant.
     """
 
     time_us: int
     channels: dict[str, float]
     events: tuple[FrameEvent, ...] = ()
+    samples: tuple[Frame, ...] = ()
 
     def to_wire(self) -> dict[str, object]:
         """JSON-ready payload, matching ``TelemetryFrame`` in the web client."""
@@ -160,6 +171,8 @@ class Frame:
         }
         if self.events:
             payload["events"] = [event.to_wire() for event in self.events]
+        if self.samples:
+            payload["samples"] = [sample.to_wire() for sample in self.samples]
         return payload
 
     def value(self, name: str) -> float:
@@ -355,6 +368,10 @@ class SyntheticSource:
         skips one - which is what a transport that pulls fixed-size chunks needs. As
         in :meth:`iter_samples` the window is half-open, so one second of simulated
         time at 30 Hz is exactly 30 frames.
+
+        Each frame also carries the draws it aggregated, in ``Frame.samples``, so the
+        declared rates stay countable downstream while ``channels`` stays the
+        newest-value snapshot the tiles read.
         """
         rate = float(max_hz)
         if not math.isfinite(rate) or rate <= 0.0:
@@ -365,20 +382,39 @@ class SyntheticSource:
         target = -(-anchor // tick_us) * tick_us  # first grid tick at or after anchor
         while target < end:
             if target != self._emitted_us:
-                self._advance_to(target)
+                samples = self._advance_to(target)
                 self._emitted_us = target
-                yield Frame(target, _publishable(self._latest))
+                yield Frame(target, _publishable(self._latest), samples=samples)
             target += tick_us
 
-    def _advance_to(self, limit_us: int) -> None:
-        """Sample every channel whose next due instant has arrived, then set time."""
+    def _advance_to(self, limit_us: int) -> tuple[Frame, ...]:
+        """Sample every channel whose next due instant has arrived, then set time.
+
+        Returns those very draws grouped by scheduled instant and ordered by
+        timestamp, which is what lets the feed publish full-rate evidence without
+        changing anything about how or in what order it is sampled: the batch is
+        collected from the same draws that fill the snapshot, never re-sampled.
+        Instants at which every value failed the finite-value guard are left out
+        entirely, so a batch entry always carries at least one channel.
+        """
+        draws: dict[int, dict[str, object]] = {}
         for index, slot in enumerate(self._slots):
             due = self._next_due[index]
             while due <= limit_us:
-                self._latest[slot.channel.name] = self._sample_fn(slot.channel, self._rng)
+                value = self._sample_fn(slot.channel, self._rng)
+                self._latest[slot.channel.name] = value
+                draws.setdefault(round(due), {})[slot.channel.name] = value
                 due = due + slot.period
             self._next_due[index] = due
         self._now_us = limit_us
+        # sorted() on the keys alone would do; sorting items sorts by that same unique
+        # key first, which is the timestamp, so the batch leaves in stream order.
+        batch = [
+            (time_us, publishable)
+            for time_us, values in sorted(draws.items())
+            if (publishable := _publishable(values))
+        ]
+        return tuple(Frame(time_us, channels) for time_us, channels in batch)
 
 
 def load_source(
