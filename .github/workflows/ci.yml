@@ -11,9 +11,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen
-      - name: Full-rate transport regression
-        run: uv run --frozen pytest -q tests/test_dashboard_rate.py
-      - name: Focused style check
+      - name: Transport and legacy replay checks
+        run: uv run --frozen pytest -q tests/test_dashboard_rate.py tests/test_synthetic.py tests/test_replay_events.py
+      - name: Project lint and format
         run: |
-          uv run --frozen ruff check tests/test_dashboard_rate.py
-          uv run --frozen ruff format --check tests/test_dashboard_rate.py
+          uv run --frozen ruff check src tests
+          uv run --frozen ruff format --check src tests
+      - name: Project type and contract checks
+        run: |
+          uv run --frozen basedpyright
+          uv run --frozen f1-check-contract
