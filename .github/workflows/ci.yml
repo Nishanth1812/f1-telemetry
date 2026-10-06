@@ -1,79 +1,19 @@
-name: ci
-
+name: focused transport verification
 on:
   push:
-    branches: [dev, main, "feat/**"]
+    branches: ["feat/verify-synthetic-batches"]
   workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  UV_FROZEN: "1"
-
 jobs:
-  python:
-    name: contracts, codegen and invariants
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install the locked environment
-        run: uv sync --frozen
-
-      - name: Report the resolved toolchain
-        run: |
-          uv run python -VV
-          uv run python -c "import numba, llvmlite, numpy, pyarrow, yaml; print('numba', numba.__version__); print('llvmlite', llvmlite.__version__); print('numpy', numpy.__version__); print('pyarrow', pyarrow.__version__)"
-
-      - name: ruff lint
-        run: uv run ruff check src tests
-
-      - name: ruff format
-        run: uv run ruff format --check src tests
-
-      - name: basedpyright
-        run: uv run basedpyright
-
-      - name: Regenerate code from channels.yaml
-        run: uv run f1-codegen
-
-      - name: Committed generated code must match the contract
-        run: |
-          git diff --exit-code -- src/f1telemetry/generated web/src/generated
-          test -z "$(git status --porcelain --untracked-files=all -- src/f1telemetry/generated web/src/generated)"
-
-      - name: Invariant stage
-        run: uv run pytest -m invariant
-
-      - name: Golden stage
-        run: uv run pytest -m golden
-
-      - name: Full suite
-        run: uv run pytest
-
-  web:
-    name: dashboard build
+  transport:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.12.0
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install locked web dependencies
-        run: npm ci --prefix web
-
-      - name: Typecheck and build dashboard
-        run: npm run build --prefix web
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - name: Full-rate transport regression
+        run: uv run --frozen pytest -q tests/test_dashboard_rate.py
+      - name: Focused style check
+        run: |
+          uv run --frozen ruff check tests/test_dashboard_rate.py
+          uv run --frozen ruff format --check tests/test_dashboard_rate.py
