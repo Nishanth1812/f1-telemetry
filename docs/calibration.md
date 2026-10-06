@@ -870,3 +870,22 @@ gearbox loss share, initial thermal states, tyre volume and gas mass remain illu
 the thermal implementation. No operating-temperature source data has been matched to the car
 configuration, and no equilibrium bands have been measured. This checkpoint records model wiring;
 it does not close P3 calibration or the P1/P2 calibration gates.
+
+## Official-source review, 7 October 2026
+
+The calibration source authority is FIA and Pirelli primary publications. Pirelli's
+[2026 compound announcement](https://press.pirelli.com/the-range-of-compounds-for-the-2026-season-has-been-set/)
+(24 November 2025) identifies dry compounds C1–C5 and describes validation with mule cars.
+It supplies neither compound operating-temperature bands nor matched launch or lateral-g
+measurements. The [Formula 1 tyre page](https://www.pirelli.com/tires/en-us/motorsport/car/formula-1)
+describes compound suitability but supplies no numeric operating-temperature bands.
+
+The [2011 Spa publication](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)
+supports the historical Pouhon reference above; its car generation and scenario do not match
+this configuration. Regulatory limits and tyre-blanket limits cannot supply these missing
+performance or equilibrium measurements.
+
+These checked publications do not establish the targets required for tuning. P1 still needs
+a measured launch window with matched setup and uncertainty; P2 needs matched cornering data;
+P3 needs compound/surface equilibrium bands with temperature measurement semantics. Their
+gates remain open, with no new coefficients or acceptance tolerances inferred from this review.
