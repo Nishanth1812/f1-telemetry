@@ -6,13 +6,14 @@
 
 **Architecture:** Retain the phase boundaries and requirements in `PHASES.md` and `PLAN.md`; this document supplies the unified dependency order, current open-gate ledger, and a strict completion contract. Complete dependent foundations first, then run only the parallel workstreams allowed by the dependency graph. Each phase produces code, VM evidence, an updated gate record, and its own commit/tag before dependent phases can close.
 
-**Tech Stack:** Python 3.12, `uv`, Numba, NumPy, pytest, Ruff, basedpyright, PyArrow, React/TypeScript/Vite, WebSocket, Parquet, and the existing VM `dev4.heapvue.cloud`.
+**Tech Stack:** Python 3.12, `uv`, Numba, NumPy, pytest, Ruff, basedpyright, PyArrow, React/TypeScript/Vite, WebSocket, and Parquet.
 
 **Spec:** [`PHASES.md`](../../../PHASES.md) and [`PLAN.md`](../../../PLAN.md). Current combined checkpoint: [`docs/phase3-5-demo.md`](../../phase3-5-demo.md).
 
 ## Global Constraints
 
-- Run Python, tests, simulations, benchmarks, and web builds on `dev4.heapvue.cloud` only. Do not execute them in the local workspace.
+- Do not use SSH, SCP, or remote-shell commands. Access the VM only through its provider console or an approved CI runner.
+- The existing instruction prohibits local Python, tests, simulations, benchmarks, and web builds. Before implementation starts, select a non-SSH execution route (for example, a VM provider console or CI runner). If none is available, mark verification blocked and ask the user; do not run gates locally or bypass them.
 - Keep the fixed-step simulation deterministic; do not add wall-clock reads or allocations to the Numba kernel.
 - Preserve the one-way physics import boundary, validated contract inputs, and coefficient provenance requirements in `PLAN.md`.
 - Use the thresholds and scope in `PHASES.md` and `PLAN.md`. Do not invent or loosen acceptance limits after seeing results.
@@ -32,14 +33,14 @@
 
 ## Completion Contract
 
-This is one umbrella plan with phase-level gates. A phase is **passed** only when all its `PHASES.md` exit criteria are met, required focused and full-suite checks pass on the VM, its demo or evaluation evidence is recorded, and its status/tag is updated. “Implemented,” “tests pass,” or “almost done” are not terminal states.
+This is one umbrella plan with phase-level gates. A phase is **passed** only when all its `PHASES.md` exit criteria are met, required focused and full-suite checks pass in the user-approved non-SSH execution environment, its demo or evaluation evidence is recorded, and its status/tag is updated. “Implemented,” “tests pass,” or “almost done” are not terminal states.
 
 The umbrella plan is **complete only when P0–P11 have each passed**, including all three P11 slices. P9 may pass with a measured, honestly reported result that Isolation Forest does not beat Layer 2 plus persistence, as the existing specification allows. A blocked source-data or acceptance-target question keeps its phase and the umbrella plan open; it does not authorize substituting an easier gate.
 
 For each phase, keep an evidence record in the existing phase/checkpoint documentation containing:
 
-1. Commit SHA and VM checkout revision.
-2. Exact VM commands and exit status for focused checks, full checks, and scenario/demo runs.
+1. Commit SHA and execution-environment checkout revision.
+2. Exact commands and exit status for focused checks, full checks, and scenario/demo runs.
 3. Seeds, scenario/setup versions, data sources, and measured outputs needed to reproduce the result.
 4. The actual metric and threshold comparison, including uncertainty and limitations.
 5. A short visual/manual artifact for gates requiring a real-circuit comparison or dashboard demonstration.
@@ -159,7 +160,7 @@ P4 and P5 implementation can proceed in parallel once their respective P2/P3 int
 - [ ] Implement the OpenSCENARIO-shaped schema, parameter declarations, initialization, actions, and trigger evaluation using the existing scenario/task definitions in `PHASES.md`.
 - [ ] Support at least the eight named action/scenario types in both live and headless execution.
 - [ ] Add a reproducible run manifest containing seed, car-spec version, scenario version, setup hash, and git SHA; prove a run can be recreated from it.
-- [ ] Profile the headless runner on the VM, record real steps/second and bottleneck; sustain more than 50× real time and sweep a parameterized scenario from the command line.
+- [ ] Profile the headless runner in the approved non-SSH environment, record real steps/second and bottleneck; sustain more than 50× real time and sweep a parameterized scenario from the command line.
 
 **Gate:** every P6 exit criterion passes. If performance misses, report measured throughput and fix the bottleneck; do not claim the target from a short microbenchmark.
 
@@ -180,7 +181,7 @@ P4 and P5 implementation can proceed in parallel once their respective P2/P3 int
 
 - [ ] Complete the specified live, trace, event, powertrain, tire, brake, aero, anomaly, lap/sector, comparison, and replay panels.
 - [ ] Keep high-rate samples out of the React render path; decimate to display width before drawing.
-- [ ] Measure and publish physics-step, ingest, WebSocket, and render latency; verify the 60 fps criterion at full sensor rate on the target VM/browser setup.
+- [ ] Measure and publish physics-step, ingest, WebSocket, and render latency; verify the 60 fps criterion at full sensor rate in the approved browser setup.
 - [ ] Demonstrate a live run with an injected anomaly, compare two runs, and scrub the stored replay.
 
 **Gate:** all P8 exit criteria pass with measured values and retained browser evidence. A production build alone is not a dashboard pass.
@@ -219,7 +220,7 @@ Treat these as three independently reviewable slices, all required for this umbr
 **P11-B manual-driving input**
 
 - [ ] Add steering-wheel input and force-feedback output along the existing reference-driver/control boundary; document units, limits, update rate, and fail-safe behavior.
-- [ ] Verify bounded input, loss/disconnect handling, control response, and repeatable manual lap telemetry on the VM setup.
+- [ ] Verify bounded input, loss/disconnect handling, control response, and repeatable manual lap telemetry in the approved execution environment.
 
 **Gate:** end-to-end manual input produces a valid lap without violating physics/input bounds, and disconnect behavior is demonstrated.
 
@@ -231,11 +232,11 @@ Treat these as three independently reviewable slices, all required for this umbr
 
 **Gate:** the solution is feasible under the simulator and meets the predeclared improvement criterion. A solver status without a feasible re-simulated lap does not pass.
 
-## VM Verification and Release Sequence
+## Verification and Release Sequence
 
-At the start of execution, confirm the VM checkout points to the intended commit and record its absolute project root. Use the established VM `uv` executable; the previous VM did not have `just`, so invoke the equivalent commands directly from the VM checkout. Never copy credentials into this document or shell history.
+At the start of execution, select a non-SSH runner or VM console with the user and record its checkout revision. Do not establish remote shell access. The prior VM used `/home/hcs/.local/bin/uv` and did not have `just`; use equivalent commands only if that same VM is made available through an approved non-SSH interface.
 
-For each implementation milestone, run the focused tests first, then the complete project checks on the VM:
+For each implementation milestone, run focused tests first, then the complete project checks in the approved non-SSH environment. The commands below are executed there, never by connecting to it remotely:
 
 ```sh
 /home/hcs/.local/bin/uv run --frozen ruff check src tests
@@ -247,10 +248,10 @@ npm ci --prefix web
 npm run build --prefix web
 ```
 
-For gate-specific runs, invoke the relevant `pytest` file/marker and scenario command from the VM checkout before the full suite. Record logs/artifacts with the commit SHA. Update goldens only for intentional physics changes, review the diff, then rerun normal verification; never use golden refresh as the pass run. Run long/parallel stress simulations only on the VM and capture resource/step counts.
+For gate-specific runs, invoke the relevant `pytest` file/marker and scenario command in the approved environment before the full suite. Record logs/artifacts with the commit SHA. Update goldens only for intentional physics changes, review the diff, then rerun normal verification; never use golden refresh as the pass run. Run long/parallel stress simulations only in the approved environment and capture resource/step counts.
 
-Close each phase in this order: focused tests and demo → full VM checks → independent review → evidence and `PHASES.md` status update → small commit → phase tag. Then re-check dependency status before starting dependent work. At the final umbrella review, verify all P0–P11 rows are passed and that the worktree/remote points at the reviewed commits. Only then report the complete implementation.
+Close each phase in this order: focused tests and demo → full checks in the approved environment → independent review → evidence and `PHASES.md` status update → small commit → phase tag. Then re-check dependency status before starting dependent work. At the final umbrella review, verify all P0–P11 rows are passed and that the worktree/remote points at the reviewed commits. Only then report the complete implementation.
 
 ## Handoff
 
-This is the single execution rollup; `PHASES.md` remains the source for detailed task IDs and original phase acceptance criteria. On implementation start, the OpenAI parent orchestrator will dispatch bounded tasks through the configured T3 subagent role order, integrate their changes, run all code checks/simulations on the VM only, and hold the umbrella completion claim until the last required gate passes.
+This is the single execution rollup; `PHASES.md` remains the source for detailed task IDs and original phase acceptance criteria. On implementation start, the OpenAI parent orchestrator will dispatch bounded tasks through the configured T3 subagent role order, integrate their changes, run checks/simulations only in the approved non-SSH environment, and hold the umbrella completion claim until the last required gate passes.
