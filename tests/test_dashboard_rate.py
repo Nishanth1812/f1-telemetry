@@ -99,6 +99,7 @@ def _samples(frame: Frame, *, required: bool = True) -> _Batch:
     batch = cast("list[dict[str, object]]", payload["samples"])
     pairs: _Batch = []
     for entry in batch:
+        assert set(entry) == {"time_us", "channels"}, "sample entries must stay flat"
         time_us = entry.get("time_us")
         assert isinstance(time_us, int), f"sample time_us must be an int, got {time_us!r}"
         pairs.append((time_us, cast("dict[str, float]", entry["channels"])))
