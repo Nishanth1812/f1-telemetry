@@ -1,22 +1,106 @@
 name: ci
+
 on:
   push:
-    branches: ["feat/verify-synthetic-batches"]
+    branches: [dev, main, "feat/**"]
+  workflow_dispatch:
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+
 jobs:
   web:
+    name: dashboard build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22.12.0
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci --prefix web
-      - name: Browser batch and trace regressions
+
+      - name: Install locked web dependencies
+        run: npm ci --prefix web
+
+      - name: Sample decoding and trace regressions
         run: node --test web/tests/telemetry.test.mjs
-      - run: npm run build --prefix web
+
+      - name: Typecheck and build dashboard
+        run: npm run build --prefix web
+
+  browser:
+    name: dashboard rates (${{ matrix.contract }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        contract: [current, rate-edit]
+    env:
+      VITE_TELEMETRY_WS_URL: ws://127.0.0.1:8765/ws
+      SMOKE_ARTIFACT_DIR: artifacts/dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked environments
+        run: |
+          uv sync --frozen
+          npm ci --prefix web
+
+      - name: Change one channel rate through the contract
+        if: matrix.contract == 'rate-edit'
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          import yaml
+          path = Path("channels.yaml")
+          document = yaml.safe_load(path.read_text())
+          speed = next(channel for channel in document["channels"] if channel["name"] == "speed")
+          speed["rate_hz"] = 50
+          path.write_text(yaml.safe_dump(document, sort_keys=False))
+          PY
+          uv run f1-codegen
+          echo 'EXPECTED_RATE_CHANGE=speed:50' >> "$GITHUB_ENV"
+
+      - name: Build dashboard for the selected contract
+        run: npm run build --prefix web
+
+      - name: Measure live samples in Chrome
+        run: |
+          mkdir -p artifacts/dashboard
+          uv run f1-serve --host 127.0.0.1 > artifacts/dashboard/server.log 2>&1 &
+          server_pid=$!
+          npm run preview --prefix web -- --host 127.0.0.1 --port 4173 > artifacts/dashboard/preview.log 2>&1 &
+          preview_pid=$!
+          trap 'kill "$server_pid" "$preview_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --silent --fail http://127.0.0.1:4173/ > /dev/null
+          node web/tests/dashboard-smoke.mjs
+
+      - name: Retain browser measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-${{ matrix.contract }}
+          path: artifacts/dashboard
+          if-no-files-found: error
