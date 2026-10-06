@@ -1,8 +1,8 @@
 # Phases 3–5 combined verification record
 
 **Implementation and software checks: complete. Combined acceptance gate: open.** Do not apply a
-release tag until the remaining evidence below is recorded and the [unified plan](./superpowers/plans/2026-10-05-phases-3-5-unified-plan.md)
-passes.
+P3–P5 release tag until the remaining evidence below and the relevant dependency/phase gates in the
+[all-pending-phases plan](./superpowers/plans/2026-10-06-all-pending-phases-plan.md) pass.
 
 ## Implemented
 
