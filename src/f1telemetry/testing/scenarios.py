@@ -711,9 +711,7 @@ def load_scenario_init(path: Path) -> ScenarioInit:
         "initial_heading_rad": 0.0,
     }
     numeric = {
-        key: _scenario_init_number(resolve(key), source, f"Init.{key}")
-        if key in init
-        else default
+        key: _scenario_init_number(resolve(key), source, f"Init.{key}") if key in init else default
         for key, default in numeric_defaults.items()
     }
     return ScenarioInit(
