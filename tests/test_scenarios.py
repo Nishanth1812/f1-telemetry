@@ -247,6 +247,42 @@ def _clutch_transmitted_power(run: ScenarioRun, window: slice) -> np.ndarray:
     return transmitted_w
 
 
+def _launch_diagnostics(run: ScenarioRun, seconds: float = 3.0, every_s: float = 0.25) -> str:
+    """A report-only table of the first ``seconds`` of a run, one row per ``every_s``.
+
+    Every column is what the recorded step starting at that time carries, so a CI log shows the
+    gear, engine speed, clutch, pedal, driveline torque, rear slip and speed the launch actually
+    had instead of only the 100 km/h crossing time. Nothing here is asserted.
+    """
+    stride = round(every_s / run.record_dt_s)
+    stop = min(round(seconds / run.record_dt_s), len(run.record) - 1)
+    rear = CORNERS.index("RR")
+    lines = ["  t_s  gear   rpm  clutch  thr  drive_Nm  kappa_RR  km/h"]
+    for index in range(0, stop + 1, stride):
+        step = run.record.ground_truth[index]
+        lines.append(
+            f"{index * run.record_dt_s:5.2f}  {int(run.drivetrain.gear[index]):4d}  "
+            f"{float(run.drivetrain.ice_rpm[index]):5.0f}  "
+            f"{float(run.drivetrain.clutch[index]):6.2f}  "
+            f"{float(run.drivetrain.throttle[index]):3.2f}  "
+            f"{float(run.drivetrain.drive_torque_nm[index]):8.1f}  "
+            f"{step.wheels[rear].kappa:8.4f}  {step.vx_m_s * 3.6:5.1f}"
+        )
+    changes = np.flatnonzero(np.diff(run.drivetrain.gear) != 0) + 1
+    lines.append(
+        "gear changes: "
+        + (
+            ", ".join(
+                f"{int(run.drivetrain.gear[index - 1])}->{int(run.drivetrain.gear[index])} at "
+                f"{index * run.record_dt_s:.2f} s ({float(run.drivetrain.ice_rpm[index]):.0f} rpm)"
+                for index in changes
+            )
+            or "none"
+        )
+    )
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------ behaviour: launch
 
 
@@ -479,6 +515,45 @@ def test_the_rpm_shift_policy_requests_only_at_the_configured_shift_point(
     )
 
 
+def test_accelerate_to_speed_shifts_only_at_or_above_the_configured_shift_rpm(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    """Every gear change in the built launch run is a request made at the shift point.
+
+    The gearbox changes gear on the step that carries the request, so a change at recorded step
+    ``k`` was requested from the engine speed sampled at ``k``. The converse is checked too: while
+    the clutch is locked and no shift cut is running, a recorded step below the top gear that
+    held its gear sampled less than ``shift_up_rpm``, because otherwise the driver would have asked.
+    The launch segment, with its 75 % clutch, must not shift at all.
+    """
+    run = runs["accelerate_to_speed"]
+    launch_end = round(suite["accelerate_to_speed"].segments[0].duration_s / run.record_dt_s)
+    gears = run.drivetrain.gear
+    rpm = run.drivetrain.ice_rpm
+    changes = np.flatnonzero(np.diff(gears) != 0) + 1
+    detail = _launch_diagnostics(run)
+
+    assert changes.size, f"the run never upshifts, so the 0-100 time is a first-gear one\n{detail}"
+    assert changes[0] >= launch_end, f"a shift during the slipping launch segment\n{detail}"
+    for index in changes:
+        assert gears[index] == gears[index - 1] + 1, f"one request moves one gear\n{detail}"
+        assert rpm[index] >= config.shift_up_rpm, (
+            f"shift at {index * run.record_dt_s:.2f} s from {rpm[index]:.0f} rpm, below the "
+            f"configured {config.shift_up_rpm:.0f} rpm\n{detail}"
+        )
+    top = int(config.gear_ratios.size)
+    cut_records = math.ceil(config.shift_time_s / run.record_dt_s) + 1
+    for index in range(1, len(gears)):
+        in_cut = any(0 <= index - int(change) <= cut_records for change in changes)
+        locked = run.drivetrain.clutch[index] == 1.0
+        if locked and not in_cut and gears[index] < top:
+            assert rpm[index] < config.shift_up_rpm, (
+                f"no upshift requested at {index * run.record_dt_s:.2f} s although the engine "
+                f"sampled {rpm[index]:.0f} rpm, at or above the configured "
+                f"{config.shift_up_rpm:.0f} rpm\n{detail}"
+            )
+
+
 def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference(
     runs: Mapping[str, ScenarioRun],
 ) -> None:
@@ -501,6 +576,7 @@ def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_refer
         f"{ZERO_TO_HUNDRED_REFERENCE_S} s reference (PLAN.md section 11.1): "
         f"{gap_s:+.4f} s. Reported, not asserted - the reference carries no tolerance."
     )
+    print("accelerate_to_speed first 3 s (report only):\n" + _launch_diagnostics(run))
 
 
 def test_full_throttle_reaches_top_gear_and_ends_in_an_ice_only_tail(
