@@ -197,6 +197,12 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.tile__meta {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .placeholder {
   margin: 0;
   padding: 12px;

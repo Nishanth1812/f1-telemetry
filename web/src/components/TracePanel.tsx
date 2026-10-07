@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
 
-const MAX_POINTS = 1_200;
 const WINDOW_OPTIONS = [5, 10, 30, 60] as const;
 const STATS_INTERVAL_MS = 250;
 const GRID_ROWS = 4;
@@ -30,8 +29,10 @@ export function TracePanel() {
       return;
     }
     const history = useTelemetryStore.getState().history;
-    const times = new Float64Array(MAX_POINTS);
-    const values = new Float32Array(MAX_POINTS);
+    // Draw buffers are bound by the plot's pixel width (min 2 points),
+    // reallocated only when that width changes.
+    let times: Float64Array | null = null;
+    let values: Float32Array | null = null;
     const styles = getComputedStyle(canvas);
     const surface = styles.getPropertyValue('--trace-surface').trim() || '#0d1117';
     const line = styles.getPropertyValue('--trace-line').trim() || '#58a6ff';
@@ -61,11 +62,17 @@ export function TracePanel() {
 
       const plotLeft = PADDING.left;
       const plotTop = PADDING.top;
-      const plotWidth = Math.max(1, width - PADDING.left - PADDING.right);
+      const plotWidth = Math.max(2, width - PADDING.left - PADDING.right);
       const plotHeight = Math.max(1, height - PADDING.top - PADDING.bottom);
 
+      // Reallocate draw buffers only when the plot width changes; the buffers
+      // are sized to the pixel width, with a two-point floor.
+      if (times === null || values === null || times.length !== plotWidth) {
+        times = new Float64Array(plotWidth);
+        values = new Float32Array(plotWidth);
+      }
       const latestUs = history.latestTimeUs();
-      const count = history.fill(activeChannel, MAX_POINTS, times, values);
+      const count = history.fill(activeChannel, plotWidth, times, values, latestUs - windowUs);
       let plotted = 0;
       let min = Number.POSITIVE_INFINITY;
       let max = Number.NEGATIVE_INFINITY;
