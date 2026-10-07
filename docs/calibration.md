@@ -815,11 +815,11 @@ only as a reachability floor" - a different and weaker role than being a target,
 
 - No parameter was edited. `car_spec.yaml` is untouched and no coefficient has been tuned toward
   either reference.
-- Neither straight-line quantity has been re-measured since the scenario wiring recorded in *Phase
-  1 scenario wiring* above. The last measured pair — a 0–100 km/h time of 6.8998 s and a
-  `full_throttle` maximum of 307.4189 km/h — came from the earlier ICE-only scenario, missed both
-  references, and is recorded there as stale. The gate is therefore still open, and for the
-  stronger reason that there is currently no figure to judge rather than a failing one.
+- The 6.8998 s / 307.4189 km/h pair is a historical result from the earlier ICE-only scenario.
+  GitHub Actions run [37639816872](https://github.com/Nishanth1812/f1-telemetry/actions/runs/37639816872)
+  later measured the configured RPM-threshold policy at 4.0919 s to 100 km/h and a 338.4295 km/h
+  transient maximum for `full_throttle`. The acceleration result still misses the coarse reference,
+  and no matched official launch target is available, so the P1 performance gate remains open.
 - Neither reference is precise enough to certify configuration-matched performance. If a later
   task finds the 0–100 window too tight to separate a real coefficient error from feed
   quantisation, the correct response is to say so and re-derive the reference - not to widen the
@@ -856,9 +856,11 @@ implementation evidence only; no P2 coefficient was tuned to these outputs.
   independently recomputed final-interval residual matches the recorded residual on the circle and
   straight-line scenarios.
 
-P1 remains open: the latest recorded 0–100 km/h result is 6.6598 s against the coarse 2.32 s
-reference, and the synthesized ICE curve remains uncalibrated. The 338.4295 km/h transient
-reachability result does not close that acceleration miss or validate the car model.
+At this Phase 2 checkpoint, the fixed-time-shift 0–100 km/h result was 6.6598 s against the coarse
+2.32 s reference. The later RPM-threshold result is recorded in *Phase 1 scenario wiring* above.
+P1 remains open because that result still misses the reference and the synthesized ICE curve
+remains uncalibrated. The 338.4295 km/h transient reachability result does not close the acceleration
+miss or validate the car model.
 
 ## Phase 3 thermal implementation checkpoint
 
