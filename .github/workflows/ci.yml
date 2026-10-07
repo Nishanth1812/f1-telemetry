@@ -59,6 +59,23 @@ jobs:
       - name: Full suite
         run: uv run pytest
 
+  numba-windows:
+    name: Numba toolchain (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the locked environment
+        run: uv sync --frozen
+
+      - name: Compile and reuse the Numba cache on Windows
+        run: uv run pytest tests/test_numba_toolchain.py
+
   web:
     name: dashboard build
     runs-on: ubuntu-latest
