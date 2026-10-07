@@ -65,6 +65,9 @@ jobs:
       - name: Golden stage
         run: uv run pytest -m golden
 
+      - name: Report the straight-line baseline
+        run: uv run --frozen pytest -s -q tests/test_scenarios.py::test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference
+
       - name: Full suite
         run: uv run pytest
 
