@@ -22,7 +22,7 @@ import test from 'node:test';
 import { transform } from 'rolldown/experimental';
 
 const SRC = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', 'src');
-const RELATIVE_FROM = /(from\s*)(['"])(\.\.?\/[^'"]*)\2/g;
+const MODULE_FROM = /(from\s*)(['"])([^'"]+)\2/g;
 const dataUrls = new Map();
 
 async function dataUrl(path) {
@@ -32,7 +32,7 @@ async function dataUrl(path) {
     return cached;
   }
   const { code } = await transform(source, readFileSync(source, 'utf8'), { lang: 'ts' });
-  const specifiers = [...code.matchAll(RELATIVE_FROM)];
+  const specifiers = [...code.matchAll(MODULE_FROM)];
   const resolved = new Map();
   for (const match of specifiers) {
     const specifier = match[3];
@@ -43,7 +43,7 @@ async function dataUrl(path) {
         : pathToFileURL(createRequire(import.meta.url).resolve(specifier)).href,
     );
   }
-  const rewritten = code.replace(RELATIVE_FROM, (match, from, quote, specifier) => {
+  const rewritten = code.replace(MODULE_FROM, (match, from, quote, specifier) => {
     return `${from}${quote}${resolved.get(specifier) ?? match.slice(from.length)}${quote}`;
   });
   const url = `data:text/javascript;base64,${Buffer.from(rewritten).toString('base64')}`;
