@@ -14,9 +14,10 @@
 // `dataUrl` is the only thing to swap.
 
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { transform } from 'rolldown/experimental';
 
@@ -34,7 +35,13 @@ async function dataUrl(path) {
   const specifiers = [...code.matchAll(RELATIVE_FROM)];
   const resolved = new Map();
   for (const match of specifiers) {
-    resolved.set(match[3], await dataUrl(resolvePath(dirname(source), match[3])));
+    const specifier = match[3];
+    resolved.set(
+      specifier,
+      specifier.startsWith('.')
+        ? await dataUrl(resolvePath(dirname(source), specifier))
+        : pathToFileURL(createRequire(import.meta.url).resolve(specifier)).href,
+    );
   }
   const rewritten = code.replace(RELATIVE_FROM, (match, from, quote, specifier) => {
     return `${from}${quote}${resolved.get(specifier) ?? match.slice(from.length)}${quote}`;
@@ -51,6 +58,7 @@ async function loadTs(relativePath) {
 const { decodeFrame } = await loadTs('telemetry/types.ts');
 const { TraceHistory } = await loadTs('telemetry/history.ts');
 const { CHANNELS } = await loadTs('generated/channels.ts');
+const { useTelemetryStore } = await loadTs('store/telemetryStore.ts');
 
 // ---------------------------------------------------------------------------
 // 1. decodeFrame preserves the optional sample batch, and legacy frames
@@ -246,4 +254,29 @@ test('TraceHistory discards the previous timeline when replay rewinds', () => {
   assert.equal(history.fill('speed', 8, times, values), 1);
   assert.equal(times[0], 0);
   assert.equal(history.latestTimeUs(), 0);
+});
+
+test('store keeps full-rate samples in history without retaining them in the UI snapshot', () => {
+  const store = useTelemetryStore.getState();
+  store.markConnecting();
+  store.applyFrame({
+    time_us: 20_000,
+    channels: { speed: 2 },
+    samples: [
+      { time_us: 10_000, channels: { speed: 1 } },
+      { time_us: 20_000, channels: { speed: 2 } },
+    ],
+  });
+
+  const state = useTelemetryStore.getState();
+  assert.equal(state.frame?.samples, undefined, 'the render-facing snapshot omits the full-rate batch');
+  assert.deepEqual(state.frame?.channels, { speed: 2 }, 'the latest snapshot value remains available');
+  assert.equal(state.diagnostics?.channels.speed.count, 2, 'both actual batch samples are counted');
+
+  const times = new Float64Array(4);
+  const values = new Float32Array(4);
+  const count = state.history.fill('speed', 4, times, values);
+  assert.equal(count, 2, 'both actual batch samples are retained for traces');
+  assert.deepEqual(Array.from(times.slice(0, count)), [10_000, 20_000]);
+  assert.deepEqual(Array.from(values.slice(0, count)), [1, 2]);
 });
