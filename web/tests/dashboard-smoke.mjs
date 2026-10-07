@@ -15,6 +15,8 @@ const SRC = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 const DASHBOARD_URL = process.env.DASHBOARD_URL ?? 'http://127.0.0.1:4173';
 const ARTIFACT_DIR = process.env.SMOKE_ARTIFACT_DIR ?? 'artifacts/dashboard';
 const CDP_TIMEOUT_MS = 5_000;
+const CHROME_START_TIMEOUT_MS = 15_000;
+const CHROME_START_ATTEMPTS = 3;
 const READY_TIMEOUT_MS = 30_000;
 const WINDOW_MS = 20_000;
 const TOLERANCE = 0.05;
@@ -97,24 +99,45 @@ try {
   const chromeBin = findChrome();
   assert.ok(chromeBin, 'Chrome not found: set CHROME_BIN or install /usr/bin/google-chrome[-stable]');
 
-  profileDir = mkdtempSync(resolvePath(tmpdir(), 'f1-smoke-'));
-  chrome = spawn(chromeBin, [
-    '--headless=new', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
-    '--remote-debugging-port=0', `--user-data-dir=${profileDir}`, '--no-first-run', DASHBOARD_URL,
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  let stderr = '';
-  chrome.stderr.on('data', (c) => { if (stderr.length < 4096) stderr += c; });
-
-  // Chrome writes the chosen port + ws path to DevToolsActivePort in the profile.
   let port = null;
-  const portDeadline = Date.now() + 15_000;
-  while (Date.now() < portDeadline && port === null) {
-    try {
-      port = Number(readFileSync(resolvePath(profileDir, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || null;
-    } catch { /* not yet */ }
-    if (port === null) await sleep(200);
+  const startupFailures = [];
+  for (let attempt = 1; attempt <= CHROME_START_ATTEMPTS && port === null; attempt++) {
+    profileDir = mkdtempSync(resolvePath(tmpdir(), 'f1-smoke-'));
+    chrome = spawn(chromeBin, [
+      '--headless=new', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+      '--remote-debugging-port=0', `--user-data-dir=${profileDir}`, '--no-first-run', DASHBOARD_URL,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    let exit = null;
+    let spawnError = null;
+    chrome.stderr.on('data', (c) => { stderr = (stderr + c.toString()).slice(-8_000); });
+    chrome.once('exit', (code, signal) => { exit = { code, signal }; });
+    chrome.once('error', (error) => { spawnError = error.message; });
+
+    // Chrome writes the chosen port + ws path to DevToolsActivePort in the profile.
+    const portDeadline = Date.now() + CHROME_START_TIMEOUT_MS;
+    while (Date.now() < portDeadline && port === null && exit === null && spawnError === null) {
+      try {
+        port = Number(readFileSync(resolvePath(profileDir, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || null;
+      } catch { /* not yet */ }
+      if (port === null && exit === null && spawnError === null) await sleep(200);
+    }
+    if (port !== null) break;
+
+    try { chrome.kill('SIGTERM'); } catch { /* already exited */ }
+    await sleep(250);
+    if (chrome.exitCode === null && chrome.signalCode === null) {
+      try { chrome.kill('SIGKILL'); } catch { /* already exited */ }
+      await sleep(100);
+    }
+    startupFailures.push(`attempt ${attempt}: exit=${JSON.stringify(exit)}, spawnError=${spawnError ?? 'none'}, stderr=${stderr.slice(-2_000)}`);
+    console.warn(`Chrome startup failed: ${startupFailures.at(-1)}`);
+    chrome = null;
+    try { rmSync(profileDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    profileDir = null;
+    if (attempt < CHROME_START_ATTEMPTS) await sleep(500);
   }
-  assert.ok(port, `Chrome did not publish a CDP port. stderr: ${stderr.slice(-400)}`);
+  assert.ok(port, `Chrome did not publish a CDP port after ${CHROME_START_ATTEMPTS} attempts. ${startupFailures.join('\n')}`);
 
   let target;
   const listDeadline = Date.now() + 10_000;
@@ -245,7 +268,7 @@ try {
   if (chrome) {
     try { chrome.kill('SIGTERM'); } catch { /* ignore */ }
     await sleep(3000);
-    if (chrome.exitCode === null) { try { chrome.kill('SIGKILL'); } catch { /* ignore */ } }
+    if (chrome.exitCode === null && chrome.signalCode === null) { try { chrome.kill('SIGKILL'); } catch { /* ignore */ } }
   }
   if (profileDir) { try { rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ } }
 }

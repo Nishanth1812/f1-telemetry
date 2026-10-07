@@ -1,10 +1,10 @@
 # All Pending Phases Implementation Plan
 
-> **For agentic workers:** Implement this plan through delegated tasks under the OpenAI parent orchestrator. Keep phase checkboxes open until their gates pass with recorded evidence. Use the existing tasks in [`PHASES.md`](../../../PHASES.md) as the detailed implementation specification.
+> **Execution:** The parent orchestrator owns delegation, integration, review, and evidence. Keep phase checkboxes open until their gates pass with recorded evidence. Use the existing tasks in [`PHASES.md`](../../../PHASES.md) as the detailed implementation specification.
 
 **Goal:** Close every still-open phase gate, from P0 gate reconciliation through P11, as one sequenced implementation effort; report the work complete only after every included phase gate passes.
 
-**Architecture:** Retain the phase boundaries and requirements in `PHASES.md` and `PLAN.md`; this document supplies the unified dependency order, current open-gate ledger, and a strict completion contract. Complete dependent foundations first, then run only the parallel workstreams allowed by the dependency graph. Each phase produces code, VM evidence, an updated gate record, and its own commit/tag before dependent phases can close.
+**Architecture:** Retain the phase boundaries and requirements in `PHASES.md` and `PLAN.md`; this document supplies the unified dependency order, current open-gate ledger, and a strict completion contract. Complete dependent foundations first, then run only the parallel workstreams allowed by the dependency graph. Each phase produces code, evidence from the approved non-SSH environment, an updated gate record, and its own commit/tag before dependent phases can close.
 
 **Tech Stack:** Python 3.12, `uv`, Numba, NumPy, pytest, Ruff, basedpyright, PyArrow, React/TypeScript/Vite, WebSocket, and Parquet.
 
@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- Do not use SSH, SCP, or remote-shell commands. Access the VM only through its provider console or an approved CI runner.
-- The existing instruction prohibits local Python, tests, simulations, benchmarks, and web builds. Before implementation starts, select a non-SSH execution route (for example, a VM provider console or CI runner). If none is available, mark verification blocked and ask the user; do not run gates locally or bypass them.
+- Do not use SSH, SCP, or remote-shell commands. The user selected GitHub Actions on `feat/phase-2` as the approved verification route and authorized pushing milestone commits.
+- The existing instruction prohibits local Python, tests, simulations, benchmarks, and web builds. Run gates only in the approved GitHub Actions environment; do not run them locally or bypass them.
 - Keep the fixed-step simulation deterministic; do not add wall-clock reads or allocations to the Numba kernel.
 - Preserve the one-way physics import boundary, validated contract inputs, and coefficient provenance requirements in `PLAN.md`.
 - Use the thresholds and scope in `PHASES.md` and `PLAN.md`. Do not invent or loosen acceptance limits after seeing results.
 - Pin source-backed, configuration-matched calibration targets and measurement methods before tuning. If no valid target or tolerance can be supported, leave that gate open and report the blocker.
-- The OpenAI parent is the orchestrator. Use the project’s T3 model order in `AGENTS.md`; workers get bounded non-overlapping tasks, and the parent integrates and reviews every result.
+- The parent orchestrator owns scope and integration. The user selected Claude Sonnet 5.5 for delegated work; assign bounded, non-overlapping tasks and review every result before integration.
 - Commit each gate-passing phase separately. Apply its phase tag only after its exit gate passes.
 
 ## Review Focus
@@ -45,7 +45,7 @@ For each phase, keep an evidence record in the existing phase/checkpoint documen
 4. The actual metric and threshold comparison, including uncertainty and limitations.
 5. A short visual/manual artifact for gates requiring a real-circuit comparison or dashboard demonstration.
 
-If any item fails, leave the phase open, fix the cause, rerun the affected checks on the VM, and repeat the gate review. Do not tag or declare the combined work complete while any required gate is open.
+If any item fails, leave the phase open, fix the cause, rerun the affected checks in GitHub Actions, and repeat the gate review. Do not tag or declare the combined work complete while any required gate is open.
 
 ## Current Gate Ledger
 
@@ -94,7 +94,7 @@ Use each phase’s task IDs, file scope, and technical definitions in `PHASES.md
 
 **Files:** `PHASES.md`, `docs/phase0-decisions.md`, `channels.yaml`, generated contract outputs, `web/`, existing P0 tests.
 
-- [ ] On the VM, record the branch/commit and run the P0 gates against the current checkout; do not infer completion from an existing executable or old test report.
+- [ ] Record the branch/commit and run the P0 gates through GitHub Actions on `feat/phase-2`; do not infer completion from an existing executable or old test report.
 - [ ] Prove the dashboard updates at every declared channel rate and that changing a contract rate propagates without a second edit.
 - [ ] Prove code generation is idempotent, generated contracts are current, all eight invariants pass, and the project checks are green.
 - [ ] Record the demonstration and evidence; close/tag P0 only if every P0 exit criterion in `PHASES.md` is satisfied.
@@ -234,9 +234,9 @@ Treat these as three independently reviewable slices, all required for this umbr
 
 ## Verification and Release Sequence
 
-At the start of execution, select a non-SSH runner or VM console with the user and record its checkout revision. Do not establish remote shell access. The prior VM used `/home/hcs/.local/bin/uv` and did not have `just`; use equivalent commands only if that same VM is made available through an approved non-SSH interface.
+Use GitHub Actions as the approved non-SSH runner and record each workflow checkout revision. Do not establish remote shell access. Execute the commands below in the workflow rather than in the local workspace.
 
-For each implementation milestone, run focused tests first, then the complete project checks in the approved non-SSH environment. The commands below are executed there, never by connecting to it remotely:
+For each implementation milestone, run focused checks first, then the complete project checks in GitHub Actions. The commands below run there, never by connecting to it remotely:
 
 ```sh
 /home/hcs/.local/bin/uv run --frozen ruff check src tests
@@ -250,8 +250,8 @@ npm run build --prefix web
 
 For gate-specific runs, invoke the relevant `pytest` file/marker and scenario command in the approved environment before the full suite. Record logs/artifacts with the commit SHA. Update goldens only for intentional physics changes, review the diff, then rerun normal verification; never use golden refresh as the pass run. Run long/parallel stress simulations only in the approved environment and capture resource/step counts.
 
-Close each phase in this order: focused tests and demo → full checks in the approved environment → independent review → evidence and `PHASES.md` status update → small commit → phase tag. Then re-check dependency status before starting dependent work. At the final umbrella review, verify all P0–P11 rows are passed and that the worktree/remote points at the reviewed commits. Only then report the complete implementation.
+Close each phase in this order: focused checks and demo → full checks in GitHub Actions → independent review → evidence and `PHASES.md` status update → small commit and push → phase tag. Then re-check dependency status before starting dependent work. At the final umbrella review, verify all P0–P11 rows are passed and that the worktree/remote points at the reviewed commits. Only then report the complete implementation.
 
 ## Handoff
 
-This is the single execution rollup; `PHASES.md` remains the source for detailed task IDs and original phase acceptance criteria. On implementation start, the OpenAI parent orchestrator will dispatch bounded tasks through the configured T3 subagent role order, integrate their changes, run checks/simulations only in the approved non-SSH environment, and hold the umbrella completion claim until the last required gate passes.
+This is the single execution rollup; `PHASES.md` remains the source for detailed task IDs and original phase acceptance criteria. The parent orchestrator dispatches bounded tasks using Claude Sonnet 5.5 as directed by the user, integrates and reviews their changes, runs checks only in GitHub Actions, and holds the umbrella completion claim until the last required gate passes.
