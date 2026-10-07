@@ -2,9 +2,10 @@
 // Runs on Node's built-in test runner with no framework and no new dependency.
 //
 // The tested modules are real TypeScript. They are loaded through a test-only
-// loader that transpiles each .ts source to a `data:` URL and rewrites relative
-// `from './x'` specifiers to the transpiled dependency's data URL, so the code
-// under test is the shipped source, not a copy of it.
+// loader that transpiles each .ts source to a `data:` URL, rewrites relative
+// `from './x'` specifiers to the transpiled dependency's data URL, and
+// resolves bare specifiers (zustand) from node_modules, so the code under
+// test is the shipped source, not a copy of it.
 //
 // NOTE on the transpiler: the installed `typescript@7.0.2` is the native
 // preview whose public entry (`./lib/version.cjs`) exports only `version`, so
