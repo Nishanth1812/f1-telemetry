@@ -73,10 +73,10 @@ def build_table(record: SampleRecord, metadata: Mapping[str, str] | None = None)
     `ARROW_TYPES` and the per-group schema in `generated/parquet_schema.py`. Rounding here
     would put an invented sensor model in the determinism gate.
 
-    `metadata` is Parquet key-value metadata. P6-T7 puts the seed, spec version, scenario
-    version and git SHA in here, which is legitimate because they are the *same* on every
-    re-run of the same scenario. A wall-clock value in this mapping is what invariant 8
-    exists to catch, and the test for that leak is in the suite.
+    `metadata` is caller-supplied Parquet key-value metadata. P6-T7 can put the seed, car-spec
+    version, scenario version, setup hash and git SHA in here; this writer does not infer any
+    of them. A wall-clock value in this mapping is what invariant 8 exists to catch, and the
+    test for that leak is in the suite.
     """
     channels = record.channels
     merged = dict(METADATA if metadata is None else metadata)
