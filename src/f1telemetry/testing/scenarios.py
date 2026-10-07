@@ -890,11 +890,7 @@ def run_scenario(
                 steer_history[interval_start : interval_start + control_steps] = driver_steer_deg
             shifting_at_start = gear_state[gearbox.SHIFT_TIMER_INDEX] > 0.0
             starting_gear = int(gear_state[gearbox.GEAR_INDEX])
-            interval_request = (
-                segment.request
-                if interval == 0
-                else gearbox.GearRequest.HOLD
-            )
+            interval_request = segment.request if interval == 0 else gearbox.GearRequest.HOLD
             if (
                 plan.upshift_at_shift_point
                 and interval_request == gearbox.GearRequest.HOLD

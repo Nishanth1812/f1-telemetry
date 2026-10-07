@@ -442,12 +442,7 @@ def test_the_rpm_shift_policy_requests_only_at_the_configured_shift_point(
 ) -> None:
     """The opt-in driver policy asks at the wheel-coupled RPM threshold, never on a timer."""
     first_gear_ratio = config.gear_ratios[0] * config.final_drive
-    threshold_speed = (
-        config.shift_up_rpm
-        * (math.tau / 60.0)
-        * config.rolling_radius_m
-        / first_gear_ratio
-    )
+    threshold_speed = config.shift_up_rpm * (math.tau / 60.0) * config.rolling_radius_m / first_gear_ratio
     run_at_threshold = scenarios.run_scenario(
         config,
         scenarios.Scenario(
