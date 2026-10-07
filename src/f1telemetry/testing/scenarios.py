@@ -115,10 +115,12 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
+import yaml
 
 from f1telemetry.kernels import longitudinal  # noqa: TID251 -- scenarios drive the kernel
 from f1telemetry.physics import (  # noqa: TID251 -- and the models
@@ -153,10 +155,12 @@ __all__ = [
     "DriverRequest",
     "DrivetrainTrace",
     "Scenario",
+    "ScenarioInit",
     "ScenarioRun",
     "ScenarioSegment",
     "allocate_step_outputs",
     "build_scenarios",
+    "load_scenario_init",
     "run_constant_radius_speed_sweep",
     "run_scenario",
     "scenario",
@@ -190,7 +194,7 @@ LAUNCH_ICE_RPM: Final[float] = 12_000.0
 # compared with anything the regulation states.
 _J_PER_MJ: Final[float] = 1.0e6
 
-_UNIT_BRAKE: Final[tuple[float, ...]] = (1.0, 1.0, 1.0, 1.0)
+_UNIT_BRAKE: Final[tuple[float, float, float, float]] = (1.0, 1.0, 1.0, 1.0)
 _REQUEST_CODES: Final[frozenset[int]] = frozenset(int(member) for member in gearbox.GearRequest)
 _SEGMENT_GRID_TOLERANCE_S: Final[float] = 1.0e-9
 
@@ -282,6 +286,22 @@ class Scenario:
     initial_gear: int = 1
     soc_mj: float | None = None
     brake_bias: tuple[float, ...] = _UNIT_BRAKE
+    tyre_leak_rate_kg_s: float = 0.0
+    initial_x_m: float = 0.0
+    initial_y_m: float = 0.0
+    initial_heading_rad: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioInit:
+    """Typed initial conditions loaded before a scenario's actions are composed."""
+
+    name: str
+    description: str
+    initial_speed_m_s: float
+    initial_gear: int = 1
+    soc_mj: float | None = None
+    brake_bias: tuple[float, float, float, float] = _UNIT_BRAKE
     tyre_leak_rate_kg_s: float = 0.0
     initial_x_m: float = 0.0
     initial_y_m: float = 0.0
@@ -566,6 +586,148 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
         ),
     )
     return MappingProxyType({entry.name: entry for entry in built})
+
+
+def _scenario_init_error(source: Path, key: str, detail: str) -> ValueError:
+    return ValueError(f"{source}: {key}: {detail}")
+
+
+def _scenario_init_mapping(value: object, source: Path, key: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or any(not isinstance(name, str) for name in value):
+        raise _scenario_init_error(source, key, "must be a mapping with string keys")
+    return value
+
+
+def _scenario_init_number(value: object, source: Path, key: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _scenario_init_error(source, key, f"must be a number, got {value!r}")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise _scenario_init_error(source, key, f"must be finite, got {value!r}") from exc
+    if not math.isfinite(number):
+        raise _scenario_init_error(source, key, f"must be finite, got {value!r}")
+    return number
+
+
+def load_scenario_init(path: Path) -> ScenarioInit:
+    """Load typed initial conditions and resolve whole-value ``$name`` references."""
+    source = Path(path)
+    try:
+        document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise _scenario_init_error(source, "document", str(exc)) from exc
+
+    root = _scenario_init_mapping(document, source, "document")
+    if set(root) != {"ParameterValueDeclarations", "Init"}:
+        raise _scenario_init_error(
+            source,
+            "document",
+            "must contain exactly ParameterValueDeclarations and Init",
+        )
+
+    declarations_raw = root["ParameterValueDeclarations"]
+    if not isinstance(declarations_raw, list):
+        raise _scenario_init_error(source, "ParameterValueDeclarations", "must be a list")
+    declarations: dict[str, object] = {}
+    for index, entry in enumerate(declarations_raw):
+        key = f"ParameterValueDeclarations[{index}]"
+        declaration = _scenario_init_mapping(entry, source, key)
+        if set(declaration) != {"name", "value"}:
+            raise _scenario_init_error(source, key, "must contain exactly name and value")
+        name = declaration["name"]
+        if not isinstance(name, str) or not name:
+            raise _scenario_init_error(source, f"{key}.name", "must be a nonempty string")
+        if name in declarations:
+            raise _scenario_init_error(source, f"declaration {name}", "duplicate name")
+        value = declaration["value"]
+        if not isinstance(value, (str, bool, int, float, type(None))):
+            raise _scenario_init_error(
+                source, f"declaration {name}", "value must be a YAML scalar"
+            )
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _scenario_init_number(value, source, f"declaration {name}")
+        declarations[name] = value
+
+    init = _scenario_init_mapping(root["Init"], source, "Init")
+    fields = {
+        "name",
+        "description",
+        "initial_speed_m_s",
+        "initial_gear",
+        "soc_mj",
+        "brake_bias",
+        "tyre_leak_rate_kg_s",
+        "initial_x_m",
+        "initial_y_m",
+        "initial_heading_rad",
+    }
+    unknown = set(init) - fields
+    if unknown:
+        name = sorted(unknown)[0]
+        raise _scenario_init_error(source, f"Init.{name}", "unknown field")
+    for required in ("name", "description", "initial_speed_m_s"):
+        if required not in init:
+            raise _scenario_init_error(source, f"Init.{required}", "required field is missing")
+
+    def resolve(key: str) -> object:
+        value = init[key]
+        if isinstance(value, str) and value.startswith("$"):
+            name = value[1:]
+            if not name or name not in declarations:
+                raise _scenario_init_error(source, f"Init.{key}", f"unknown reference {value!r}")
+            return declarations[name]
+        return value
+
+    name = resolve("name")
+    description = resolve("description")
+    if not isinstance(name, str):
+        raise _scenario_init_error(source, "Init.name", "must resolve to a string")
+    if not isinstance(description, str):
+        raise _scenario_init_error(source, "Init.description", "must resolve to a string")
+
+    speed = _scenario_init_number(
+        resolve("initial_speed_m_s"), source, "Init.initial_speed_m_s"
+    )
+    gear_raw = resolve("initial_gear") if "initial_gear" in init else 1
+    if isinstance(gear_raw, bool) or not isinstance(gear_raw, int):
+        raise _scenario_init_error(source, "Init.initial_gear", "must resolve to an integer")
+
+    soc_raw = resolve("soc_mj") if "soc_mj" in init else None
+    soc = None if soc_raw is None else _scenario_init_number(soc_raw, source, "Init.soc_mj")
+    bias_raw = resolve("brake_bias") if "brake_bias" in init else _UNIT_BRAKE
+    if not isinstance(bias_raw, (list, tuple)) or len(bias_raw) != len(_UNIT_BRAKE):
+        raise _scenario_init_error(source, "Init.brake_bias", "must contain four numbers")
+    bias_values = tuple(
+        _scenario_init_number(value, source, f"Init.brake_bias[{index}]")
+        for index, value in enumerate(bias_raw)
+    )
+    bias = (bias_values[0], bias_values[1], bias_values[2], bias_values[3])
+
+    numeric_defaults = {
+        "tyre_leak_rate_kg_s": 0.0,
+        "initial_x_m": 0.0,
+        "initial_y_m": 0.0,
+        "initial_heading_rad": 0.0,
+    }
+    numeric = {
+        key: _scenario_init_number(resolve(key), source, f"Init.{key}")
+        if key in init
+        else default
+        for key, default in numeric_defaults.items()
+    }
+    return ScenarioInit(
+        name=name,
+        description=description,
+        initial_speed_m_s=speed,
+        initial_gear=gear_raw,
+        soc_mj=soc,
+        brake_bias=bias,
+        tyre_leak_rate_kg_s=numeric["tyre_leak_rate_kg_s"],
+        initial_x_m=numeric["initial_x_m"],
+        initial_y_m=numeric["initial_y_m"],
+        initial_heading_rad=numeric["initial_heading_rad"],
+    )
 
 
 def scenario(config: KernelConfig, name: str) -> Scenario:

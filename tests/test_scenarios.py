@@ -1342,3 +1342,143 @@ def test_a_bias_vector_of_the_wrong_length_is_refused(config: KernelConfig) -> N
 def test_an_unknown_scenario_name_is_refused(config: KernelConfig) -> None:
     with pytest.raises(KeyError):
         scenarios.scenario(config, "reverse_on_a_straight")
+
+
+def test_scenario_init_loader_resolves_parameters_and_keeps_defaults(tmp_path) -> None:
+    source = tmp_path / "rolling.yaml"
+    source.write_text(
+        """ParameterValueDeclarations:
+  - name: start_speed
+    value: 12.0
+  - name: start_gear
+    value: 1
+Init:
+  name: rolling_start
+  description: Rolling start
+  initial_speed_m_s: "$start_speed"
+  initial_gear: "$start_gear"
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial == scenarios.ScenarioInit(
+        name="rolling_start",
+        description="Rolling start",
+        initial_speed_m_s=12.0,
+        initial_gear=1,
+    )
+
+
+def test_scenario_init_loader_accepts_literals_and_null_soc(tmp_path) -> None:
+    source = tmp_path / "literal.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: literal_start
+  description: Literal start
+  initial_speed_m_s: 0
+  soc_mj: null
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial.initial_speed_m_s == 0.0
+    assert initial.soc_mj is None
+
+
+def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path) -> None:
+    duplicate = tmp_path / "duplicate.yaml"
+    duplicate.write_text(
+        """ParameterValueDeclarations:
+  - name: speed
+    value: 10
+  - name: speed
+    value: 20
+Init:
+  name: duplicate
+  description: Duplicate declaration
+  initial_speed_m_s: "$speed"
+""",
+        encoding="utf-8",
+    )
+    unknown = tmp_path / "unknown.yaml"
+    unknown.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: unknown
+  description: Unknown reference
+  initial_speed_m_s: "$missing"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"duplicate.yaml.*speed.*duplicate"):
+        scenarios.load_scenario_init(duplicate)
+    with pytest.raises(ValueError, match=r"unknown.yaml.*initial_speed_m_s.*missing"):
+        scenarios.load_scenario_init(unknown)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1}
+Extra: true
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1, extra: true}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: true}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: .inf}
+""",
+    ],
+)
+def test_scenario_init_loader_rejects_schema_and_nonfinite_values(tmp_path, document) -> None:
+    source = tmp_path / "invalid.yaml"
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"invalid.yaml"):
+        scenarios.load_scenario_init(source)
+
+
+def test_loaded_scenario_init_uses_run_scenario_config_validation(
+    tmp_path, config: KernelConfig
+) -> None:
+    source = tmp_path / "out-of-range-gear.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: invalid_gear
+  description: Gear checked by the scenario runner
+  initial_speed_m_s: 0
+  initial_gear: 99
+""",
+        encoding="utf-8",
+    )
+    initial = scenarios.load_scenario_init(source)
+    plan = scenarios.Scenario(
+        name=initial.name,
+        initial_speed_m_s=initial.initial_speed_m_s,
+        segments=(scenarios.ScenarioSegment(duration_s=0.1),),
+        description=initial.description,
+        initial_gear=initial.initial_gear,
+        soc_mj=initial.soc_mj,
+        brake_bias=initial.brake_bias,
+        tyre_leak_rate_kg_s=initial.tyre_leak_rate_kg_s,
+        initial_x_m=initial.initial_x_m,
+        initial_y_m=initial.initial_y_m,
+        initial_heading_rad=initial.initial_heading_rad,
+    )
+
+    with pytest.raises(ValueError, match=r"initial_gear must be a whole gear"):
+        scenarios.run_scenario(config, plan)
