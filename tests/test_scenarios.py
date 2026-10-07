@@ -1433,6 +1433,13 @@ Extra: true
 Init: {name: bad, description: Bad, initial_speed_m_s: 1, extra: true}
 """,
         """ParameterValueDeclarations: []
+Init:
+  name: bad
+  description: Bad
+  initial_speed_m_s: 1
+  initial_speed_m_s: 2
+""",
+        """ParameterValueDeclarations: []
 Init: {name: bad, description: Bad}
 """,
         """ParameterValueDeclarations: []
