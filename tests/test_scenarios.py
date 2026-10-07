@@ -1391,42 +1391,83 @@ Init:
     assert initial.soc_mj is None
 
 
-def test_scenario_init_loader_preserves_yaml_merge_overrides(tmp_path: Path) -> None:
-    source = tmp_path / "merge.yaml"
-    source.write_text(
+@pytest.mark.parametrize(
+    "document",
+    [
         """ParameterValueDeclarations: []
 Init:
   <<: &defaults
     name: merged_start
     description: Merged defaults
     initial_speed_m_s: 10
-  initial_speed_m_s: 12
+""",
+        """ParameterValueDeclarations:
+  - <<: {name: speed}
+    value: 10
+Init: {name: merged_start, description: Merged defaults, initial_speed_m_s: "$speed"}
+""",
+    ],
+)
+def test_scenario_init_loader_rejects_yaml_merge_keys(tmp_path: Path, document: str) -> None:
+    source = tmp_path / "merge.yaml"
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"(?s)merge.yaml.*merge keys are not supported"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_resolves_brake_bias_references(tmp_path: Path) -> None:
+    source = tmp_path / "bias-parameters.yaml"
+    source.write_text(
+        """ParameterValueDeclarations:
+  - {name: fl, value: 0.2}
+  - {name: fr, value: 0.2}
+  - {name: rl, value: 0.3}
+  - {name: rr, value: 0.3}
+Init:
+  name: parameterized_bias
+  description: Brake bias from scalar parameters
+  initial_speed_m_s: 0
+  brake_bias: ["$fl", "$fr", "$rl", "$rr"]
 """,
         encoding="utf-8",
     )
 
     initial = scenarios.load_scenario_init(source)
 
-    assert initial.name == "merged_start"
-    assert initial.initial_speed_m_s == 12.0
+    assert initial.brake_bias == (0.2, 0.2, 0.3, 0.3)
 
 
-def test_scenario_init_loader_rejects_duplicates_inside_merged_mappings(tmp_path: Path) -> None:
-    source = tmp_path / "duplicate-merge.yaml"
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("soc_mj", 12.5),
+        ("tyre_leak_rate_kg_s", 0.125),
+        ("initial_x_m", 4.0),
+        ("initial_y_m", 5.0),
+        ("initial_heading_rad", 0.75),
+    ],
+)
+def test_scenario_init_loader_resolves_optional_numeric_references(
+    tmp_path: Path, field: str, expected: float
+) -> None:
+    source = tmp_path / "optional-parameter.yaml"
     source.write_text(
-        """ParameterValueDeclarations: []
+        f"""ParameterValueDeclarations:
+  - name: value
+    value: {expected}
 Init:
-  <<: &defaults
-    name: merged_start
-    description: Merged defaults
-    initial_speed_m_s: 10
-    initial_speed_m_s: 12
+  name: parameterized
+  description: Optional numeric parameter
+  initial_speed_m_s: 0
+  {field}: "$value"
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"(?s)duplicate-merge.yaml.*duplicate key"):
-        scenarios.load_scenario_init(source)
+    initial = scenarios.load_scenario_init(source)
+
+    assert getattr(initial, field) == expected
 
 
 def test_scenario_init_loader_wraps_invalid_utf8_with_source_path(tmp_path: Path) -> None:
@@ -1500,6 +1541,9 @@ Init: {name: bad, description: Bad, initial_speed_m_s: true}
         """ParameterValueDeclarations: []
 Init: {name: bad, description: Bad, initial_speed_m_s: .inf}
 """,
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: .nan}
+""",
     ],
 )
 def test_scenario_init_loader_rejects_schema_and_nonfinite_values(
@@ -1509,6 +1553,19 @@ def test_scenario_init_loader_rejects_schema_and_nonfinite_values(
     source.write_text(document, encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"invalid.yaml"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_rejects_integer_that_overflows_float(tmp_path: Path) -> None:
+    source = tmp_path / "overflow.yaml"
+    huge = "9" * 400
+    document = (
+        "ParameterValueDeclarations: []\n"
+        f"Init: {{name: bad, description: Bad, initial_speed_m_s: {huge}}}\n"
+    )
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"overflow.yaml.*finite"):
         scenarios.load_scenario_init(source)
 
 

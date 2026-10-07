@@ -205,10 +205,14 @@ def _construct_unique_mapping(
     loader: _UniqueKeyLoader, node: yaml.nodes.MappingNode, deep: bool = False
 ) -> dict[object, object]:
     seen: set[object] = set()
-    for key_node, value_node in node.value:
+    for key_node, _ in node.value:
         if key_node.tag == "tag:yaml.org,2002:merge":
-            loader.construct_object(value_node, deep=True)
-            continue
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "YAML merge keys are not supported",
+                key_node.start_mark,
+            )
         key = loader.construct_object(key_node, deep=deep)
         try:
             duplicate = key in seen
@@ -228,7 +232,6 @@ def _construct_unique_mapping(
             )
         seen.add(key)
 
-    loader.flatten_mapping(node)
     mapping: dict[object, object] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
@@ -655,7 +658,12 @@ def _scenario_init_number(value: object, source: Path, key: str) -> float:
 
 
 def load_scenario_init(path: Path) -> ScenarioInit:
-    """Load typed initial conditions and resolve whole-value ``$name`` references."""
+    """Load typed initial conditions and resolve whole-value ``$name`` references.
+
+    Each scalar in ``brake_bias`` may also be a reference. Strings beginning
+    with ``$`` are reserved for references. YAML merge keys are rejected to
+    keep scenario parsing bounded.
+    """
     source = Path(path)
     try:
         document = yaml.load(source.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
@@ -712,14 +720,16 @@ def load_scenario_init(path: Path) -> ScenarioInit:
         if required not in init:
             raise _scenario_init_error(source, f"Init.{required}", "required field is missing")
 
-    def resolve(key: str) -> object:
-        value = init[key]
+    def resolve_value(value: object, key: str) -> object:
         if isinstance(value, str) and value.startswith("$"):
             name = value[1:]
             if not name or name not in declarations:
-                raise _scenario_init_error(source, f"Init.{key}", f"unknown reference {value!r}")
+                raise _scenario_init_error(source, key, f"unknown reference {value!r}")
             return declarations[name]
         return value
+
+    def resolve(key: str) -> object:
+        return resolve_value(init[key], f"Init.{key}")
 
     name = resolve("name")
     description = resolve("description")
@@ -739,7 +749,11 @@ def load_scenario_init(path: Path) -> ScenarioInit:
     if not isinstance(bias_raw, (list, tuple)) or len(bias_raw) != len(_UNIT_BRAKE):
         raise _scenario_init_error(source, "Init.brake_bias", "must contain four numbers")
     bias_values = tuple(
-        _scenario_init_number(value, source, f"Init.brake_bias[{index}]")
+        _scenario_init_number(
+            resolve_value(value, f"Init.brake_bias[{index}]"),
+            source,
+            f"Init.brake_bias[{index}]",
+        )
         for index, value in enumerate(bias_raw)
     )
     bias = (bias_values[0], bias_values[1], bias_values[2], bias_values[3])
