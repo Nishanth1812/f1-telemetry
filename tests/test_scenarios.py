@@ -1391,6 +1391,26 @@ Init:
     assert initial.soc_mj is None
 
 
+def test_scenario_init_loader_preserves_yaml_merge_overrides(tmp_path: Path) -> None:
+    source = tmp_path / "merge.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  <<: &defaults
+    name: merged_start
+    description: Merged defaults
+    initial_speed_m_s: 10
+  initial_speed_m_s: 12
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial.name == "merged_start"
+    assert initial.initial_speed_m_s == 12.0
+
+
 def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.yaml"
     duplicate.write_text(
@@ -1429,6 +1449,11 @@ Init:
         """ParameterValueDeclarations: []
 Init: {name: bad, description: Bad, initial_speed_m_s: 1}
 Extra: true
+""",
+        """? [unhashable]
+: value
+ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1}
 """,
         """ParameterValueDeclarations: []
 Init: {name: bad, description: Bad, initial_speed_m_s: 1, extra: true}
