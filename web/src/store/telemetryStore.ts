@@ -234,7 +234,21 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
           channelNames = [...channelNames, ...added];
         }
       }
-      return { frame, frameCount, channelNames, framesPerSecond, lastFrameAt: now, events, diagnostics };
+      // Keep the 30 Hz snapshot in render state; the full-rate batch already
+      // lives in history and raw counters, so do not retain it in Zustand.
+      const snapshot: TelemetryFrame = { time_us: frame.time_us, channels: frame.channels };
+      if (frame.events !== undefined) {
+        snapshot.events = frame.events;
+      }
+      return {
+        frame: snapshot,
+        frameCount,
+        channelNames,
+        framesPerSecond,
+        lastFrameAt: now,
+        events,
+        diagnostics,
+      };
     });
   },
   countMalformed: (count) => set((state) => ({ malformedCount: state.malformedCount + count })),
