@@ -324,6 +324,9 @@ class Scenario:
     heading along its centreline tangent, instead of only at the origin
     on ``+x``. Every existing scenario defaults to the origin, so a
     scenario that does not declare a pose starts exactly as it did before.
+    ``upshift_at_shift_point`` opts this scenario's driver into requesting one upshift when the
+    wheel-coupled engine speed reaches ``config.shift_up_rpm``; the gearbox itself never shifts
+    automatically.
     """
 
     name: str
@@ -337,6 +340,7 @@ class Scenario:
     initial_x_m: float = 0.0
     initial_y_m: float = 0.0
     initial_heading_rad: float = 0.0
+    upshift_at_shift_point: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,11 +483,11 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
             initial_speed_m_s=0.0,
             description=(
                 "Standing start with LAUNCH_ICE_RPM declared during the initial clutch-slip "
-                "segment, then four "
-                "driver-requested upshifts and sustained full throttle; the trace is long enough "
-                "to measure its first 100 km/h crossing. Past the launch every segment takes its "
-                "engine speed from the wheels again."
+                "segment, then sustained full throttle with driver upshifts requested at the "
+                "configured RPM shift point; the trace is long enough to measure its first "
+                "100 km/h crossing. Past the launch engine speed follows the wheels."
             ),
+            upshift_at_shift_point=True,
             segments=(
                 ScenarioSegment(
                     0.5,
@@ -492,16 +496,7 @@ def build_scenarios(config: KernelConfig) -> Mapping[str, Scenario]:
                     grid_standing_start=True,
                     ice_rpm_initial=LAUNCH_ICE_RPM,
                 ),
-                ScenarioSegment(
-                    1.0,
-                    throttle=1.0,
-                    grid_standing_start=True,
-                ),
-                ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
-                ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
-                ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
-                ScenarioSegment(1.0, throttle=1.0, request=gearbox.GearRequest.UP),
-                ScenarioSegment(1.5, throttle=1.0),
+                ScenarioSegment(6.5, throttle=1.0),
             ),
         ),
         Scenario(
@@ -894,10 +889,22 @@ def run_scenario(
                 ]
                 steer_history[interval_start : interval_start + control_steps] = driver_steer_deg
             shifting_at_start = gear_state[gearbox.SHIFT_TIMER_INDEX] > 0.0
-            shift_requested = interval == 0 and int(segment.request) != int(
-                gearbox.GearRequest.HOLD
-            )
             starting_gear = int(gear_state[gearbox.GEAR_INDEX])
+            interval_request = (
+                segment.request
+                if interval == 0
+                else gearbox.GearRequest.HOLD
+            )
+            if (
+                plan.upshift_at_shift_point
+                and interval_request == gearbox.GearRequest.HOLD
+                and not shifting_at_start
+                and segment.clutch >= 1.0
+                and 1 <= starting_gear < config.gear_ratios.size
+                and _wheel_coupled_ice_rpm(config, sample, gear_state) >= config.shift_up_rpm
+            ):
+                interval_request = gearbox.GearRequest.UP
+            shift_requested = interval_request != gearbox.GearRequest.HOLD
             clutch_open = segment.clutch < 1.0 or starting_gear == gearbox.NEUTRAL_GEAR
             engine_is_free = clutch_open or shifting_at_start or shift_requested
             if engine_is_free:
@@ -932,7 +939,7 @@ def run_scenario(
                     gear_state,
                     sampled_rpm,
                     driver_throttle,
-                    segment.request if interval == 0 and offset == 0 else gearbox.GearRequest.HOLD,
+                    interval_request if offset == 0 else gearbox.GearRequest.HOLD,
                     mgu_k_torque_nm=sampled_mgu_k,
                 )
                 delivered_torque_sum += sampled_torque + sampled_mgu_k

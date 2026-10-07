@@ -401,6 +401,16 @@ def test_the_built_launch_scenarios_seed_the_start_telemetry_engine_speed(
     assert config.idle_rpm < scenarios.LAUNCH_ICE_RPM <= config.rev_limit_rpm, (
         "the declared launch speed has to be a speed this car's engine is configured to reach"
     )
+    acceleration = suite["accelerate_to_speed"]
+    assert acceleration.upshift_at_shift_point, (
+        "the launch measurement should use the driver's configured RPM shift policy"
+    )
+    assert sum(segment.duration_s for segment in acceleration.segments) == pytest.approx(7.0), (
+        "replacing timed shifts must preserve the seven-second trace window"
+    )
+    assert all(segment.request is gearbox.GearRequest.HOLD for segment in acceleration.segments), (
+        "the scenario leaves gear changes to its opt-in driver policy, not fixed-time requests"
+    )
     for name in ("standing_launch", "accelerate_to_speed"):
         run = runs[name]
         scenario = suite[name]
@@ -425,6 +435,52 @@ def test_the_built_launch_scenarios_seed_the_start_telemetry_engine_speed(
                 "and later samples evolve from the initial condition instead of holding it"
             )
             assert published[window.start] == scenarios.LAUNCH_ICE_RPM
+
+
+def test_the_rpm_shift_policy_requests_only_at_the_configured_shift_point(
+    config: KernelConfig,
+) -> None:
+    """The opt-in driver policy asks at the wheel-coupled RPM threshold, never on a timer."""
+    first_gear_ratio = config.gear_ratios[0] * config.final_drive
+    threshold_speed = (
+        config.shift_up_rpm
+        * (math.tau / 60.0)
+        * config.rolling_radius_m
+        / first_gear_ratio
+    )
+    run_at_threshold = scenarios.run_scenario(
+        config,
+        scenarios.Scenario(
+            name="shift_at_rpm",
+            initial_speed_m_s=threshold_speed * 1.001,
+            segments=(scenarios.ScenarioSegment(0.01, throttle=1.0),),
+            description="One driver interval at the configured shift point.",
+            upshift_at_shift_point=True,
+        ),
+        control_steps=1,
+    )
+    assert run_at_threshold.drivetrain.gear[0] == 2, (
+        "the driver should request one upshift at the configured RPM; "
+        f"sample={run_at_threshold.drivetrain.ice_rpm[0]:.1f} rpm, "
+        f"gear={run_at_threshold.drivetrain.gear[0]}"
+    )
+
+    run_below_threshold = scenarios.run_scenario(
+        config,
+        scenarios.Scenario(
+            name="hold_below_rpm",
+            initial_speed_m_s=threshold_speed * 0.9,
+            segments=(scenarios.ScenarioSegment(0.01, throttle=1.0),),
+            description="One driver interval below the configured shift point.",
+            upshift_at_shift_point=True,
+        ),
+        control_steps=1,
+    )
+    assert run_below_threshold.drivetrain.gear[0] == 1, (
+        "no request is due below shift RPM; "
+        f"sample={run_below_threshold.drivetrain.ice_rpm[0]:.1f} rpm, "
+        f"gear={run_below_threshold.drivetrain.gear[0]}"
+    )
 
 
 def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference(
