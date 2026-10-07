@@ -44,12 +44,12 @@ drive a real dashboard, every later phase is built on sand.
 | P0-T10 | Synthetic frame generator — emits fake frames at correct per-channel rates from `channels.yaml` | Proves the rate contract. Deliberately reads only `channels.yaml`, never hardcodes a rate |
 | P0-T11 | Dashboard skeleton: tile grid + one trace panel + connection indicator | Tiles render from synthetic data at 30 Hz |
 
-**Exit gate**
-- [ ] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
-- [ ] `just codegen` is idempotent; CI proves committed generated code is current
-- [ ] All 8 invariant tests run and pass
-- [ ] Changing a rate in `channels.yaml` changes it in the dashboard with no other edit
-- [ ] `ruff`, `basedpyright`, `pytest`, web build all green in CI
+**Exit gate** — passed in CI run 37623217508 at `d4f4c92`; evidence in [`docs/phase0-decisions.md` §9](docs/phase0-decisions.md#9-p0-exit-gate-evidence).
+- [x] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
+- [x] `just codegen` is idempotent; CI proves committed generated code is current
+- [x] All 8 invariant tests run and pass
+- [x] Changing a rate in `channels.yaml` changes it in the dashboard with no other edit
+- [x] `ruff`, `basedpyright`, `pytest`, web build all green in CI
 
 **Tag:** `v0.1-contracts` · **Demo:** synthetic telemetry dashboard.
 

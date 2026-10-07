@@ -94,12 +94,12 @@ Use each phase’s task IDs, file scope, and technical definitions in `PHASES.md
 
 **Files:** `PHASES.md`, `docs/phase0-decisions.md`, `channels.yaml`, generated contract outputs, `web/`, existing P0 tests.
 
-- [ ] Record the branch/commit and run the P0 gates through GitHub Actions on `feat/phase-2`; do not infer completion from an existing executable or old test report.
-- [ ] Prove the dashboard updates at every declared channel rate and that changing a contract rate propagates without a second edit.
-- [ ] Prove code generation is idempotent, generated contracts are current, all eight invariants pass, and the project checks are green.
-- [ ] Record the demonstration and evidence; close/tag P0 only if every P0 exit criterion in `PHASES.md` is satisfied.
+- [x] Record the branch/commit and run the P0 gates through GitHub Actions on `feat/phase-2`; do not infer completion from an existing executable or old test report.
+- [x] Prove the dashboard updates at every declared channel rate and that changing a contract rate propagates without a second edit.
+- [x] Prove code generation is idempotent, generated contracts are current, all eight invariants pass, and the project checks are green.
+- [x] Record the demonstration and evidence; close/tag P0 only if every P0 exit criterion in `PHASES.md` is satisfied.
 
-**Gate:** all five P0 exit criteria in `PHASES.md` pass. Until then, P1 remains blocked.
+**Gate:** all five P0 exit criteria in `PHASES.md` pass. Until then, P1 remains blocked. **Passed** in CI run 37623217508 at `d4f4c92`; evidence in `docs/phase0-decisions.md` §9.
 
 ### Task 1 — Close P1 straight-line physics
 

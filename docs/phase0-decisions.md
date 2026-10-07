@@ -309,3 +309,26 @@ of `KernelConfig` because a longitudinal kernel has no axle, and the gap is reco
 `UP040` prefers the new form, but ruff mis-analyses `type X = 'a' | 'b'` and reports every
 string literal as an undefined name, so `UP040` is disabled for the generated tree instead
 of the whole project.
+
+## 9. P0 exit-gate evidence
+
+All five P0 exit criteria were proven by GitHub Actions run
+[37623217508](https://github.com/Nishanth1812/f1-telemetry/actions/runs/37623217508) on
+`feat/phase-2`, checkout `d4f4c92df351a4ca3ea17ca3ae77bfdab68d42a4`, 2026-10-07 12:44–13:06 UTC.
+Every job and step in the run succeeded. No criterion was inferred from an earlier run or a local
+result.
+
+| Criterion | CI job / step | Logged result |
+|---|---|---|
+| Each channel updates at its declared rate | `dashboard rates (current)` / Measure live samples in Chrome | `dashboard smoke: PASS (74 channels, 20.2 s, d4f4c92…)` — every generated channel's sample rate is measured in a real browser for 20 s and must sit within 5 % of the contract rate (`web/tests/dashboard-smoke.mjs`) |
+| `just codegen` is idempotent; committed code is current | `contracts, codegen and invariants` / Contract gate (f1-check-contract), Regenerate code, Committed generated code must match, Second codegen run is a no-op | `codegen: generated code is up to date`; first run `0 file(s) written, 0 file(s) changed`; second run, same command as the `just codegen` recipe, `0 file(s) written, 0 file(s) changed`; `git diff --exit-code` and the untracked-file check pass after both runs |
+| All 8 invariant tests run and pass | same job / Invariant stage | `89 passed, 1117 deselected`; the registry asserts IDs 1–8 with eight distinct names, each with its own enforced check (`tests/test_invariants.py`, `src/f1telemetry/testing/invariants.py`) |
+| A rate change in `channels.yaml` reaches the dashboard with no other edit | `dashboard rates (rate-edit)` / Measure live samples in Chrome | CI edits only `speed` to 50 Hz, regenerates and rebuilds, then logs `dashboard smoke: PASS (74 channels, 20.0 s, d4f4c92…)` with the new rate measured live |
+| ruff, basedpyright, pytest and web build green | same Python job, plus `dashboard build` | `ruff check` "All checks passed!", `ruff format --check`, `basedpyright`, golden stage `7 passed`, full suite `1206 passed in 657.27s`; dashboard build job succeeded |
+
+`f1-check-contract` and the second codegen run were added to CI in `d4f4c92` specifically to close
+this gate; before that commit, CI proved committed code was current but not that a second
+generator run changes nothing.
+
+The `v0.1-contracts` tag predates this evidence: it is a local tag on `67ea5fe` (2026-09-30) and
+was never pushed.
