@@ -643,19 +643,23 @@ section 6 has required all along:
 
 `tests/test_scenarios.py` reports both speed quantities separately and asserts that the transient
 maximum reaches the 325.8 km/h floor. The previous 3 s deployment variant measured 308.0353 km/h
-and failed this floor; the revised 20 s request passed it. After adding the evolving engine-speed
-state, the local scenario suite reproduced these working-tree measurements:
+and failed this floor; the revised 20 s request passed it. GitHub Actions run
+[37639816872](https://github.com/Nishanth1812/f1-telemetry/actions/runs/37639816872), on
+`527d109`, measured `accelerate_to_speed` with driver upshifts requested at `config.shift_up_rpm`:
 
-- `accelerate_to_speed` reaches 100 km/h in **6.6598 s**, versus the coarse 2.32 s reference.
+- `accelerate_to_speed` reaches 100 km/h in **4.0919 s**, **1.7719 s slower** than the coarse
+  2.32 s reference. It is a diagnostic result, not a calibration pass/fail comparison.
 - `full_throttle` reaches a **338.4295 km/h transient maximum** during deployment, then settles at
   **307.6027 km/h** in the ICE-only tail. The final five seconds drift by **−0.0661 km/h**.
 - MGU-K delivery reaches **350 kW** and the store moves from **4.000 MJ to 0.782 MJ**.
 
-These are an engine-state baseline before Task 2 longitudinal load-transfer integration, not a
-calibrated prediction. The 0–100 reference is only a coarse, sampled ~3.7 Hz median; its ±0.30 s is
-feed quantisation resolution, not a confidence interval or a pass/fail tolerance. The 0–100 result
-misses the reference substantially, so the P1 performance gate remains open. The transient maximum
-passes the reachability floor; terminal speed has no event-trap target.
+The earlier **6.6598 s** 0–100 result used fixed-time upshifts and is superseded by the measurement
+above. These remain engine-state diagnostics before Task 2 longitudinal load-transfer integration,
+not calibrated predictions. The 0–100 reference is only a coarse, sampled ~3.7 Hz median; its
+±0.30 s is feed quantisation resolution, not a confidence interval or a pass/fail tolerance. The
+current result still misses the reference substantially, and the source audit found no matched
+official launch target, so the P1 performance gate remains open. The transient maximum passes the
+reachability floor; terminal speed has no event-trap target.
 
 ## Phase 1 deterministic scenarios
 
