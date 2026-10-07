@@ -1425,7 +1425,7 @@ Init:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"duplicate-merge.yaml.*duplicate key"):
+    with pytest.raises(ValueError, match=r"(?s)duplicate-merge.yaml.*duplicate key"):
         scenarios.load_scenario_init(source)
 
 
