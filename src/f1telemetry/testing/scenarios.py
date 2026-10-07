@@ -205,8 +205,9 @@ def _construct_unique_mapping(
     loader: _UniqueKeyLoader, node: yaml.nodes.MappingNode, deep: bool = False
 ) -> dict[object, object]:
     seen: set[object] = set()
-    for key_node, _ in node.value:
+    for key_node, value_node in node.value:
         if key_node.tag == "tag:yaml.org,2002:merge":
+            loader.construct_object(value_node, deep=True)
             continue
         key = loader.construct_object(key_node, deep=deep)
         try:
@@ -658,7 +659,7 @@ def load_scenario_init(path: Path) -> ScenarioInit:
     source = Path(path)
     try:
         document = yaml.load(source.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise _scenario_init_error(source, "document", str(exc)) from exc
 
     root = _scenario_init_mapping(document, source, "document")

@@ -1411,6 +1411,32 @@ Init:
     assert initial.initial_speed_m_s == 12.0
 
 
+def test_scenario_init_loader_rejects_duplicates_inside_merged_mappings(tmp_path: Path) -> None:
+    source = tmp_path / "duplicate-merge.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  <<: &defaults
+    name: merged_start
+    description: Merged defaults
+    initial_speed_m_s: 10
+    initial_speed_m_s: 12
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"duplicate-merge.yaml.*duplicate key"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_wraps_invalid_utf8_with_source_path(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-encoding.yaml"
+    source.write_bytes(b"\x80")
+
+    with pytest.raises(ValueError, match=r"invalid-encoding.yaml.*document"):
+        scenarios.load_scenario_init(source)
+
+
 def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.yaml"
     duplicate.write_text(
