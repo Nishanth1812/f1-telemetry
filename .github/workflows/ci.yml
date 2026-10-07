@@ -42,11 +42,20 @@ jobs:
       - name: basedpyright
         run: uv run basedpyright
 
+      - name: Contract gate (f1-check-contract)
+        run: uv run --frozen f1-check-contract
+
       - name: Regenerate code from channels.yaml
         run: uv run f1-codegen
 
       - name: Committed generated code must match the contract
         run: |
+          git diff --exit-code -- src/f1telemetry/generated web/src/generated
+          test -z "$(git status --porcelain --untracked-files=all -- src/f1telemetry/generated web/src/generated)"
+
+      - name: Second codegen run is a no-op (idempotence)
+        run: |
+          uv run --frozen f1-codegen
           git diff --exit-code -- src/f1telemetry/generated web/src/generated
           test -z "$(git status --porcelain --untracked-files=all -- src/f1telemetry/generated web/src/generated)"
 
