@@ -39,6 +39,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -1344,7 +1345,7 @@ def test_an_unknown_scenario_name_is_refused(config: KernelConfig) -> None:
         scenarios.scenario(config, "reverse_on_a_straight")
 
 
-def test_scenario_init_loader_resolves_parameters_and_keeps_defaults(tmp_path) -> None:
+def test_scenario_init_loader_resolves_parameters_and_keeps_defaults(tmp_path: Path) -> None:
     source = tmp_path / "rolling.yaml"
     source.write_text(
         """ParameterValueDeclarations:
@@ -1371,7 +1372,7 @@ Init:
     )
 
 
-def test_scenario_init_loader_accepts_literals_and_null_soc(tmp_path) -> None:
+def test_scenario_init_loader_accepts_literals_and_null_soc(tmp_path: Path) -> None:
     source = tmp_path / "literal.yaml"
     source.write_text(
         """ParameterValueDeclarations: []
@@ -1390,7 +1391,7 @@ Init:
     assert initial.soc_mj is None
 
 
-def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path) -> None:
+def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.yaml"
     duplicate.write_text(
         """ParameterValueDeclarations:
@@ -1450,7 +1451,9 @@ Init: {name: bad, description: Bad, initial_speed_m_s: .inf}
 """,
     ],
 )
-def test_scenario_init_loader_rejects_schema_and_nonfinite_values(tmp_path, document) -> None:
+def test_scenario_init_loader_rejects_schema_and_nonfinite_values(
+    tmp_path: Path, document: str
+) -> None:
     source = tmp_path / "invalid.yaml"
     source.write_text(document, encoding="utf-8")
 
@@ -1459,7 +1462,7 @@ def test_scenario_init_loader_rejects_schema_and_nonfinite_values(tmp_path, docu
 
 
 def test_loaded_scenario_init_uses_run_scenario_config_validation(
-    tmp_path, config: KernelConfig
+    tmp_path: Path, config: KernelConfig
 ) -> None:
     source = tmp_path / "out-of-range-gear.yaml"
     source.write_text(
