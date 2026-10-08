@@ -1,7 +1,10 @@
+import { AeroBlock } from './components/AeroBlock';
+import { BrakeBlock } from './components/BrakeBlock';
 import { ConnectionIndicator } from './components/ConnectionIndicator';
 import { EventPanel } from './components/EventPanel';
 import { TileGrid } from './components/TileGrid';
 import { TracePanel } from './components/TracePanel';
+import { TyreBlock } from './components/TyreBlock';
 import { useTelemetrySocket } from './hooks/useTelemetrySocket';
 
 export function App() {
@@ -19,6 +22,11 @@ export function App() {
           </h2>
           <TileGrid />
         </section>
+        <div className="app__blocks">
+          <TyreBlock />
+          <BrakeBlock />
+          <AeroBlock />
+        </div>
         <TracePanel />
         <EventPanel />
       </main>

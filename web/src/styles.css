@@ -9,6 +9,12 @@
   --trace-line: #58a6ff;
   --trace-grid: rgba(255, 255, 255, 0.12);
   --trace-text: #9aa7b4;
+  /* One hue per corner, shared by the canvas traces and the DOM readouts so the
+     legend colour and the trace colour can never drift apart. */
+  --corner-fl: #58a6ff;
+  --corner-fr: #d2a8ff;
+  --corner-rl: #3fb950;
+  --corner-rr: #f0883e;
   --ok: #3fb950;
   --warn: #d8a026;
   --bad: #f4695f;
@@ -83,6 +89,179 @@ body {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+}
+
+.app__blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: clamp(8px, 1.4vh, 14px);
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+}
+
+.block__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.block__heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.block__note {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.block__figure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.block__canvas {
+  display: block;
+  width: 100%;
+  height: 190px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--trace-surface);
+}
+
+.block__caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.block__legend {
+  display: flex;
+  align-items: center;
+  gap: 3px 6px;
+}
+
+.corners {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin: 0;
+}
+
+.corners__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  border-left: 3px solid var(--corner);
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.corners__cell--fl {
+  --corner: var(--corner-fl);
+}
+
+.corners__cell--fr {
+  --corner: var(--corner-fr);
+}
+
+.corners__cell--rl {
+  --corner: var(--corner-rl);
+}
+
+.corners__cell--rr {
+  --corner: var(--corner-rr);
+}
+
+.corners__name {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.corners__metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.corners__key {
+  color: var(--text-muted);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  margin-right: 4px;
+}
+
+.corners__swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--corner);
+}
+
+.aero__mode {
+  margin: 0;
+  padding: 3px 8px;
+  border-left: 3px solid var(--idle);
+  border-radius: 3px;
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+
+.aero__mode--z {
+  border-left-color: var(--accent);
+}
+
+.aero__mode--x {
+  border-left-color: var(--warn);
+}
+
+.aero__readouts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin: 0;
+}
+
+.aero__readout {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.aero__key {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.aero__value {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .connection {
