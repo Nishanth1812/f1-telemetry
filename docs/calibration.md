@@ -862,6 +862,65 @@ P1 remains open because that result still misses the reference and the synthesiz
 remains uncalibrated. The 338.4295 km/h transient reachability result does not close the acceleration
 miss or validate the car model.
 
+### Frozen synthetic targets — lateral-g and thermal windows (SYNTHESISED/SELF-CONSISTENT)
+
+Status: **SYNTHESISED / SELF-CONSISTENT — not validated against a real car.** This subsection
+freezes self-consistent model outputs as regression anchors. No coefficient was changed to record
+them, `car_spec.yaml` is untouched, and no P1/P2/P3 gate is closed by them.
+
+Method — lateral-g targets:
+
+- Scenarios: `steady_state_circle` and `constant_radius_speed_sweep`, as evidenced in
+  `docs/phase2-demo.md` lines 1–75.
+- Settlement protocol: each sweep point starts at its listed initial speed, coasts in neutral for
+  2.5 s to settle lateral response, then targets a 200 m radius; acceleration, steering and wheel
+  loads are the settled mean over the final 150 ms. The car slows during each run, so the tail
+  speed differs from the initial speed.
+- Coefficient refs (all synthesised, untuned): `tyres.lateral_pacejka` (`b: 9.0`, `c: 1.5`,
+  `e: 0.95`, `mu: 1.55`), `tyres.load_sensitivity` (`reference_load_n: 4000.0`, `peak: 0.1`,
+  `stiffness: 0.05`), and `aero` (`reference_area_m2: 1.5`, `ride_height_sensitivity: 0.18`,
+  synthesised `cl_curve`/`cd_curve` over 0–105 m/s).
+
+Frozen values:
+
+- 200 m sweep endpoint at 105 m/s initial: **3.70 g** settled mean over the final 150 ms after
+  the 2.5 s neutral coast (3.697 g in `docs/phase2-demo.md`; tail speed ~85.05 m/s, measured
+  radius 199.96 m).
+- 50 m circle at 20 m/s: **0.76 g** settled within 5% of the requested radius.
+
+The 4.0 g Pirelli 2011 Pouhon figure is kept as **plausibility-only context**, not a
+configuration-matched calibration target. Pirelli reported 4G lateral acceleration at Spa's
+Pouhon in 2011 with cars at 290 km/h
+([Pirelli, 2011](https://press.pirelli.com/the-belgian-gran-prix-from-a-tyre-point-of-view/)).
+Mismatch against the synthetic neutral-circle case:
+
+| Dimension | 4.0 g reference | This simulator |
+|---|---|---|
+| Car | 2011 F1 car | Synthetic 2026 car, untuned coefficients |
+| Corner | Spa Pouhon, banked/cambered real corner | Flat 200 m neutral circle / 50 m steady circle |
+| Aero | 2011 aero package | Synthetic `Cl` curve (`car_spec.yaml` aero, lines ~111–127) |
+| Tyres | 2011 compounds (also mismatched to 2017/2026 compounds) | Synthetic 2026-compound Pacejka + load sensitivity (`car_spec.yaml` lines ~609–617) |
+
+The earlier above-4 g result was a sideslip transient, not a steady-state match.
+
+0–100 tuning priority order (recorded, no numeric tuning performed here): torque/turbo lag >
+ratios/shift points > clutch capacity > longitudinal Pacejka mu/b > wheel inertia; mass/aero
+minimal per mass-cancellation.
+
+Synthesised thermal-window estimates (no 2026 measured band exists for any of these; Pirelli's
+2026 compound announcement supplies no numeric operating-temperature bands):
+
+- C1 tread: 105–130 °C (carcass band tracked alongside tread, synthesised).
+- C3 tread: 85–110 °C (carcass band tracked alongside tread, synthesised).
+- C5 tread: 70–95 °C (carcass band tracked alongside tread, synthesised).
+- Brake: 500–650 °C.
+- Engine: 85–105 °C.
+- Gearbox: 85–100 °C.
+
+Disclaimer: no 2026 measured equilibrium band has been matched to this car configuration for any
+compound or node; the above are synthesised estimates for wiring/sensitivity use only and do not
+close P3-T7 or any P1/P2 gate.
+
 ## Phase 3 thermal implementation checkpoint
 
 The simulator now computes lumped tyre, brake, engine and gearbox temperatures and tyre pressure
