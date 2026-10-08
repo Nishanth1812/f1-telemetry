@@ -79,6 +79,19 @@ def test_offset_bounds_follow_the_local_side(tmp_path: Path) -> None:
     assert np.all(line.lateral_m >= -line.bound_right_m - 1e-12)
 
 
+def test_offsets_deviate_and_approach_the_bound_in_the_tightest_corner() -> None:
+    for fixture in ("coastal_loop", "technical_ring"):
+        track = load_track(repo_root() / "tracks" / f"{fixture}.yaml")
+        line = _line(track)
+        # The solved line actually uses the track width rather than
+        # hugging the centreline everywhere.
+        assert float(np.max(np.abs(line.lateral_m))) > 1.0
+        tightest = int(np.argmax(np.abs(line.centerline_curvature_per_m)))
+        bound = min(float(line.bound_left_m[tightest]), float(line.bound_right_m[tightest]))
+        assert bound > 0.0
+        assert abs(float(line.lateral_m[tightest])) >= 0.8 * bound
+
+
 def test_tumftm_field_names_are_accepted(tmp_path: Path) -> None:
     from f1telemetry.tracks import load_track
 

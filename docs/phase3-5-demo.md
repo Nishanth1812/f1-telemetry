@@ -39,13 +39,32 @@ All Python tests, simulations, and builds for this work ran on `dev4.heapvue.clo
 The VM did not have `just`, so these commands were run as the equivalent `justfile` recipes.
 No test or simulation was run in the local workspace.
 
+## P4 reference-driver closed loop (measured)
+
+The reference driver — pure pursuit over the solved minimum-curvature line,
+paced by the speed profile whose lateral-acceleration target is the measured
+~7.5 m/s^2 P2 capability — has been run end to end on both fixtures from the
+start/finish pose on the solved line. Each fixture ran twice; the two runs
+produced byte-identical traces and identical crossing times, and the lap
+assesses valid with a LAP crossing and a full sector stream.
+
+| Fixture | Lap time (s) | Sector times (s) |
+| --- | --- | --- |
+| coastal_loop | 88.44 | 25.55, 28.31, 34.58 |
+| technical_ring | 108.11 | 27.30, 28.27, 52.55 |
+
+Deliberately invalid companion evidence: the same traces with the CG
+teleported off track mid-lap assess `off_track`, and the same run flagged
+`dnf` assesses `dnf` — crossing events still time, but no valid lap/sector
+time is published.
+
 ## Acceptance evidence still required
 
 1. **P3 calibration:** Thermal inputs remain illustrative. No operating-temperature data has been
    matched to each configured compound and surface, and no sourced equilibrium bands have been
    measured. The thermal tests and stress runs establish finite behavior, not calibration.
-2. **P4 real-circuit validation:** The active fixtures remain fictional. Both have not been run
-   end-to-end with the reference driver for clean and deliberately invalid lap evidence, and no
+2. **P4 real-circuit validation:** The active fixtures remain fictional. Clean and deliberately
+   invalid reference-driver lap evidence now exists (see the closed-loop section above), but no
    visual comparison against cited real-circuit racing-line imagery has been recorded. The
    retained source CSVs are geometry inputs, not evidence of this comparison.
 3. **P5 dashboard demonstration:** The application builds and the software tests cover sensor,
