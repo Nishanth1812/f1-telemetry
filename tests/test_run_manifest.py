@@ -1,23 +1,45 @@
-"""Run-manifest tests (P6-T7). Owns this file and run_manifest.py only."""
+"""Run-manifest tests (P6-T7). Owns this file, the manifest wiring and run_manifest.py only.
+
+The first block is the manifest on its own: what it validates, how it serialises, and how it
+comes back out of a Parquet file. The second block is the wiring built on top of it - the
+manifest attached to a run, and the metadata merge that carries a manifest into a file
+without displacing the contract keys every file is supposed to keep.
+"""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Final
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from f1telemetry.testing import scenarios
 from f1telemetry.testing.fixtures import straight_line_record
-from f1telemetry.testing.parquet_io import serialise_frames
+from f1telemetry.testing.parquet_io import (
+    METADATA,
+    build_table,
+    metadata_with_manifest,
+    read_frames,
+    serialise_frames,
+)
 from f1telemetry.testing.run_manifest import (
     MANIFEST_METADATA_KEY,
     RunManifest,
     from_metadata,
 )
 
+if TYPE_CHECKING:
+    from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
+
 GIT_SHA = "3f1c0a9e2b7d5468af0c1d3e5b7a9f2046813c5d"
 SETUP_HASH = "ab" * 32
+
+# Control intervals in the attribution probe. One interval is the least a run can be, so the
+# wiring is proved without spending a scenario's wall-clock on a test that asserts no physics.
+_PROBE_CONTROL_STEPS: Final[int] = 1
 
 
 def _manifest(**overrides: object) -> RunManifest:
@@ -30,6 +52,32 @@ def _manifest(**overrides: object) -> RunManifest:
     }
     fields.update(overrides)
     return RunManifest(**fields)  # pyright: ignore[reportArgumentType]
+
+
+def _text_metadata(metadata: Mapping[bytes, bytes] | None) -> dict[str, str]:
+    """Arrow's byte key-value metadata as the text it was written from."""
+    return {key.decode("utf-8"): value.decode("utf-8") for key, value in (metadata or {}).items()}
+
+
+def _probe_config(spec: CarSpec) -> KernelConfig:
+    """The validated configuration every scenario runs on; the probe reads nothing else."""
+    return spec.kernel_config()
+
+
+def _probe_scenario(config: KernelConfig) -> scenarios.Scenario:
+    """The shortest run the runner accepts: one control interval, no pedal and no request.
+
+    The duration is derived from the configured step rather than chosen, so the runner's
+    whole-control-interval rule holds whatever ``dt_s`` the spec carries, and a declared start
+    speed of zero is a starting condition rather than a performance figure. Nothing here says
+    anything about the car.
+    """
+    return scenarios.Scenario(
+        name="manifest_attribution_probe",
+        initial_speed_m_s=0.0,
+        description="attribution probe: coasting from rest with no pedal or gear request",
+        segments=(scenarios.ScenarioSegment(_PROBE_CONTROL_STEPS * config.dt_s),),
+    )
 
 
 def test_fields_carried_and_frozen() -> None:
@@ -169,3 +217,57 @@ def test_survives_a_real_parquet_round_trip() -> None:
     payload = serialise_frames(straight_line_record(), manifest.to_metadata())
     table = pq.read_table(pa.BufferReader(payload))
     assert from_metadata(table.schema.metadata) == manifest
+
+
+# ------------------------------------------------------------------
+# Wiring: a manifest on a run, and a merge that keeps the default keys
+# ------------------------------------------------------------------
+
+
+def test_wiring_keeps_the_default_keys_while_the_manifest_round_trips() -> None:
+    """The manifest reaches the file by addition: the contract keys are still there."""
+    manifest = _manifest()
+    record = straight_line_record()
+    payload = serialise_frames(record, metadata_with_manifest(manifest))
+    table = pq.read_table(pa.BufferReader(payload))
+    assert from_metadata(table.schema.metadata) == manifest
+    written = _text_metadata(table.schema.metadata)
+    # Defaults kept, not replaced: a file that cites a run still names its contract.
+    assert {name: written[name] for name in METADATA} == METADATA
+    assert written[MANIFEST_METADATA_KEY] == manifest.canonical()
+    # The citation is metadata only - the frames come back exactly as they went in, and the
+    # manifest carries no wall-clock value, so repeating the serialisation is byte-identical.
+    assert read_frames(payload) == record.frames
+    assert serialise_frames(record, metadata_with_manifest(manifest)) == payload
+
+
+def test_caller_metadata_merges_over_the_defaults_instead_of_replacing_them() -> None:
+    """Adding a key is not a request to drop ``contract`` and ``note``."""
+    table = build_table(straight_line_record(), {"origin": "p6-t7"})
+    written = _text_metadata(table.schema.metadata)
+    assert {name: written[name] for name in METADATA} == METADATA
+    assert written["origin"] == "p6-t7"
+
+
+def test_run_scenario_attaches_the_caller_manifest_and_claims_nothing_else(
+    spec: CarSpec,
+) -> None:
+    """``run_scenario`` carries the manifest it is given, and a run without one cites nothing."""
+    config = _probe_config(spec)
+    plan = _probe_scenario(config)
+    manifest = _manifest()
+    run = scenarios.run_scenario(
+        config, plan, control_steps=_PROBE_CONTROL_STEPS, manifest=manifest
+    )
+    bare = scenarios.run_scenario(config, plan, control_steps=_PROBE_CONTROL_STEPS)
+    assert run.manifest == manifest
+    assert bare.manifest is None
+    # Attributing a run changes what it says about itself, not what it computed: the records are
+    # identical, and the difference between the two serialisations is the metadata key alone.
+    assert run.record == bare.record
+    payload = serialise_frames(run.record, metadata_with_manifest(run.manifest))
+    table = pq.read_table(pa.BufferReader(payload))
+    assert from_metadata(table.schema.metadata) == manifest
+    written = _text_metadata(table.schema.metadata)
+    assert {name: written[name] for name in METADATA} == METADATA
+    assert serialise_frames(bare.record) != payload

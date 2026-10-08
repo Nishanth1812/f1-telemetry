@@ -7,7 +7,10 @@ row order, or dictionary-derived column ordering, so it is built and tested here
 rather than discovered in P5.
 
 What this module deliberately does *not* do is invent a run: it serialises exactly the
-frames a record carries, in contract order, and nothing else.
+frames a record carries, in contract order, and nothing else. Key-value metadata follows the
+same rule. :data:`METADATA` is the floor every file carries, caller keys merge over it, and a
+:class:`~f1telemetry.testing.run_manifest.RunManifest` is merged in last - a citation of the
+five facts a run declares, never a value resolved from this side of the writer.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import pyarrow.parquet as pq
 
 from f1telemetry.contracts.channels import DTYPES
 from f1telemetry.testing.records import SampleRecord, SensorFrame
+from f1telemetry.testing.run_manifest import RunManifest
 
 __all__ = [
     "ARROW_TYPES",
@@ -30,6 +34,7 @@ __all__ = [
     "METADATA",
     "TIME_COLUMN",
     "build_table",
+    "metadata_with_manifest",
     "read_frames",
     "serialise_frames",
     "write_frames",
@@ -64,6 +69,28 @@ ARROW_TYPES: Final[Mapping[str, pa.DataType]] = MappingProxyType(
 )
 
 
+def metadata_with_manifest(
+    manifest: RunManifest | None = None,
+    metadata: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Key-value metadata for a file that cites ``manifest``: defaults, then caller, then manifest.
+
+    The three layers merge rather than replace, in that order, so :data:`METADATA` - the contract
+    name and the determinism note every file carries - survives on a file that adds anything of its
+    own. ``metadata`` is whatever the caller wanted alongside the defaults; ``manifest`` is written
+    last so :data:`~f1telemetry.testing.run_manifest.MANIFEST_METADATA_KEY` always holds the
+    manifest the caller supplied. Every value is the caller's: nothing here resolves a car spec,
+    a scenario, a repository or a clock.
+
+    Returns a plain dict rather than writing a file, so a caller can inspect or extend it first -
+    the writer merges again and cannot lose a key this way.
+    """
+    merged = {**METADATA, **(metadata or {})}
+    if manifest is not None:
+        merged.update(manifest.to_metadata())
+    return merged
+
+
 def build_table(record: SampleRecord, metadata: Mapping[str, str] | None = None) -> pa.Table:
     """Arrow table of the record's published frames: time column, then contract order.
 
@@ -73,13 +100,17 @@ def build_table(record: SampleRecord, metadata: Mapping[str, str] | None = None)
     `ARROW_TYPES` and the per-group schema in `generated/parquet_schema.py`. Rounding here
     would put an invented sensor model in the determinism gate.
 
-    `metadata` is caller-supplied Parquet key-value metadata. P6-T7 can put the seed, car-spec
-    version, scenario version, setup hash and git SHA in here; this writer does not infer any
-    of them. A wall-clock value in this mapping is what invariant 8 exists to catch, and the
-    test for that leak is in the suite.
+    `metadata` is caller-supplied Parquet key-value metadata, and it is *added to*
+    :data:`METADATA` rather than put in its place: a caller naming its own keys has not
+    asked to drop the contract name or the determinism note, and a file that cites a run
+    manifest still has to say which contract it obeys. P6-T7 can put the seed, car-spec
+    version, scenario version, setup hash and git SHA in here - :func:`metadata_with_manifest`
+    is the shape of that call - and this writer still infers none of them. A wall-clock value
+    in this mapping is what invariant 8 exists to catch, and the test for that leak is in the
+    suite.
     """
     channels = record.channels
-    merged = dict(METADATA if metadata is None else metadata)
+    merged = {**METADATA, **(metadata or {})}
     schema = pa.schema(
         [pa.field(TIME_COLUMN, pa.float64(), nullable=False)]
         + [pa.field(name, pa.float64(), nullable=False) for name in channels],

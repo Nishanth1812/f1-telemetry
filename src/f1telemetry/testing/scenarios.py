@@ -139,6 +139,7 @@ from f1telemetry.testing.records import (
     SensorFrame,
     WheelTruth,
 )
+from f1telemetry.testing.run_manifest import RunManifest
 
 if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import KernelConfig
@@ -396,6 +397,14 @@ class ScenarioRun:
     reads those applied values rather than recomputing a second set of numbers. The caller-owned
     wheel torque histories stay at kernel rate for the discrete energy balance and because a
     shift cut is a 40 ms event while records are 10 ms.
+
+    ``manifest`` is the citation the caller handed to :func:`run_scenario`, carried through
+    untouched and defaulting to ``None`` - a run that cites nothing is not a run with an empty
+    manifest. It is the record of the seed, car-spec version, scenario version, setup hash and
+    git SHA, all five supplied by the caller: the runner infers no value for it, and attaching
+    one changes no trace, no record and no byte of the run it describes. Last in the field list
+    because it is the only optional field, and every existing positional construction of a run
+    would otherwise have to pass it.
     """
 
     name: str
@@ -410,6 +419,7 @@ class ScenarioRun:
     record: SampleRecord
     step_outputs: longitudinal.StepOutputs
     steer_wheel_deg: np.ndarray
+    manifest: RunManifest | None = None
 
     @property
     def record_dt_s(self) -> float:
@@ -793,6 +803,7 @@ def run_scenario(
     control_steps: int = CONTROL_STEPS,
     control_law: ControlLaw | None = None,
     max_brake_torque_nm: float = 0.0,
+    manifest: RunManifest | None = None,
 ) -> ScenarioRun:
     """Run one scenario and return its trace, its drivetrain history and its record.
 
@@ -806,6 +817,12 @@ def run_scenario(
     rotation, a bias vector of the wrong length, and an initial speed or gear that the drivetrain
     could not start from. A supplied ``control_law`` replaces interval throttle, steering and
     brake; ``max_brake_torque_nm`` maps normalized brake output to wheel torque.
+
+    ``manifest`` is attached to the run as :attr:`ScenarioRun.manifest` and used for nothing else:
+    it names the five facts the caller is citing, so writing it needs no seed source, no car-spec
+    or scenario resolution, no setup hashing, no git call and no clock. Two runs of one scenario
+    with the same manifest are byte-identical, and two with different manifests differ only in
+    the Parquet metadata that carries them.
     """
     counts = _checked_segments(plan, config, control_steps)
     if (
@@ -1030,6 +1047,7 @@ def run_scenario(
         ),
         step_outputs=step_outputs,
         steer_wheel_deg=steer_history,
+        manifest=manifest,
     )
 
 
