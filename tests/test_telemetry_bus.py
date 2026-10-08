@@ -18,6 +18,7 @@ from f1telemetry.contracts.channels import ChannelContract
 from f1telemetry.telemetry.bus import (
     MessageSpec,
     bus_utilisation,
+    channel_groups_from_contract,
     message_specs_from_contract,
     schedule,
 )
@@ -419,6 +420,38 @@ def test_full_rate_bus_load_at_1_mbit_s_is_under_70_percent(
     )
 
 
+def test_wire_bits_exclude_bit_stuffing_which_is_bounded_separately() -> None:
+    """The 67-bit allowance is delimiters and acknowledge, not stuffed data.
+
+    ISO 11898-1 stuffs one bit of opposite polarity after every run of five equal
+    bits, so the worst case for a body of ``n`` bits is ``n // 5`` more bits. The
+    model keeps that out of ``wire_bits`` - which is what the schedule times - and
+    exposes the body so the worst case can be added to a load estimate.
+    """
+    spec = MessageSpec("m", 0x100, 10_000, 64)
+    assert spec.slots == 16
+    assert spec.stuffed_bits == 8 * (18 + 64 + 4)
+    assert spec.wire_bits == spec.stuffed_bits + 67
+    assert spec.stuffed_bits // 5 == 8 * (18 + 64 + 4) // 5  # 20 % of the body, the worst allowed
+
+
+def test_full_rate_bus_load_with_worst_case_bit_stuffing_is_under_70_percent(
+    contract: ChannelContract,
+) -> None:
+    """The load gate holds with the worst stuffing the standard permits, not just without it."""
+    specs = _full_rate_layout(contract)
+    stuffed = sum(
+        (spec.wire_bits + spec.stuffed_bits // 5) * _ONE_SECOND_US / spec.period_us
+        for spec in specs
+    )
+    worst = stuffed / _BITRATE_BPS
+    # 20.4 % unstuffed to 23.9 % stuffed: the gate has the margin either way, which
+    # is the point - the estimate is an upper bound, not a content-dependent guess.
+    assert worst == pytest.approx(0.238925, abs=1e-9)
+    assert worst < 0.70
+    assert worst > bus_utilisation(specs, _BITRATE_BPS)
+
+
 def test_production_specs_match_the_full_rate_layout(contract: ChannelContract) -> None:
     """The production contract boundary derives the same schedule the oracle checks.
 
@@ -431,6 +464,32 @@ def test_production_specs_match_the_full_rate_layout(contract: ChannelContract) 
 
 def test_production_specs_are_deterministic(contract: ChannelContract) -> None:
     assert message_specs_from_contract(contract) == message_specs_from_contract(contract)
+
+
+def test_channel_groups_line_up_with_the_specs(contract: ChannelContract) -> None:
+    """The channel layout is index-aligned with the schedule it belongs to.
+
+    This is what lets the encoder bind a scheduled message to the values a run
+    sampled without restating how either side is derived, so the wire cannot drift
+    away from the plan it is supposed to realize.
+    """
+    specs = message_specs_from_contract(contract)
+    groups = channel_groups_from_contract(contract)
+    assert len(groups) == len(specs)
+    # Every periodic channel is carried exactly once, in one whole-float32 slot, and
+    # each message's channel count is exactly the payload it was scheduled with.
+    carried = [name for group in groups for name in group]
+    assert sorted(carried) == sorted(
+        channel.name for channel in contract.channels if channel.rate_hz is not None
+    )
+    assert [len(group) for group in groups] == [spec.slots for spec in specs]
+    assert [len(group) * 4 for group in groups] == [spec.payload_bytes for spec in specs]
+    # Event channels are in no group, exactly as they are in no scheduled message.
+    assert not set(carried) & {channel.name for channel in contract.channels if channel.event}
+
+
+def test_channel_groups_are_deterministic(contract: ChannelContract) -> None:
+    assert channel_groups_from_contract(contract) == channel_groups_from_contract(contract)
 
 
 # ---------------------------------------------------------------------------

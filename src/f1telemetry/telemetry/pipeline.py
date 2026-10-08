@@ -2,14 +2,16 @@
 
 One narrow path, no new storage abstraction: a finished :class:`SampleRecord`
 is pushed through contract-driven sensor processing (quantise, seeded noise,
-seeded fault injection with separate ground-truth annotations), packed into
-decodable CAN-FD frames, serialised byte-identically with the existing
+seeded fault injection with separate ground-truth annotations), scheduled onto
+the contract's CAN-FD bus plan and packed into decodable frames that realize
+that schedule release for release, serialised byte-identically with the existing
 Parquet writer, and re-read for replay. Simulated time only; nothing here
 reads a wall clock or re-runs physics.
 """
 
 from __future__ import annotations
 
+import bisect
 import json
 import struct
 from collections.abc import Sequence
@@ -30,7 +32,9 @@ from f1telemetry.telemetry.bus import (
     MessageSpec,
     ScheduledMessage,
     bus_utilisation,
+    channel_groups_from_contract,
     message_specs_from_contract,
+    pack_slot_counts,
     schedule,
 )
 from f1telemetry.telemetry.canfd import decode_frame, encode_frame, next_counter
@@ -61,26 +65,19 @@ __all__ = [
     "run_bridge",
 ]
 
-# 64 payload bytes is the CAN-FD maximum and also the widest legal DLC for
-# this columnar codec. Group channels into whole float32 slots the codec
-# accepts, largest first, so every chunk is encodable on the wire.
-_SLOT_FLOATS: Final[tuple[int, ...]] = (16, 12, 8, 6, 5, 4, 3, 2, 1)
-_BASE_IDENTIFIER: Final[int] = 0x100
-
-
-def _pack_slots(count: int) -> list[int]:
-    parts: list[int] = []
-    remaining = count
-    while remaining > 0:
-        take = max(size for size in _SLOT_FLOATS if size <= remaining)
-        parts.append(take)
-        remaining -= take
-    return parts
+_ONE_SECOND_US: Final[int] = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
 class CanChunk:
-    """Manifest entry for one CAN-FD frame on the wire."""
+    """Manifest entry for one CAN-FD frame on the wire.
+
+    ``t_s`` is the simulated instant of the *sample* the payload carries, not the
+    release that put the frame on the bus: a message whose period is shorter than
+    the run's frame interval holds the newest value it has, and two releases can
+    then share one sample time. The release cadence lives in
+    :attr:`BusPlan.schedule`, which is what the wire realizes.
+    """
 
     t_s: float
     channels: tuple[str, ...]
@@ -91,6 +88,8 @@ class BusPlan:
     """Contract-derived CAN schedule for one run, in simulation time only.
 
     ``specs`` packs every periodic contract channel by its declared rate;
+    ``channels`` is the channel layout those specs carry, index for index, so the
+    encoder can bind a scheduled message to the values a run sampled;
     ``schedule`` realizes those releases over the run's simulated span with
     identifier-priority arbitration; ``utilisation`` is the serialized bus
     occupancy at ``bitrate_bps``. No wall clock is read anywhere.
@@ -101,6 +100,7 @@ class BusPlan:
     utilisation: float = 0.0
     duration_us: int = 0
     bitrate_bps: int = DEFAULT_BITRATE_BPS
+    channels: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,44 +296,134 @@ def process_to_parquet(
     return frames, tuple(annotations)
 
 
-def encode_canfd(frames: Sequence[SensorFrame]) -> tuple[tuple[bytes, ...], tuple[CanChunk, ...]]:
-    """Pack processed frames column-wise into decodable CAN-FD payloads."""
+@dataclass(frozen=True, slots=True)
+class _WireMessage:
+    """One scheduled message bound to the channels a run actually sampled."""
+
+    identifier: int
+    period_us: int
+    channels: tuple[str, ...]
+
+
+def _wire_layout(
+    specs: Sequence[MessageSpec],
+    channel_groups: Sequence[Sequence[str]],
+    sampled: frozenset[str],
+) -> tuple[_WireMessage, ...]:
+    """Bind each scheduled rate to the channels this run sampled, fastest rate first.
+
+    Every message keeps the identifier and period the schedule gave it. Channels are
+    packed per rate by :func:`~f1telemetry.telemetry.bus.pack_slot_counts`, in contract
+    order, so a run that sampled a whole rate reproduces the planned frames exactly -
+    same count, same identifiers, same DLCs. A run that sampled part of one emits
+    fewer, shorter frames under that rate's leading identifiers, and one frame per
+    release either way, so the emitted stream is the schedule rather than a reshuffle
+    of it.
+
+    Two honest edges. A rate whose sampled channels happen to pack into *more* legal
+    DLC frames than the contract scheduled for that rate - a subset of 13 channels
+    needs two frames where the full 16 fit in one - has no identifier left to use, so
+    its surplus frame rides the rate's lowest-priority identifier: the values all reach
+    the wire, at the cost of one extra frame's overhead per release. And a rate with
+    nothing sampled emits nothing, because there is no value to put on the wire for it.
+    """
+    identifiers: dict[int, list[int]] = {}
+    channels_by_rate: dict[int, list[str]] = {}
+    for spec, group in zip(specs, channel_groups, strict=True):
+        identifiers.setdefault(spec.period_us, []).append(spec.identifier)
+        channels_by_rate.setdefault(spec.period_us, []).extend(
+            name for name in group if name in sampled
+        )
+    messages: list[_WireMessage] = []
+    # Ascending period is ascending identifier: the schedule hands faster traffic the
+    # lower, higher-priority identifiers, so this walks the bus in arbitration order.
+    for period_us in sorted(identifiers):
+        available = identifiers[period_us]
+        names = channels_by_rate[period_us]
+        offset = 0
+        for index, take in enumerate(pack_slot_counts(len(names))):
+            identifier = available[min(index, len(available) - 1)]
+            messages.append(
+                _WireMessage(identifier, period_us, tuple(names[offset : offset + take]))
+            )
+            offset += take
+    return tuple(messages)
+
+
+def encode_canfd(
+    frames: Sequence[SensorFrame],
+    specs: Sequence[MessageSpec],
+    channel_groups: Sequence[Sequence[str]],
+    *,
+    duration_us: int,
+) -> tuple[tuple[bytes, ...], tuple[CanChunk, ...]]:
+    """Realize a scheduled bus plan on the wire: one CAN-FD frame per release.
+
+    ``specs`` and ``channel_groups`` are the contract schedule and its channel
+    layout, index for index, as :func:`f1telemetry.telemetry.bus.bus_plan_for_record`
+    returns them. Each message is released every ``period_us`` from ``t = 0`` while
+    the release falls inside ``[0, duration_us)`` - the same releases, and only
+    those, that :func:`~f1telemetry.telemetry.bus.schedule` realizes over the same
+    window - and each release carries the newest sample at or before it. One frame per
+    release, under the scheduled identifier, with a rolling counter of its own, in the
+    plan's arbitration order (release instant, then identifier).
+
+    So a run that samples every contract channel at its declared rate puts exactly
+    the scheduled traffic on the bus: same identifiers, same periods, same DLCs, one
+    frame per release. A run that samples faster than a message's period holds the
+    newest value for the extra releases, and its ``CanChunk`` timestamps stay the
+    sample times, which is what keeps the manifest the authority on when a value was
+    measured. A run that samples a rate only partly sends shorter frames under the
+    leading identifiers of that rate.
+
+    Channels the contract never schedules - event channels, or names outside it -
+    have no scheduled message and do not reach the wire.
+    """
+    if len(specs) != len(channel_groups):
+        raise ValueError("specs and channel_groups must describe the same schedule")
+    if duration_us < 0:
+        raise ValueError("duration_us must be non-negative")
+    if not frames or not specs:
+        return (), ()
+    sampled = frozenset(frames[0].values)
+    times = [round(float(frame.t_s) * _ONE_SECOND_US) for frame in frames]
+    releases: list[tuple[int, int, tuple[str, ...], int]] = []
+    for message in _wire_layout(specs, channel_groups, sampled):
+        for release_us in range(0, duration_us, message.period_us):
+            # Newest sample at or before this release; a release before the run's
+            # first sample has nothing to carry and is left off the wire.
+            index = bisect.bisect_right(times, release_us) - 1
+            if index >= 0:
+                releases.append((release_us, message.identifier, message.channels, index))
+    releases.sort()
     wire: list[bytes] = []
     manifest: list[CanChunk] = []
-    counter = 0
-    chunk_index = 0
-    for frame in frames:
-        names = sorted(frame.values)
-        timestamp_us = round(float(frame.t_s) * 1_000_000)
-        for group in _iter_chunks(names):
-            payload = struct.pack(f"<{len(group)}f", *(float(frame.values[n]) for n in group))
-            wire.append(
-                encode_frame(
-                    _BASE_IDENTIFIER + chunk_index,
-                    counter,
-                    timestamp_us,
-                    payload,
-                )
-            )
-            manifest.append(CanChunk(t_s=float(frame.t_s), channels=tuple(group)))
-            counter = next_counter(counter)
-            chunk_index += 1
+    counters: dict[int, int] = {}
+    for _release_us, identifier, channels, index in releases:
+        sample = frames[index]
+        payload = struct.pack(
+            f"<{len(channels)}f", *(float(sample.values[name]) for name in channels)
+        )
+        counter = counters.get(identifier, 0)
+        wire.append(
+            encode_frame(identifier, counter, round(float(sample.t_s) * _ONE_SECOND_US), payload)
+        )
+        manifest.append(CanChunk(t_s=float(sample.t_s), channels=channels))
+        counters[identifier] = next_counter(counter)
     return tuple(wire), tuple(manifest)
-
-
-def _iter_chunks(names: Sequence[str]) -> list[tuple[str, ...]]:
-    groups: list[tuple[str, ...]] = []
-    offset = 0
-    for take in _pack_slots(len(names)):
-        groups.append(tuple(names[offset : offset + take]))
-        offset += take
-    return groups
 
 
 def decode_canfd_values(
     wire: Sequence[bytes], manifest: Sequence[CanChunk]
 ) -> list[tuple[float, dict[str, float]]]:
-    """Decode wire frames back into ``(t_s, {channel: value})`` pairs."""
+    """Decode wire frames back into ``(t_s, {channel: value})`` pairs.
+
+    One sample time appears on several messages, and can appear twice on one message
+    when that message's period is shorter than the run's frame interval, so the result
+    is a stream to be merged rather than a table indexed by time. A channel whose
+    message has not released yet simply does not appear, which is what holding a
+    scheduled message's value between releases looks like from this side.
+    """
     if len(wire) != len(manifest):
         raise ValueError("wire/manifest length mismatch")
     out: list[tuple[float, dict[str, float]]] = []
@@ -356,8 +446,9 @@ def bus_plan_for_record(
 
     The duration comes from the record's simulation timestamps
     (``frames[-1].t_s - frames[0].t_s + dt_s``), so replaying the same
-    record always yields the same releases. Frame encoding itself is
-    unchanged; this only schedules the declared rates and measures load.
+    record always yields the same releases. The plan carries the channel
+    layout as well as the specs, because :func:`encode_canfd` realizes it on
+    the wire rather than re-deriving it.
     """
     contract = load_channel_contract() if contract is None else contract
     specs = message_specs_from_contract(contract)
@@ -370,7 +461,9 @@ def bus_plan_for_record(
         return BusPlan((), (), 0.0, duration_us, bitrate_bps)
     utilisation = bus_utilisation(specs, bitrate_bps)
     events = schedule(specs, duration_us, bitrate_bps) if duration_us else ()
-    return BusPlan(specs, events, utilisation, duration_us, bitrate_bps)
+    return BusPlan(
+        specs, events, utilisation, duration_us, bitrate_bps, channel_groups_from_contract(contract)
+    )
 
 
 def run_bridge(
@@ -386,7 +479,8 @@ def run_bridge(
     frames, annotations = process_to_parquet(
         record, contract, seed=seed, active_faults=active_faults
     )
-    wire, manifest = encode_canfd(frames)
+    plan = bus_plan_for_record(record, contract, bitrate_bps=bitrate_bps)
+    wire, manifest = encode_canfd(frames, plan.specs, plan.channels, duration_us=plan.duration_us)
     processed_record = SampleRecord(
         name=record.name,
         dt_s=record.dt_s,
@@ -409,7 +503,7 @@ def run_bridge(
         canfd_manifest=manifest,
         parquet=parquet,
         name_order=tuple(frames[0].values) if frames else (),
-        bus_plan=bus_plan_for_record(record, contract, bitrate_bps=bitrate_bps),
+        bus_plan=plan,
     )
 
 
