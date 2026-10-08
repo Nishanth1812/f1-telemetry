@@ -109,3 +109,64 @@ Files produced (new, no existing files changed):
 
 (The plot script used to generate the PNG was a throwaway and is not committed; rerun
 `load_tumftm_track` + `minimum_curvature_offsets` + `speed_profile` to reproduce.)
+
+## 8. P4-T10 — lap-time plausibility (loose band only)
+
+Task `PHASES.md:210`: lap-time plausibility vs published circuit records —
+loose band, the model is not validated yet, but a wild miss means a bug.
+
+**Solved-profile lap time** at the §4 parameters (`lateral_accel_m_s2 = 7.5`,
+§7 reproduction solve), integrated kinematically from the profile knots as
+`Σ 2·ds / (v_i + v_{i+1})` — the exact constant-acceleration segment time,
+matching the algebra of the profile's own braking/traction constraints:
+
+| Solve | Waypoints | Lap length | Lap time | Average speed |
+| --- | --- | --- | --- | --- |
+| Documented reproduction (`subsample_every=30`) | 41 | 5777 m | **159.6 s (2:39.6)** | 36.2 m/s (≈130 km/h) |
+| Density cross-check (`subsample_every=10`) | 119 | 5875 m | 144.4 s (2:24.4) | 40.7 m/s (≈146 km/h) |
+
+Profile verified at every knot: lateral ≤ 7.5 m/s², braking and traction
+slack ≥ 0, speeds finite, relaxation converged.  The 41-waypoint QP itself
+did not fully converge (objective 0.0347, 500/500 iterations; forced to
+`converged=True` for the demonstration exactly as §3 documents), so this is
+a near-optimal-line estimate, and the two rows bracket the sampling
+sensitivity (§5).
+
+**Cited record:** Wikipedia, *Silverstone Circuit* — Arena Grand Prix Circuit
+(2011–present; 5.891 km, 18 turns, the layout this conversion approximates):
+race lap record **1:27.097** (87.1 s, average 67.6 m/s ≈ 244 km/h),
+Max Verstappen (Red Bull RB16), 2020 British Grand Prix.
+<https://en.wikipedia.org/wiki/Silverstone_Circuit> (accessed 2026-10-08).
+
+**Ratio:** 159.6 s / 87.1 s ≈ **1.83×** the record (144.4 s / 87.1 s ≈
+1.66× at the denser solve).  Loose band: **~1.7–1.8× the 2020 F1 lap
+record**.  The fictional-fixture closed-loop times in `docs/phase3-5-demo.md`
+(88.44 s `coastal_loop`, 108.11 s `technical_ring`) are different, fictional
+circuits measured with the closed-loop reference driver — not comparable to
+either number.
+
+**Reason for the gap (expected slowness, not a bug):**
+
+- **Derated lateral target.** 7.5 m/s² (0.76 g) is the measured P2 synthetic
+  capability (`docs/phase2-demo.md`); a modern F1 car exceeds 5 g through the
+  Maggotts/Becketts esses (Wikipedia, "A lap in a Formula One car").  Corner
+  speed scales as `sqrt(lateral_accel)`, so through the same radius the model
+  runs at roughly `sqrt(7.5/45) ≈ 40%` of F1 speed, and cornering dominates
+  a Silverstone lap.
+- **Synthetic, uncalibrated coefficients.** `max_accel_m_s2=6.0`,
+  `max_brake_m_s2=25.0`, `max_speed_m_s=85.0` and the synthetic
+  `car_spec.yaml` aero/torque are not calibrated to any real car or to
+  Silverstone conditions (§6).
+- **Solver/sampling limitations.** The QP does not fully converge on this
+  geometry (§5); the coarse 41-waypoint spline creates a curvature-spike
+  artifact near the final complex (implied radius 7.7 m at s≈5752 m, driving
+  the 7.6 m/s minimum — the 119-waypoint solve gives 34.8 m/s there), which
+  is most of the difference between the two rows.  The geometry is
+  OSM-derived, planar (no elevation), with satellite-imagery widths, and is
+  not a licensed F1 layout (§1).
+
+**Plausibility verdict.** The tightest modeled point (R≈10.7 m at s≈1045 m,
+*The Loop* area — the circuit's slowest corner per Wikipedia, approached at
+56 mph by F1) and the 7.5 m/s² lateral ceiling behave like a real 0.76 g
+car, so ~1.7–1.8× the record is a credible uncalibrated-model band, not a
+wild miss: no bug indicated.
