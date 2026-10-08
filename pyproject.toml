@@ -17,6 +17,7 @@ dependencies = [
 f1-codegen = "f1telemetry.codegen.__main__:main"
 f1-check-contract = "f1telemetry.codegen.__main__:main_check"
 f1-serve = "f1telemetry.server:main"
+f1-sweep = "f1telemetry.testing.sweep:main"
 
 [dependency-groups]
 dev = [
