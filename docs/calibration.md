@@ -661,6 +661,14 @@ current result still misses the reference substantially, and the source audit fo
 official launch target, so the P1 performance gate remains open. The transient maximum passes the
 reachability floor; terminal speed has no event-trap target.
 
+Lever experiment (2026-10-08, measured, no spec change): halving the sub-4000 rpm turbo-lag cut
+(0.35 → 0.675) leaves 0–100 at 4.0919 s — the launch never drops below 4000 rpm (`idle_rpm`
+is the floor and the multiplier bites only strictly below it), so the lever cannot act without
+moving `idle_rpm` or the threshold, both separate scope decisions. `shift_up_rpm` 11000
+worsens the crossing to 4.1700 s; 12000 is indistinguishable from 12500. The ICE-only tail
+is intact (MGU-K zero, 8th gear over the final 41 s). The gap stays at +1.77 s; the torque-curve
+shape itself remains the untested rank-1 lever, with no public source curve to calibrate against.
+
 ## Phase 1 deterministic scenarios
 
 The kernel scenarios use caller-owned torque histories and fixed `car_spec.yaml` coefficients.
