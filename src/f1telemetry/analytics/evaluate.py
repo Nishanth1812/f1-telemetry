@@ -1,7 +1,8 @@
 """P7 evaluation harness: clean + faulted records through Layers 0-3.
 
-PLAN.md section 9.1, tasks P7-T9/T10/T12. Deterministic and dependency-free:
-no ML, no physics, no kernels. Every record is built from the channel
+PLAN.md section 9.1, tasks P7-T9/T10/T12. Deterministic: no physics, no
+kernels. The one learned baseline is scikit-learn's Isolation Forest with a
+fixed ``random_state``. Every record is built from the channel
 contract (``channels.yaml``) plus the seeded fault primitives in
 :mod:`f1telemetry.telemetry.sensors`, and every threshold comes from the
 contract or from a clean calibration window. Injected faults are never in
@@ -20,12 +21,13 @@ near-identical ones. Metrics per case, per baseline:
   fallback; ``swap`` accepts either corner),
 * false-alarm rate on clean records, in alarms per hour.
 
-Baselines, reported side by side: ``l2`` (single-window T2/Q exceedance)
-and ``l2+persistence`` (k-of-n confirmation). A third baseline,
-``l2+persistence+isolationforest``, is included automatically when
-``sklearn`` is importable; it is not a project dependency (see
-``pyproject.toml``), so this module never imports it and no new dependency
-is added. The gap is documented in the generated report instead.
+Baselines, reported side by side: ``l2`` (single-window T2/Q exceedance),
+``l2+persistence`` (k-of-n confirmation) and ``l2+persistence+isolationforest``
+(an Isolation Forest fitted on the clean calibration window's standardised
+residuals, alarmed on its own calibration-quantile threshold and then passed
+through the same k-of-n rule). The Isolation Forest is included when
+``sklearn`` is importable; it is a project dependency (see ``pyproject.toml``),
+and it is imported lazily so the classical baselines never touch it.
 
 ``docs/detection.md`` is generated from this harness, never hand-edited::
 
@@ -39,14 +41,16 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
 from f1telemetry.analytics.multivariate import (
+    DEFAULT_LEVEL,
     MultivariateModel,
     MultivariateSample,
     fit_multivariate,
@@ -74,12 +78,17 @@ from f1telemetry.telemetry.sensors import (
 )
 from f1telemetry.testing.records import SensorFrame
 
+if TYPE_CHECKING:
+    from sklearn.ensemble import IsolationForest
+
 __all__ = [
     "BASELINE_L2",
     "BASELINE_L2_PERSISTENCE",
     "BASELINE_L2_PERSISTENCE_IFOREST",
     "DT_S",
     "EVALUATION_CHANNELS",
+    "IF_N_ESTIMATORS",
+    "IF_RANDOM_STATE",
     "NEGATIVE_CONTROL_SEED",
     "N_FRAMES",
     "ONSET_INDEX",
@@ -92,12 +101,16 @@ __all__ = [
     "BaselineSummary",
     "DetectionCell",
     "EvaluationReport",
+    "IsolationGate",
+    "IsolationSample",
     "NegativeControlResult",
     "baseline_names",
     "calibration_frames",
     "evaluate_all",
     "fit_evaluation_model",
+    "fit_isolation_gate",
     "has_sklearn",
+    "isolation_samples",
     "make_clean_frames",
     "make_faulted_frames",
     "make_negative_control_frames",
@@ -123,6 +136,8 @@ SEEDS: Final[tuple[int, ...]] = (11, 22, 33)
 NEGATIVE_CONTROL_SEED: Final[int] = 99
 PERSISTENCE_K: Final[int] = 2
 PERSISTENCE_N: Final[int] = 3
+IF_N_ESTIMATORS: Final[int] = 100
+IF_RANDOM_STATE: Final[int] = 0
 
 _CALIBRATION_ZPAIRS: Final[tuple[tuple[float, float], ...]] = (
     (1.0, 1.0),
@@ -137,6 +152,35 @@ _NEGATIVE_CONTROL_RAMP_C: Final[float] = 0.5
 
 
 @dataclass(frozen=True, slots=True)
+class IsolationGate:
+    """Isolation Forest fitted on the clean calibration window's standardised vectors.
+
+    ``model`` supplies the Layer 2 standardisation so the feature vector is the
+    same ``(y - mu) / sigma`` the manifold sees. An alarm is a score strictly
+    below ``threshold``; lower scores are more anomalous.
+    """
+
+    model: MultivariateModel
+    estimator: IsolationForest
+    threshold: float
+
+
+@dataclass(frozen=True, slots=True)
+class IsolationSample:
+    """One frame's Isolation Forest score and its k-of-n persisted alarm.
+
+    ``attributed`` is the channel whose reset to its calibration mean raises the
+    estimator's normality score the most, or ``None`` when no reset helps.
+    """
+
+    index: int
+    score: float
+    alarm: bool
+    persisted: bool
+    attributed: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class LayerOutputs:
     """Everything Layers 0-3 compute for one record."""
 
@@ -145,6 +189,7 @@ class LayerOutputs:
     scores: tuple[MultivariateSample, ...]
     exceeds: tuple[bool, ...]
     persisted: tuple[bool, ...]
+    isolation: tuple[IsolationSample, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +295,100 @@ def calibration_frames(contract: ChannelContract) -> tuple[SensorFrame, ...]:
 def fit_evaluation_model(contract: ChannelContract) -> MultivariateModel:
     """Fit Layer 2 on the clean calibration window only."""
     return fit_multivariate(calibration_frames(contract), EVALUATION_CHANNELS, contract)
+
+
+def _standardised(frame: SensorFrame, model: MultivariateModel) -> list[float] | None:
+    """Layer 2 z-vector for one frame, or ``None`` when a model channel is unusable."""
+    row: list[float] = []
+    for name, mean, sigma in zip(model.channels, model.means, model.sigmas, strict=True):
+        value = frame.values.get(name)
+        if value is None or not math.isfinite(value):
+            return None
+        row.append((value - mean) / sigma)
+    return row
+
+
+def fit_isolation_gate(
+    frames: Sequence[SensorFrame],
+    model: MultivariateModel,
+    *,
+    level: float = DEFAULT_LEVEL,
+) -> IsolationGate:
+    """Fit the Isolation Forest on clean calibration ``frames`` only.
+
+    The threshold is the ``1 - level`` quantile of the calibration scores, the
+    lower-tail mirror of Layer 2's upper-quantile threshold. With six frames
+    ``max_samples`` resolves to six, so every tree sees the whole window: a
+    deliberately small fit, documented in the report, not a tuned one.
+    """
+    # Imported here so the classical baselines never touch sklearn.
+    from sklearn.ensemble import IsolationForest
+
+    rows: list[list[float]] = []
+    for index, frame in enumerate(frames):
+        row = _standardised(frame, model)
+        if row is None:
+            msg = f"calibration frame {index} has no usable value for the isolation features"
+            raise ValueError(msg)
+        rows.append(row)
+    matrix = np.array(rows, dtype=float)
+    estimator = IsolationForest(
+        n_estimators=IF_N_ESTIMATORS,
+        max_samples="auto",
+        random_state=IF_RANDOM_STATE,
+    )
+    estimator.fit(matrix)
+    calibration_scores = estimator.score_samples(matrix)
+    return IsolationGate(
+        model=model,
+        estimator=estimator,
+        threshold=float(np.quantile(calibration_scores, 1.0 - level)),
+    )
+
+
+def isolation_samples(
+    frames: Sequence[SensorFrame],
+    gate: IsolationGate,
+    *,
+    k: int = PERSISTENCE_K,
+    n: int = PERSISTENCE_N,
+) -> tuple[IsolationSample, ...]:
+    """Score ``frames`` with the gate; frames with unusable values are skipped.
+
+    Attribution is leave-one-channel-out on the estimator score: each channel is
+    reset to its calibration mean in turn and the channel whose reset gives the
+    largest normality gain is named. Persistence is applied across the scored
+    frames in order, the same way Layer 3 treats the Layer 2 flags.
+    """
+    indexed: list[tuple[int, list[float]]] = []
+    for index, frame in enumerate(frames):
+        row = _standardised(frame, gate.model)
+        if row is not None:
+            indexed.append((index, row))
+    if not indexed:
+        return ()
+    matrix = np.array([row for _, row in indexed], dtype=float)
+    scores = gate.estimator.score_samples(matrix)
+    gains = np.zeros(matrix.shape, dtype=float)
+    for column in range(matrix.shape[1]):
+        reset = matrix.copy()
+        reset[:, column] = 0.0
+        gains[:, column] = gate.estimator.score_samples(reset) - scores
+    alarms = tuple(float(score) < gate.threshold for score in scores)
+    persisted = persistent_alarms(alarms, k=k, n=n)
+    samples: list[IsolationSample] = []
+    for position, (index, _row) in enumerate(indexed):
+        best = int(np.argmax(gains[position]))
+        samples.append(
+            IsolationSample(
+                index=index,
+                score=float(scores[position]),
+                alarm=alarms[position],
+                persisted=persisted[position],
+                attributed=gate.model.channels[best] if gains[position, best] > 0.0 else None,
+            )
+        )
+    return tuple(samples)
 
 
 def make_clean_frames(
@@ -379,19 +518,26 @@ def run_layers(
     frames: Sequence[SensorFrame],
     model: MultivariateModel,
     contract: ChannelContract,
+    gate: IsolationGate | None = None,
 ) -> LayerOutputs:
-    """Run Layers 0-3 over one record in frame order."""
+    """Run Layers 0-3 over one record in frame order.
+
+    ``gate`` is only needed for the Isolation Forest baseline; without it the
+    ``isolation`` field is ``None`` and the classical baselines are unchanged.
+    """
     findings = check_validity(frames, contract)
     residuals = residual_z_scores(frames, contract)
     scores = score_multivariate(frames, model)
     exceeds = tuple(sample.t2_exceeds or sample.q_exceeds for sample in scores)
     persisted = persistent_alarms(exceeds, k=PERSISTENCE_K, n=PERSISTENCE_N)
+    isolation = None if gate is None else isolation_samples(frames, gate)
     return LayerOutputs(
         findings=findings,
         residuals=residuals,
         scores=scores,
         exceeds=exceeds,
         persisted=persisted,
+        isolation=isolation,
     )
 
 
@@ -410,11 +556,10 @@ def _alarm_indices(outputs: LayerOutputs, baseline: str) -> tuple[int, ...]:
             if flag
         )
     if baseline == BASELINE_L2_PERSISTENCE_IFOREST:
-        # sklearn is not a project dependency, so this baseline never runs here.
-        # If sklearn ever becomes available this branch must implement the
-        # Isolation Forest gate before it can be claimed.
-        msg = "isolation-forest baseline needs sklearn, which is not installed"
-        raise ValueError(msg)
+        if outputs.isolation is None:
+            msg = "isolation-forest baseline needs an IsolationGate passed to run_layers"
+            raise ValueError(msg)
+        return tuple(sample.index for sample in outputs.isolation if sample.persisted)
     msg = f"unknown baseline {baseline!r}"
     raise ValueError(msg)
 
@@ -428,6 +573,14 @@ def _attribute_channel(outputs: LayerOutputs, index: int) -> str | None:
     for channel in at_index:
         if channel != "t_s":
             return channel
+    return None
+
+
+def _isolation_attribution(outputs: LayerOutputs, index: int) -> str | None:
+    """Estimator-score attribution at one frame, as scored by the Isolation Forest."""
+    for sample in outputs.isolation or ():
+        if sample.index == index:
+            return sample.attributed
     return None
 
 
@@ -458,7 +611,10 @@ def _evaluate_case(
             correctly_localised=False,
         )
     detection = alarms[0]
-    attributed = _attribute_channel(outputs, detection)
+    if baseline == BASELINE_L2_PERSISTENCE_IFOREST:
+        attributed = _isolation_attribution(outputs, detection)
+    else:
+        attributed = _attribute_channel(outputs, detection)
     expected = _expected_channels(fault_type)
     return CaseOutcome(
         fault_type=fault_type,
@@ -496,6 +652,11 @@ def evaluate_all(contract: ChannelContract | None = None) -> EvaluationReport:
     resolved = load_channel_contract(channels_yaml_path()) if contract is None else contract
     model = fit_evaluation_model(resolved)
     baselines = baseline_names()
+    gate = (
+        fit_isolation_gate(calibration_frames(resolved), model)
+        if BASELINE_L2_PERSISTENCE_IFOREST in baselines
+        else None
+    )
     fault_types = tuple(FAULT_TYPES_ORDERED)
 
     outcomes: list[CaseOutcome] = []
@@ -503,7 +664,7 @@ def evaluate_all(contract: ChannelContract | None = None) -> EvaluationReport:
         for severity in SEVERITIES:
             for seed in SEEDS:
                 frames = make_faulted_frames(resolved, fault_type, severity, seed)
-                outputs = run_layers(frames, model, resolved)
+                outputs = run_layers(frames, model, resolved, gate)
                 for baseline in baselines:
                     outcomes.append(
                         _evaluate_case(
@@ -542,7 +703,7 @@ def evaluate_all(contract: ChannelContract | None = None) -> EvaluationReport:
         clean_frames = 0
         for seed in SEEDS:
             clean = make_clean_frames(resolved, seed)
-            clean_outputs = run_layers(clean, model, resolved)
+            clean_outputs = run_layers(clean, model, resolved, gate)
             clean_alarms += len(_alarm_indices(clean_outputs, baseline))
             clean_frames += len(clean)
         total_hours = clean_frames * DT_S / 3600.0
@@ -559,7 +720,7 @@ def evaluate_all(contract: ChannelContract | None = None) -> EvaluationReport:
         )
 
     control_frames = make_negative_control_frames(resolved)
-    control_outputs = run_layers(control_frames, model, resolved)
+    control_outputs = run_layers(control_frames, model, resolved, gate)
     control_results = tuple(
         NegativeControlResult(
             baseline=baseline,
@@ -713,22 +874,34 @@ def render_markdown(report: EvaluationReport) -> str:
         ]
     )
     if report.sklearn_available:
-        lines.append(
-            "sklearn is importable in this environment, so the "
-            f"`{BASELINE_L2_PERSISTENCE_IFOREST}` column above is measured."
+        lines.extend(
+            [
+                f"The `{BASELINE_L2_PERSISTENCE_IFOREST}` column is scikit-learn's "
+                f"IsolationForest (`n_estimators={IF_N_ESTIMATORS}`, "
+                f"`random_state={IF_RANDOM_STATE}`), fit on the six clean calibration "
+                "frames only. Its feature vector is the Layer 2 standardised pair, "
+                "so the forest sees the same `(y - mu) / sigma` the manifold does. "
+                "The alarm threshold is the calibration window's own "
+                f"{1.0 - DEFAULT_LEVEL:.3f} score quantile, the lower-tail mirror "
+                "of Layer 2's upper-quantile threshold, and the same k-of-n "
+                "persistence rule as the other columns applies.",
+                "",
+                "Caveats. `max_samples` resolves to the calibration size, so each "
+                "tree sees every calibration frame: a six-point fit is a thin "
+                "basis, not a learned density. Attribution is the estimator-score "
+                "gain from resetting one channel to its calibration mean. The "
+                "hyperparameters were fixed before the sweep and not tuned on it. "
+                "The sweep is simulated, so this is not a held-out real-data result.",
+            ]
         )
     else:
         lines.extend(
             [
-                "sklearn is not a project dependency (`pyproject.toml` carries "
-                "no scikit-learn entry), so only two baselines are reported: "
-                f"`{BASELINE_L2}` and `{BASELINE_L2_PERSISTENCE}`. No new "
-                "dependency was added for this harness. The missing third "
-                "column from PLAN.md section 9.1 "
-                f"(`{BASELINE_L2_PERSISTENCE_IFOREST}`) stays an open gap: "
-                "adding it requires a deliberate dependency decision plus a "
-                "held-out comparison showing it beats Layer 2 + persistence, "
-                "honestly reported either way.",
+                "scikit-learn is not importable in this environment, so the "
+                f"`{BASELINE_L2_PERSISTENCE_IFOREST}` column is omitted and only "
+                f"`{BASELINE_L2}` and `{BASELINE_L2_PERSISTENCE}` are reported. "
+                "scikit-learn is a declared project dependency, so a synced "
+                "environment should always produce the full table.",
             ]
         )
     lines.extend(

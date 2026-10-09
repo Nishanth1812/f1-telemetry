@@ -13,14 +13,21 @@ import pytest
 from f1telemetry.analytics.evaluate import (
     BASELINE_L2,
     BASELINE_L2_PERSISTENCE,
+    BASELINE_L2_PERSISTENCE_IFOREST,
+    IF_N_ESTIMATORS,
+    IF_RANDOM_STATE,
     ONSET_INDEX,
     SEEDS,
     SEVERITIES,
     TARGET_CHANNEL,
+    DetectionCell,
     baseline_names,
+    calibration_frames,
     evaluate_all,
     fit_evaluation_model,
+    fit_isolation_gate,
     has_sklearn,
+    isolation_samples,
     make_faulted_frames,
     render_markdown,
 )
@@ -113,14 +120,100 @@ def test_attribution_names_the_faulted_channel_on_step(contract: ChannelContract
 
 
 @pytest.mark.analytics
-def test_two_baselines_without_sklearn_gap_documented(contract: ChannelContract) -> None:
+def test_three_baselines_reported_and_gap_section_documented(contract: ChannelContract) -> None:
     report = evaluate_all(contract)
     assert report.baselines == baseline_names()
     text = render_markdown(report)
-    if not has_sklearn():
+    assert "## Isolation Forest gap" in text
+    if has_sklearn():
+        assert report.baselines == (
+            BASELINE_L2,
+            BASELINE_L2_PERSISTENCE,
+            BASELINE_L2_PERSISTENCE_IFOREST,
+        )
+        assert f"`n_estimators={IF_N_ESTIMATORS}`" in text
+        assert f"`random_state={IF_RANDOM_STATE}`" in text
+    else:
         assert report.baselines == (BASELINE_L2, BASELINE_L2_PERSISTENCE)
-        assert "not a project dependency" in text
+        assert "is not importable" in text
     assert "Negative control" in text
+
+
+@pytest.mark.analytics
+def test_isolation_forest_is_deterministic_under_fixed_random_state(
+    contract: ChannelContract,
+) -> None:
+    model = fit_evaluation_model(contract)
+    calibration = calibration_frames(contract)
+    frames = make_faulted_frames(contract, "step", 1.0, SEEDS[0])
+    first = fit_isolation_gate(calibration, model)
+    second = fit_isolation_gate(calibration, model)
+    assert first.threshold == second.threshold
+    assert isolation_samples(frames, first) == isolation_samples(frames, second)
+
+
+@pytest.mark.analytics
+def test_isolation_forest_fits_only_the_clean_calibration_window(
+    contract: ChannelContract,
+) -> None:
+    model = fit_evaluation_model(contract)
+    calibration = calibration_frames(contract)
+    gate = fit_isolation_gate(calibration, model)
+    # Six calibration frames: max_samples resolves to all of them, as documented.
+    assert gate.estimator.max_samples_ == len(calibration) == 6
+    scores = [sample.score for sample in isolation_samples(calibration, gate)]
+    assert len(scores) == len(calibration)
+    # The threshold is a lower-tail quantile of the same six scores, so it lies
+    # inside their range.
+    assert min(scores) <= gate.threshold <= max(scores)
+
+
+@pytest.mark.analytics
+def test_isolation_forest_alarms_on_one_of_its_own_calibration_frames(
+    contract: ChannelContract,
+) -> None:
+    # Measured, not tuned away. A quantile of six points interpolates just above
+    # the calibration minimum, so the most anomalous clean frame falls below the
+    # threshold. The classical baselines are not asserted here; this pins only the
+    # IF gate's own calibration behaviour.
+    model = fit_evaluation_model(contract)
+    calibration = calibration_frames(contract)
+    gate = fit_isolation_gate(calibration, model)
+    alarms = [sample.alarm for sample in isolation_samples(calibration, gate)]
+    assert alarms.count(True) == 1
+
+
+@pytest.mark.analytics
+def test_isolation_forest_misses_step_that_classical_baselines_catch(
+    contract: ChannelContract,
+) -> None:
+    report = evaluate_all(contract)
+
+    def find(baseline: str) -> DetectionCell:
+        return next(
+            found
+            for found in report.cells
+            if found.fault_type == "step" and found.severity == 1.0 and found.baseline == baseline
+        )
+
+    assert find(BASELINE_L2).miss_rate == pytest.approx(0.0)
+    assert find(BASELINE_L2_PERSISTENCE).miss_rate == pytest.approx(0.0)
+    assert find(BASELINE_L2_PERSISTENCE_IFOREST).miss_rate == pytest.approx(1.0)
+
+
+@pytest.mark.analytics
+def test_isolation_forest_summary_is_worse_than_classical_on_the_sweep(
+    contract: ChannelContract,
+) -> None:
+    report = evaluate_all(contract)
+    summaries = {summary.baseline: summary for summary in report.summaries}
+    isolation = summaries[BASELINE_L2_PERSISTENCE_IFOREST]
+    assert isolation.miss_rate == pytest.approx(1.0)
+    assert isolation.miss_rate > summaries[BASELINE_L2].miss_rate
+    assert isolation.miss_rate > summaries[BASELINE_L2_PERSISTENCE].miss_rate
+    # Zero clean false alarms is not evidence of quality for this column: it misses
+    # every sweep fault too, so it is silent on clean records for the same reason.
+    assert isolation.clean_false_alarms == 0
 
 
 @pytest.mark.analytics

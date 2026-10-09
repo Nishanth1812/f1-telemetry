@@ -11,6 +11,7 @@ dependencies = [
   "pyyaml>=6.0.2,<7",
   "pyarrow>=19,<26",
   "websockets>=14,<16",
+  "scikit-learn>=1.9,<2",
 ]
 
 [project.scripts]
