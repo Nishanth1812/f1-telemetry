@@ -6,6 +6,8 @@ import { EventPanel } from './components/EventPanel';
 import { LapBar } from './components/LapBar';
 import { TileGrid } from './components/TileGrid';
 import { TracePanel } from './components/TracePanel';
+import { RunComparison } from './components/RunComparison';
+import { Scrubber } from './components/Scrubber';
 import { TyreBlock } from './components/TyreBlock';
 import { useTelemetrySocket } from './hooks/useTelemetrySocket';
 
@@ -34,6 +36,8 @@ export function App() {
           <AnomalyPanel />
         </div>
         <TracePanel />
+        <RunComparison />
+        <Scrubber />
         <EventPanel />
       </main>
     </div>
