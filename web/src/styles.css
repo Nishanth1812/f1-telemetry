@@ -5,6 +5,12 @@
   --text: #e6edf3;
   --text-muted: #9aa7b4;
   --accent: #58a6ff;
+  /* Sector hues shared by the lap bar canvas and the table legend, so a colour
+     and the sector it labels cannot drift apart. */
+  --sector-1: #58a6ff;
+  --sector-2: #d2a8ff;
+  --sector-3: #3fb950;
+  --sector-delta: #d8a026;
   --trace-surface: #0d1117;
   --trace-line: #58a6ff;
   --trace-grid: rgba(255, 255, 255, 0.12);
@@ -525,6 +531,490 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* --- Anomaly panel (P8-T7) -------------------------------------------------
+   Severity, contribution, latency and persistence. Every figure here is a
+   computed statistic; the styling exists so a silent detector reads as calm and
+   a tripped one reads immediately. */
+
+.anomaly {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+}
+
+.anomaly__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.anomaly__heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.anomaly__note {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.anomaly__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px;
+  margin: 0;
+}
+
+.anomaly__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.anomaly__stat--wide {
+  grid-column: 1 / -1;
+}
+
+.anomaly__stat dt {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.anomaly__stat dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.anomaly__limit {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.anomaly__state {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.anomaly__windows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.anomaly__window {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.anomaly__window--hit {
+  border-color: transparent;
+  background: var(--idle);
+}
+
+.anomaly__windows--tripped .anomaly__window--hit {
+  background: var(--warn);
+}
+
+.anomaly__windows--quiet .anomaly__window--hit {
+  background: var(--idle);
+}
+
+.anomaly__alarm {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--idle);
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.anomaly__alarm:has(.anomaly__badge--open) {
+  border-left-color: var(--bad);
+}
+
+.anomaly__alarm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.anomaly__badge {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: var(--surface-raised);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.anomaly__badge--open {
+  background: var(--bad);
+  color: var(--surface);
+}
+
+.anomaly__badge--closed {
+  color: var(--text-muted);
+}
+
+.anomaly__alarm-stat {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.anomaly__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 3px 12px;
+  margin: 0;
+}
+
+.anomaly__fact {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.anomaly__fact dt {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.anomaly__fact dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.anomaly__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.anomaly__breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.anomaly__breakdown caption {
+  color: var(--text-muted);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 0.7rem;
+  text-align: left;
+  padding-bottom: 3px;
+}
+
+.anomaly__breakdown th,
+.anomaly__breakdown td {
+  padding: 2px 6px 2px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.anomaly__breakdown th[scope='col'] {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.anomaly__breakdown th[scope='row'],
+.anomaly__breakdown thead th:first-child {
+  text-align: left;
+  font-weight: 400;
+}
+
+.anomaly__share--lead {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.anomaly__share--negative {
+  color: var(--accent);
+}
+
+.anomaly__share--neutral {
+  color: var(--text-muted);
+}
+
+.anomaly__row--empty {
+  opacity: 0.4;
+}
+
+.anomaly__recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.anomaly__recent-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.anomaly__recent-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.anomaly__footnote,
+.lap__footnote {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+/* --- Lap bar (P8-T8) ------------------------------------------------------- */
+
+.lap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+}
+
+.lap__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.lap__heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.lap__note {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.lap__readouts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 4px;
+  margin: 0;
+}
+
+.lap__readout {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.lap__key {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.lap__value {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lap__delta--slow {
+  color: var(--warn);
+}
+
+.lap__delta--fast {
+  color: var(--ok);
+}
+
+.lap__delta--even,
+.lap__delta--none {
+  color: var(--text-muted);
+}
+
+.lap__figure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.lap__canvas {
+  display: block;
+  width: 100%;
+  height: 116px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--trace-surface);
+}
+
+.lap__caption,
+.lap__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.lap__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.lap__swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.lap__swatch--1 {
+  background: var(--sector-1);
+}
+
+.lap__swatch--2 {
+  background: var(--sector-2);
+}
+
+.lap__swatch--3 {
+  background: var(--sector-3);
+}
+
+.lap__swatch--delta {
+  background: var(--sector-delta);
+}
+
+.lap__current {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lap__current-label {
+  color: var(--text-muted);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.lap__current-sector .lap__key {
+  margin-right: 4px;
+}
+
+.lap__verdict {
+  padding: 1px 6px;
+  border-radius: 2px;
+  border-left: 3px solid var(--idle);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 0.7rem;
+}
+
+.lap__verdict--consistent {
+  border-left-color: var(--ok);
+}
+
+.lap__verdict--unreconciled,
+.lap__verdict--out-of-range {
+  border-left-color: var(--bad);
+}
+
+.lap__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lap__table caption {
+  color: var(--text-muted);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 0.7rem;
+  text-align: left;
+  padding-bottom: 3px;
+}
+
+.lap__table th,
+.lap__table td {
+  padding: 2px 6px 2px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.lap__table th[scope='col'] {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.lap__table th[scope='row'] {
+  text-align: left;
+  font-weight: 400;
+}
+
+.lap__indicator {
+  text-align: left;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.lap__indicator--consistent {
+  color: var(--ok);
+}
+
+.lap__indicator--unreconciled,
+.lap__indicator--out-of-range {
+  color: var(--bad);
+}
+
+.lap__indicator--unmeasured {
+  color: var(--text-muted);
+}
+
 @media (max-width: 480px) {
   .tile-grid {
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -533,5 +1023,10 @@ body {
 
   .connection__stats {
     gap: 4px 10px;
+  }
+
+  .lap__table,
+  .anomaly__breakdown {
+    font-size: 0.68rem;
   }
 }

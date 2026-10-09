@@ -1,7 +1,9 @@
 import { AeroBlock } from './components/AeroBlock';
+import { AnomalyPanel } from './components/AnomalyPanel';
 import { BrakeBlock } from './components/BrakeBlock';
 import { ConnectionIndicator } from './components/ConnectionIndicator';
 import { EventPanel } from './components/EventPanel';
+import { LapBar } from './components/LapBar';
 import { TileGrid } from './components/TileGrid';
 import { TracePanel } from './components/TracePanel';
 import { TyreBlock } from './components/TyreBlock';
@@ -26,6 +28,10 @@ export function App() {
           <TyreBlock />
           <BrakeBlock />
           <AeroBlock />
+        </div>
+        <div className="app__blocks">
+          <LapBar />
+          <AnomalyPanel />
         </div>
         <TracePanel />
         <EventPanel />
