@@ -124,6 +124,73 @@ throughput for coarser torque-control responsiveness, which is acceptable for of
 but would degrade live-control fidelity. Reaching 50× would require control intervals of ~5000
 steps (500 ms simulated per control interval), beyond practical limits for closed-loop control.
 
+## Headless runner — `testing.headless.run_headless`
+
+**Measured on this machine.** Method: throwaway local script (not committed), plus the committed
+`tests/test_headless.py`, which measures the same thing. Both paths get two warm-up runs first (to
+absorb Numba JIT compile) and then 9 timed repetitions with `time.perf_counter`; minimum, median and
+maximum are all reported because the machine was not idle and the spread is wide. Same scenario
+objects from `build_scenarios`, same `KernelConfig`, no `control_law`.
+
+**`accelerate_to_speed`, 7.0 s sim, 70,000 kernel steps:**
+
+| Path | min | median | max | µs/step (min) | real-time factor (min) |
+|---|---|---|---|---|---|
+| `scenarios.run_scenario` | 13.92 s | 19.16 s | 28.26 s | 198.9 | 0.50× |
+| `testing.headless.run_headless` | 2.18 s | 3.48 s | 6.38 s | 31.2 | 3.21× |
+
+- **Measured speedup: 6.4× (min/min), 5.5× (median/median).**
+- Reference wall time here (13.9–28.3 s) brackets the ~25 s quoted above, so the machine's load
+  accounts for the spread rather than the two numbers describing different work.
+
+**`steady_state_circle`, 1.0 s sim, 10,000 kernel steps (steering path):**
+
+| Path | min | median | max | µs/step (min) | real-time factor (min) |
+|---|---|---|---|---|---|
+| `scenarios.run_scenario` | 1.29 s | 1.85 s | 3.08 s | 128.7 | 0.78× |
+| `testing.headless.run_headless` | 0.25 s | 0.30 s | 0.36 s | 25.0 | 4.00× |
+
+- **Measured speedup: 5.2× (min/min), 6.1× (median/median).** The shorter run shows the same factor
+  with a much tighter spread, which is the best evidence that the speedup is the schedule and not a
+  lucky sample.
+
+**Where the time went, and what it bought.** A `cProfile` pass over `run_scenario` on the same
+scenario attributes its overhead to per-kernel-step *validation*, not to arithmetic:
+`step_gearbox` (6.8 s cumulative), `step_mgu_k` (4.3 s) and `step_ice_torque` (3.4 s) were 70,000
+calls each, and each re-checked the config's finiteness, the ratio table, the ICE torque curve and
+the MGU-K deployment curves before handing already-validated numbers to a compiled step.
+`step_ice_torque` alone was called 70,700 times to produce a value that is constant across a
+control interval.
+
+`run_headless` keeps the kernel, the drivetrain steps and the record assembler exactly as they
+are, and moves the re-derivation of their inputs from per step to per segment: one compiled call
+per control interval drives the same `gearbox._step_gearbox` / `powertrain._step_mgu_k` primitives,
+and each segment's inputs are validated once through the public entry points on scratch state
+copies before any run step is taken. No coefficient, `dt_s`, `CONTROL_STEPS` or arithmetic order
+changed. `tests/test_headless.py` asserts `trace.tobytes()`, every drivetrain column, every step
+output and the whole assembled `SampleRecord` are byte-identical to `run_scenario` on both
+scenarios, so this is a scheduling change and not a physics one.
+
+**The P6 >50× gate is not met, and this document does not claim it is.** The honest measured factor
+is roughly **5–6×**, from 0.50× to ~3.2× real time; reaching 50× would still need another ~16×.
+What remains after this change is not the stepping loop. A profile of the headless path puts
+`_energy_residual_fraction` first (1.21 s of a 4.16 s profiled run, one Python loop over 100 kernel
+steps per recorded frame) and thermal next (`_celsius_to_kelvin` and its validation helpers,
+~0.7 s each) — the record post-pass, which this path deliberately reuses unchanged so that the
+record it emits is byte-identical to the reference runner's. The kernel itself is ~0.5 s of it.
+Options that would move the number further, none of them taken here:
+
+- **Compile the record post-pass.** `_energy_residual_fraction` and the thermal trace are the
+  remaining Python loops and are the largest single target left. Making them compiled would keep
+  the arithmetic but would be a second implementation of an invariant's assembly, which is exactly
+  the risk the byte-identity assertion above is there to prevent.
+- **Make the record optional on this path.** A headless run that only needs the trace could skip
+  the post-pass entirely, for roughly the post-pass's share of the remaining time. That changes
+  `ScenarioRun`'s contract, so it is a design decision rather than an optimisation.
+- **Coarsen the control interval.** Unchanged here on purpose: the byte-identity claim and the
+  100 Hz declared control rate both depend on `CONTROL_STEPS` staying at 100, and a run that
+  matched no reference trace would not be worth the throughput.
+
 ## What is not yet measured
 
 - WebSocket end-to-end latency (server broadcast → decoded frame in the browser).
