@@ -163,16 +163,19 @@ class Frame:
     events: tuple[FrameEvent, ...] = ()
     samples: tuple[Frame, ...] = ()
 
-    def to_wire(self) -> dict[str, object]:
-        """JSON-ready payload, matching ``TelemetryFrame`` in the web client."""
+    def to_wire(self, *, include_samples: bool = True) -> dict[str, object]:
+        """JSON-ready payload, optionally omitting full-rate samples for snapshot clients."""
         payload: dict[str, object] = {
             "time_us": int(self.time_us),
             "channels": {name: float(value) for name, value in self.channels.items()},
         }
         if self.events:
             payload["events"] = [event.to_wire() for event in self.events]
-        if self.samples:
-            payload["samples"] = [sample.to_wire() for sample in self.samples]
+        if include_samples:
+            if self.samples:
+                payload["samples"] = [sample.to_wire() for sample in self.samples]
+        else:
+            payload["snapshot_only"] = True
         return payload
 
     def value(self, name: str) -> float:

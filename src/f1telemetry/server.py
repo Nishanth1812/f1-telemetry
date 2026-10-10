@@ -36,10 +36,12 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import signal
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 
@@ -47,6 +49,7 @@ from f1telemetry.contracts.channels import load_channel_contract
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
 from f1telemetry.telemetry.pipeline import read_annotations
 from f1telemetry.testing.replay import ReplaySource
+from f1telemetry.testing.scenario_lab import ScenarioLabError, run_lab_request
 
 __all__ = [
     "DEFAULT_HOST",
@@ -64,6 +67,8 @@ DEFAULT_PATH = "/ws"
 _CHUNK_US = 1_000_000
 """Simulated microseconds pulled from the source per pass. Bounds generator lag only."""
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"})
+_MAX_COMMAND_BYTES = 2_048
+_LOGGER = logging.getLogger(__name__)
 
 
 class TransportError(ValueError):
@@ -113,7 +118,9 @@ class TelemetryServer:
         self._path: str = path
         self._max_hz: float = max_hz
         self._clients: set[ServerConnection] = set()
+        self._detailed_clients: set[ServerConnection] = set()
         self._stop: asyncio.Event | None = None
+        self._scenario_lock = asyncio.Lock()
 
     @property
     def url(self) -> str:
@@ -138,7 +145,13 @@ class TelemetryServer:
         self._stop = asyncio.Event() if stop is None else stop
         loop = asyncio.get_running_loop()
         try:
-            async with serve(self._handle, self._host, self._port, compression=None) as server:
+            async with serve(
+                self._handle,
+                self._host,
+                self._port,
+                compression=None,
+                max_size=_MAX_COMMAND_BYTES,
+            ) as server:
                 self._port = _bound_port(server, self._port)
                 await self._pump(loop)
         finally:
@@ -184,10 +197,24 @@ class TelemetryServer:
         # allow_nan=False is a third guard: json would happily emit the invalid token
         # NaN, which the browser's JSON.parse rejects and the store counts as
         # malformed. Fail here instead of shipping a frame nobody can decode.
-        payload = json.dumps(frame.to_wire(), separators=(",", ":"), allow_nan=False)
+        detailed_payload = (
+            json.dumps(frame.to_wire(), separators=(",", ":"), allow_nan=False)
+            if self._detailed_clients
+            else None
+        )
+        snapshot_payload = json.dumps(
+            frame.to_wire(include_samples=False), separators=(",", ":"), allow_nan=False
+        )
         targets = tuple(self._clients)
         results = await asyncio.gather(
-            *(connection.send(payload) for connection in targets),
+            *(
+                connection.send(
+                    detailed_payload
+                    if connection in self._detailed_clients and detailed_payload is not None
+                    else snapshot_payload
+                )
+                for connection in targets
+            ),
             return_exceptions=True,
         )
         for connection, result in zip(targets, results, strict=True):
@@ -195,16 +222,78 @@ class TelemetryServer:
                 self._clients.discard(connection)
 
     async def _handle(self, connection: ServerConnection) -> None:
-        """Hold the connection open until the client goes away."""
+        """Publish live frames and accept bounded requests from local browser pages."""
         request = connection.request
         if request is not None and request.path != self._path:
             await connection.close(code=1008, reason=f"this endpoint serves {self._path}")
             return
+        if request is not None and not _loopback_origin(request.headers.get("Origin")):
+            await connection.close(code=1008, reason="browser origin must be localhost")
+            return
         self._clients.add(connection)
         try:
-            await connection.wait_closed()
+            async for message in connection:
+                await self._handle_command(connection, message)
         finally:
             self._clients.discard(connection)
+            self._detailed_clients.discard(connection)
+
+    async def _handle_command(self, connection: ServerConnection, message: str | bytes) -> None:
+        """Run one small scenario request off the event loop and return its result."""
+        if not isinstance(message, str) or len(message.encode("utf-8")) > _MAX_COMMAND_BYTES:
+            await self._send_scenario_error(connection, None, "Request is too large.")
+            return
+        try:
+            request = json.loads(message)
+        except json.JSONDecodeError:
+            await self._send_scenario_error(connection, None, "Request must be valid JSON.")
+            return
+        if not isinstance(request, dict):
+            await self._send_scenario_error(connection, None, "Request must be a JSON object.")
+            return
+        if request.get("type") == "telemetry_detail":
+            if set(request) != {"type", "enabled"} or not isinstance(request.get("enabled"), bool):
+                await self._send_scenario_error(
+                    connection, None, "Invalid telemetry detail setting."
+                )
+                return
+            if request["enabled"]:
+                self._detailed_clients.add(connection)
+            else:
+                self._detailed_clients.discard(connection)
+            return
+        if request.get("type") != "scenario_run":
+            await self._send_scenario_error(connection, None, "Unknown dashboard request.")
+            return
+        request_id = request.get("request_id")
+        try:
+            if self._scenario_lock.locked():
+                raise ScenarioLabError(
+                    "A scenario is already running. Wait for it to finish first."
+                )
+            async with self._scenario_lock:
+                result = await asyncio.to_thread(run_lab_request, request)
+        except ScenarioLabError as error:
+            await self._send_scenario_error(connection, request_id, str(error))
+        except Exception:
+            _LOGGER.exception("Scenario Lab run failed")
+            await self._send_scenario_error(
+                connection, request_id, "The run failed. Check that the server is still running."
+            )
+        else:
+            await connection.send(json.dumps(result, separators=(",", ":"), allow_nan=False))
+
+    @staticmethod
+    async def _send_scenario_error(
+        connection: ServerConnection, request_id: object, detail: str
+    ) -> None:
+        safe_id = request_id if isinstance(request_id, str) else None
+        await connection.send(
+            json.dumps(
+                {"type": "scenario_error", "request_id": safe_id, "error": detail},
+                separators=(",", ":"),
+            )
+        )
 
     async def _close_clients(self) -> None:
         connections = tuple(self._clients)
@@ -226,6 +315,24 @@ def _bound_port(server: Server, fallback: int) -> int:
     if not sockets:
         return fallback
     return int(sockets[0].getsockname()[1])
+
+
+def _loopback_origin(origin: str | None) -> bool:
+    """Allow non-browser clients and pages served from a loopback host only."""
+    if origin is None:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        hostname = (parsed.hostname or "").lower()
+        _ = parsed.port
+        return (
+            parsed.scheme in {"http", "https"}
+            and parsed.username is None
+            and parsed.password is None
+            and hostname in _LOOPBACK_HOSTS
+        )
+    except ValueError:
+        return False
 
 
 def replay_source(path: Path) -> ReplaySource:

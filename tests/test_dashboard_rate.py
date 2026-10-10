@@ -264,3 +264,20 @@ def test_unusable_sample_values_never_enter_a_batch_and_legacy_frames_are_unchan
     # A frame constructed without a batch is byte-identical to the legacy payload.
     legacy = Frame(time_us=1_234, channels={"fast": 1.5, "slow": 2.5})
     assert legacy.to_wire() == {"time_us": 1_234, "channels": {"fast": 1.5, "slow": 2.5}}
+
+
+def test_snapshot_clients_can_omit_the_full_rate_sample_batch(tmp_path: Path) -> None:
+    """The dashboard can keep live values without parsing history it is not displaying."""
+    contract = _write(tmp_path / "fast.yaml", fast_hz=_FAST_HZ, slow_hz=_SLOW_HZ)
+    frame = next(iter(load_source(contract).iter_frames(_ONE_SECOND_US)))
+
+    snapshot = frame.to_wire(include_samples=False)
+
+    assert "samples" in frame.to_wire()
+    assert "samples" not in snapshot
+    assert snapshot["snapshot_only"] is True
+    assert snapshot["channels"] == frame.to_wire()["channels"]
+    assert (
+        Frame(time_us=1, channels={"speed": 1.0}).to_wire(include_samples=False)["snapshot_only"]
+        is True
+    )
