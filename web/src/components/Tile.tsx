@@ -1,29 +1,34 @@
 import { memo } from 'react';
+import { CHANNELS, type ChannelSpec } from '../generated/channels';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
 
-export const Tile = memo(function Tile({ name }: { name: string }) {
+export const Tile = memo(function Tile({ name, hint }: { name: string; hint?: string }) {
   const value = useTelemetryStore((state) =>
     state.frame === null ? undefined : state.frame.channels[name],
   );
-  const diagnostics = useTelemetryStore((state) => state.diagnostics);
-  const channelDiagnostics = diagnostics === null ? undefined : diagnostics.channels[name];
+  const spec = (CHANNELS as Record<string, ChannelSpec | undefined>)[name];
+  const sampleRate = spec?.rateHz;
   return (
     <li
       className="tile"
       data-channel={name}
-      data-sample-count={channelDiagnostics === undefined ? 0 : channelDiagnostics.count}
-      data-declared-hz={channelDiagnostics?.declaredHz ?? ''}
+      data-declared-hz={sampleRate ?? ''}
     >
       <span className="tile__name" title={name}>
         {name}
       </span>
       <span className="tile__value">{value === undefined ? '-' : formatValue(value)}</span>
       <span className="tile__meta">
-        {channelDiagnostics === undefined
-          ? 'no samples yet'
-          : `${channelDiagnostics.declaredHz === null ? 'auto' : `${channelDiagnostics.declaredHz} Hz`} declared · observed ${channelDiagnostics.observedHz.toFixed(1)} Hz (sample timestamps) · ${channelDiagnostics.count} samples`}
+        {sampleRate === null || sampleRate === undefined
+          ? 'event-based channel'
+          : `${sampleRate} Hz sensor`}
       </span>
+      {hint !== undefined ? (
+        <span className="tile__hint-caption" title={hint} aria-label={hint}>
+          {hint}
+        </span>
+      ) : null}
     </li>
   );
 });
