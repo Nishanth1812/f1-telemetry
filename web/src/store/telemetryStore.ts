@@ -199,10 +199,12 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
       // Ingest the actual periodic sample batch when present; the frame
       // snapshot itself is the legacy fallback only. Never both, or the
       // snapshot would be counted twice.
-      const units = frame.samples !== undefined ? frame.samples : [frame];
-      for (const unit of units) {
-        state.history.push(unit);
-        ingestCounters(unit.time_us, unit.channels);
+      if (frame.snapshot_only !== true) {
+        const units = frame.samples !== undefined ? frame.samples : [frame];
+        for (const unit of units) {
+          state.history.push(unit);
+          ingestCounters(unit.time_us, unit.channels);
+        }
       }
       lastSampleFrameTimeUs = frame.time_us;
       const frameCount = state.frameCount + 1;

@@ -1,13 +1,14 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, memo } from 'react';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
+import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
 const WINDOW_OPTIONS = [5, 10, 30, 60] as const;
 const STATS_INTERVAL_MS = 250;
 const GRID_ROWS = 4;
 const PADDING = { top: 12, right: 76, bottom: 22, left: 10 };
 
-export function TracePanel() {
+const TracePanelComponent = () => {
   const channelNames = useTelemetryStore((state) => state.channelNames);
   const [channel, setChannel] = useState('');
   const [windowSeconds, setWindowSeconds] = useState(10);
@@ -39,13 +40,11 @@ export function TracePanel() {
     const grid = styles.getPropertyValue('--trace-grid').trim() || 'rgba(255,255,255,0.14)';
     const text = styles.getPropertyValue('--trace-text').trim() || '#9aa7b4';
     const windowUs = windowSeconds * 1e6;
-    let request = 0;
     let lastStatsAt = 0;
 
     const inWindow = (time: number, latestUs: number) => time >= latestUs - windowUs;
 
     const draw = (now: number) => {
-      request = requestAnimationFrame(draw);
       const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
@@ -180,8 +179,7 @@ export function TracePanel() {
       }
     };
 
-    request = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(request);
+    return startVisibleCanvasLoop(canvas, draw);
   }, [activeChannel, windowSeconds]);
 
   const empty = channelNames.length === 0;
@@ -239,4 +237,6 @@ export function TracePanel() {
       </figure>
     </section>
   );
-}
+};
+
+export const TracePanel = memo(TracePanelComponent);

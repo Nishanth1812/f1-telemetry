@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, memo } from 'react';
 import { CHANNELS } from '../generated/channels';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
+import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
 /**
  * Active aero panel (PLAN.md section 8.4): mode, front and rear wing flap
@@ -60,7 +61,7 @@ function css(styles: CSSStyleDeclaration, name: string, fallback: string): strin
   return styles.getPropertyValue(name).trim() || fallback;
 }
 
-export function AeroBlock() {
+const AeroBlockComponent = () => {
   const headingId = useId();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const summaryRef = useRef<HTMLSpanElement | null>(null);
@@ -96,7 +97,6 @@ export function AeroBlock() {
     let plotHeight = 4;
     let lanesTop = 0;
     let modeColour = zColour;
-    let request = 0;
     let lastSummaryAt = 0;
     let times: Float64Array | null = null;
     let values: Float32Array | null = null;
@@ -167,7 +167,6 @@ export function AeroBlock() {
     };
 
     const draw = (now: number): void => {
-      request = requestAnimationFrame(draw);
       const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
@@ -308,8 +307,7 @@ export function AeroBlock() {
       }
     };
 
-    request = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(request);
+    return startVisibleCanvasLoop(canvas, draw);
   }, []);
 
   const mode = modeOf(aeroMode);
@@ -353,4 +351,6 @@ export function AeroBlock() {
       </figure>
     </section>
   );
-}
+};
+
+export const AeroBlock = memo(AeroBlockComponent);

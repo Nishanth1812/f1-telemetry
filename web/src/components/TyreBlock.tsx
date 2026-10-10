@@ -3,6 +3,7 @@ import { cornerChannels } from '../generated/channels';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
 import type { TelemetryFrame } from '../telemetry/types';
+import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
 /**
  * Four-corner tyre panel (PLAN.md section 8.4).
@@ -10,7 +11,7 @@ import type { TelemetryFrame } from '../telemetry/types';
  * Live numbers come from the throttled store snapshot through plain selectors,
  * the same contract Tile relies on, so React never holds a sample. The dense
  * part - thirty seconds of carcass temperature and slip ratio per corner - is
- * drawn on canvas in one requestAnimationFrame loop that reads the per-channel
+ * drawn on canvas in one bounded visible-canvas loop that reads the per-channel
  * ring buffers directly. Decimation to the plot's pixel width happens in
  * TraceHistory.fill before anything reaches the canvas, and there is no React
  * state anywhere in the path.
@@ -149,7 +150,6 @@ export function TyreBlock() {
     let startUs = 0;
     let plotLeft = PADDING.left;
     let plotWidth = 2;
-    let request = 0;
     let lastSummaryAt = 0;
 
     const makeBuffers = (table: CornerTable): TraceBuffer[] =>
@@ -327,7 +327,6 @@ export function TyreBlock() {
     };
 
     const draw = (now: number): void => {
-      request = requestAnimationFrame(draw);
       const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
@@ -397,8 +396,7 @@ export function TyreBlock() {
       }
     };
 
-    request = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(request);
+    return startVisibleCanvasLoop(canvas, draw);
   }, []);
 
   const corners = [

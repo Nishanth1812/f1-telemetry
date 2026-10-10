@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, memo } from 'react';
 import { cornerChannels } from '../generated/channels';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
 import type { TelemetryFrame } from '../telemetry/types';
+import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
 /**
  * Per-corner brake disc temperature (PLAN.md section 8.4).
@@ -93,7 +94,7 @@ function css(styles: CSSStyleDeclaration, name: string, fallback: string): strin
   return styles.getPropertyValue(name).trim() || fallback;
 }
 
-export function BrakeBlock() {
+const BrakeBlockComponent = () => {
   const headingId = useId();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const summaryRef = useRef<HTMLSpanElement | null>(null);
@@ -126,7 +127,6 @@ export function BrakeBlock() {
     let startUs = 0;
     let plotLeft = PADDING.left;
     let plotWidth = 2;
-    let request = 0;
     let lastSummaryAt = 0;
 
     const buffers: TraceBuffer[] = BRAKE_TEMP.map((channel, index) => ({
@@ -206,7 +206,6 @@ export function BrakeBlock() {
       top + height - ((value - band.low) / (band.high - band.low)) * height;
 
     const draw = (now: number): void => {
-      request = requestAnimationFrame(draw);
       const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
@@ -355,8 +354,7 @@ export function BrakeBlock() {
       }
     };
 
-    request = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(request);
+    return startVisibleCanvasLoop(canvas, draw);
   }, []);
 
   const corners = [
@@ -413,4 +411,6 @@ export function BrakeBlock() {
       </figure>
     </section>
   );
-}
+};
+
+export const BrakeBlock = memo(BrakeBlockComponent);

@@ -21,6 +21,7 @@ export interface TelemetrySample {
 export interface TelemetryFrame extends TelemetrySample {
   events?: FrameEvent[];
   samples?: TelemetrySample[];
+  snapshot_only?: boolean;
 }
 
 export type ConnectionStatus =
@@ -40,6 +41,7 @@ export function decodeFrame(payload: unknown): TelemetryFrame | null {
     channels?: unknown;
     events?: unknown;
     samples?: unknown;
+    snapshot_only?: unknown;
   };
   if (typeof candidate.time_us !== 'number' || !Number.isFinite(candidate.time_us)) {
     return null;
@@ -62,6 +64,12 @@ export function decodeFrame(payload: unknown): TelemetryFrame | null {
       return null;
     }
     frame.samples = samples;
+  }
+  if (candidate.snapshot_only !== undefined) {
+    if (typeof candidate.snapshot_only !== 'boolean') {
+      return null;
+    }
+    frame.snapshot_only = candidate.snapshot_only;
   }
   return frame;
 }
