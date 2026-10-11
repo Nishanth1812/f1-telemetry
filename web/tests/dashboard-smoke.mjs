@@ -162,12 +162,15 @@ try {
   await cdpCall('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1080, deviceScaleFactor: 1, mobile: false });
   await cdpCall('Page.navigate', { url: DASHBOARD_URL });
 
+  // Channel tiles live in the collapsed "Advanced" panel, which also switches on full-rate frames.
+  const OPEN_ADVANCED = `(() => { const d = document.querySelector('details.advanced-telemetry'); if (d && !d.open) d.open = true; return d !== null; })()`;
   const STATUS = `JSON.stringify({ c: document.querySelector('.connection')?.className ?? '', l: document.querySelector('.connection__label')?.textContent ?? '', t: document.querySelectorAll('ul.tile-grid li.tile[data-channel]').length, m: document.body.textContent.includes('Malformed') })`;
   let status = null;
   const readyDeadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < readyDeadline) {
+    await cdpCall('Runtime.evaluate', { expression: OPEN_ADVANCED });
     status = await evalJson(STATUS);
-    if (status.c.includes('connection--open') && (status.l === 'Live' || status.l === 'Reconnected') && status.t > 0) break;
+    if (status.c.includes('connection--open') && status.l.startsWith('Connected') && status.t > 0) break;
     await sleep(250);
   }
   assert.ok(status && status.c.includes('connection--open'), `no open connection within ${READY_TIMEOUT_MS} ms: ${JSON.stringify(status)}`);

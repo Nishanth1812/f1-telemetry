@@ -92,11 +92,14 @@ export const Tile = memo(function Tile({ name, hint }: { name: string; hint?: st
   );
   const spec = (CHANNELS as Record<string, ChannelSpec | undefined>)[name];
   const sampleRate = spec?.rateHz;
+  const diagnostics = useTelemetryStore((state) => state.diagnostics);
+  const channelDiagnostics = diagnostics === null ? undefined : diagnostics.channels[name];
   return (
     <li
       className="tile"
       data-channel={name}
-      data-declared-hz={sampleRate ?? ''}
+      data-sample-count={channelDiagnostics === undefined ? 0 : channelDiagnostics.count}
+      data-declared-hz={channelDiagnostics?.declaredHz ?? ''}
     >
       <span className="tile__name" title={name}>
         {channelLabel(name)}
@@ -110,7 +113,11 @@ export const Tile = memo(function Tile({ name, hint }: { name: string; hint?: st
       <span className="tile__meta">
         {sampleRate === null || sampleRate === undefined
           ? 'Sent only when an event happens'
-          : `Updates ${sampleRate} times a second`}
+          : `Updates ${sampleRate} times a second${
+              channelDiagnostics === undefined
+                ? ''
+                : ` · measured ${channelDiagnostics.observedHz.toFixed(0)}`
+            }`}
       </span>
       {hint !== undefined ? (
         <span className="tile__hint-caption" title={hint} aria-label={hint}>

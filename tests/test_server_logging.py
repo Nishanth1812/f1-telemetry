@@ -6,7 +6,7 @@ import logging
 
 from websockets.exceptions import ConnectionClosedError
 
-from f1telemetry.server import _DroppedBeforeHandshake
+from f1telemetry.server import _DroppedBeforeHandshake  # pyright: ignore[reportPrivateUsage]
 
 
 def _handshake_record(error: BaseException) -> logging.LogRecord:

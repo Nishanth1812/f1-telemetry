@@ -51,10 +51,13 @@ def test_full_rate_batches_are_sent_only_to_detailed_clients() -> None:
         summary = Connection()
         detailed = Connection()
         server._clients.update(  # pyright: ignore[reportPrivateUsage]
-            (cast("ServerConnection", summary), cast("ServerConnection", detailed))
+            (
+                cast("ServerConnection", cast("object", summary)),
+                cast("ServerConnection", cast("object", detailed)),
+            )
         )
         server._detailed_clients.add(  # pyright: ignore[reportPrivateUsage]
-            cast("ServerConnection", detailed)
+            cast("ServerConnection", cast("object", detailed))
         )
         sample = Frame(time_us=0, channels={"speed": 1.0})
         frame = Frame(time_us=0, channels={"speed": 2.0}, samples=(sample,))

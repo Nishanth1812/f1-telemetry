@@ -160,7 +160,7 @@ jobs:
       - name: Measure live samples in Chrome
         run: |
           mkdir -p artifacts/dashboard
-          uv run f1-serve --host 127.0.0.1 > artifacts/dashboard/server.log 2>&1 &
+          uv run f1-serve --host 127.0.0.1 --noise > artifacts/dashboard/server.log 2>&1 &
           server_pid=$!
           npm run preview --prefix web -- --host 127.0.0.1 --port 4173 > artifacts/dashboard/preview.log 2>&1 &
           preview_pid=$!
