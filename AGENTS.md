@@ -10,6 +10,12 @@
 - Use the first available model in that role's sequence. If delegation fails because the model/provider is unavailable or returns an unusable result, record the failure and try the next listed model. Do not switch away from a still-running worker just because it is taking time, and do not start overlapping replacement work while the original task may still be active. If every listed option fails, continue as orchestrator where possible and report the limitation.
 - Give workers bounded, non-overlapping tasks with clear deliverables. Include the user's task constraints (for example, prohibitions on Python, tests, or simulations) in each delegated prompt. The orchestrator reviews worker results, reconciles changes, and verifies the integrated result. Use delegated child tasks, not ordinary top-level threads, for subagent work.
 
+## Haiku subagents (user preference, 2026-10-11)
+
+- When the user asks for subagents, or for work that splits into bounded file-level tasks, use Haiku subagents (`Agent` tool, `model: "haiku"`). This overrides the opencode role order above.
+- Give each subagent its own files, tell it not to run `git commit`/`stash`/`checkout`, and have it end with a final report. Verify its edits on disk (diff, tests, lint, types) before committing; its report is not evidence.
+- When the user says to push after finishing, push to `dev` once the checks pass.
+
 ## Commits
 
 - Commit completed, verified work in small logical milestones as it progresses; do not leave all commits until the whole phase is finished.
