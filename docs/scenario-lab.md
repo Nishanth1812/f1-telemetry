@@ -1,33 +1,40 @@
-# Scenario Lab design
+# Virtual tests and the live dashboard
 
-The dashboard opens with a 3-step guided flow: (1) Pick a run — choose from a standing launch,
-braking run, or constant-radius corner; (2) Change one thing — adjust the single bounded control
-(throttle, brake, or steering); (3) See the result — view peak speed, longitudinal and lateral
-g-force, the setting you changed, plus a compact speed and acceleration trace. Each result also
-shows a plain-English explanation for each metric (for example, "1 g equals your own body weight")
-and, when a previous result exists for the same scenario, a "What changed" line comparing the new
-launch to the previous one (e.g., "Peak speed 212.4 km/h, up 6.1 km/h from your last launch run").
+The dashboard is an engineer's view of one simulated Formula car. The **virtual test** bar at
+the top starts a controlled test; everything below it shows the car's telemetry live.
 
-The page labels these outputs from the project's uncalibrated simulation and includes a subtitle
-explaining the dashboard purpose in plain language. The connection status appears in the header
-as clear words: "Connected to the simulator" when open, or "Not connected - start the server"
-when idle. The Scenario Lab section is placed first, before the collapsible Advanced telemetry
-section.
+## What happens when you press Run test
 
-The existing telemetry WebSocket is loopback-only and already belongs to the dashboard. It will
-accept one small JSON request type on that connection and return a matching request ID with either
-a compact result or a readable error. The server accepts only the three named scenarios and one
-numeric setting in a fixed range; it constructs the scenario from the validated car specification
-and the existing deterministic runner. The request cannot supply code, paths, coefficients, or an
-arbitrary scenario document. Browser-origin checks remain loopback-only.
+1. The browser sends one small JSON request over the existing loopback-only telemetry WebSocket:
+   `{"type":"scenario_run","request_id","scenario_id","setting"}`. The server accepts only three
+   named tests (launch, braking, cornering) and one numeric setting in a fixed range. The request
+   cannot supply code, paths, coefficients, or an arbitrary scenario document.
+2. The server builds the scenario from the validated car spec and runs the deterministic headless
+   kernel (about 1-2 s of compute for a 7 s test). Repeating the same test gives the same output.
+3. The server replies with a compact `scenario_result` summary (or a readable `scenario_error`)
+   and queues the run's 100 Hz frames on `DrivenCarSource` (`src/f1telemetry/live_car.py`).
+4. That source replays the frames in real time through the same wire format the dashboard already
+   reads: a 30 Hz snapshot carrying the latest values, plus the full-rate samples the charts use.
+   When the test ends the last values stay on screen so tyre and brake state can be inspected.
 
-The current live telemetry and analysis panels move under a closed **Advanced telemetry** section.
-They mount only while open. Until then, the server sends 30 Hz snapshots without the full-rate
-sample batches, and the browser skips storing those snapshot-only frames in chart history. Opening
-the section subscribes that browser to detailed batches. Its canvas charts draw at a bounded rate
-and pause while offscreen or the document is hidden. The run view stays useful without the
-high-volume raw channel grid.
+Until the first test the car is at rest: the source repeats the standstill values. The clock only
+moves forward, so a second test follows the first. The browser clears its charts and event log
+when a new test starts.
 
-The visible success case is straightforward: choose a run, change its one control, press Run, and
-see the result; repeating the same choice yields the same simulation output. Invalid controls and
-failed runs produce a visible error while live telemetry remains connected.
+`f1-serve --noise` swaps in the old uniform-random contract generator, which only proves the
+per-channel rates and has nothing to do with the car's behaviour.
+
+## Page layout
+
+1. **Virtual test**: test buttons, the single setting, Run, and a status chip
+   ("Car at rest", "Driving: 3.2 / 7.0 s", "Test finished").
+2. **Live car data**: RPM, speed, gear, throttle, steering, lateral / longitudinal G and yaw rate.
+3. **Charts, tyres, brakes** (live while a test runs).
+4. **Model analysis**: anomaly warnings from the dashboard's detectors.
+5. **Last test result**: peak speed and g-forces, a comparison with the previous run of the same
+   test, and speed / acceleration traces. The simulation is uncalibrated, and runs where the car
+   slides sideways in a straight-line test are flagged as a model limit.
+6. **Advanced**: the raw channel grid, laps, events and scrubber, for engineers.
+
+Detailed full-rate batches are sent to the browser while the dashboard is open. Canvas charts draw
+at a bounded rate and pause while offscreen or the document is hidden.

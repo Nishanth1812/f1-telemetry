@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, memo } from 'react';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
+import { channelLabel } from './Tile';
 import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
 const WINDOW_OPTIONS = [5, 10, 30, 60] as const;
@@ -201,7 +202,7 @@ const TracePanelComponent = () => {
             {empty ? <option value="">No channels</option> : null}
             {channelNames.map((name) => (
               <option key={name} value={name}>
-                {name}
+                {channelLabel(name)}
               </option>
             ))}
           </select>

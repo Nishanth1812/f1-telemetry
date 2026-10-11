@@ -1,0 +1,128 @@
+/* Car health checks panel. Colours come from the dark theme variables in styles.css. */
+
+.health {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.health__intro {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.health__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.health__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.25em minmax(0, 1fr);
+  align-items: start;
+  gap: 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.health__row--ok {
+  border-left-color: var(--ok);
+}
+
+.health__row--warn {
+  border-left-color: var(--warn);
+  background: var(--warn-subtle);
+}
+
+.health__row--strong {
+  border-left-color: var(--bad);
+  background: var(--bad-subtle);
+}
+
+.health__row--nodata {
+  border-left-color: var(--text-faint);
+}
+
+.health__icon {
+  grid-row: 1 / span 4;
+  font-size: var(--text-base);
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.health__row--ok .health__icon {
+  color: var(--ok);
+}
+
+.health__row--warn .health__icon {
+  color: var(--warn);
+}
+
+.health__row--strong .health__icon {
+  color: var(--bad);
+}
+
+.health__row--nodata .health__icon {
+  color: var(--text-faint);
+}
+
+/* Screen-reader-only status word, so the state is not carried by colour or icon alone. */
+.health__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.health__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.health__title {
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.health__message {
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.health__detail {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.health__worst {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .health__row {
+    padding: var(--space-2);
+  }
+}

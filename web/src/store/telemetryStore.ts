@@ -52,6 +52,8 @@ export interface TelemetryState {
   markFailed: (detail: string) => void;
   applyFrame: (frame: TelemetryFrame) => void;
   countMalformed: (count: number) => void;
+  /** Start the charts and event log afresh, so a new test is not drawn after the last one. */
+  resetForRun: () => void;
 }
 
 const DIAGNOSTICS_INTERVAL_MS = 250;
@@ -254,4 +256,12 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
     });
   },
   countMalformed: (count) => set((state) => ({ malformedCount: state.malformedCount + count })),
+  resetForRun: () => {
+    set((state) => {
+      state.history.clear();
+      resetRawCounters();
+      lastEventChannelValues.clear();
+      return { events: [], diagnostics: null };
+    });
+  },
 }));

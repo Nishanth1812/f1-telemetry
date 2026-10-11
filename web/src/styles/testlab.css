@@ -1,0 +1,178 @@
+/* Virtual test bar. Colours come from the :root variables in styles.css. */
+
+.testlab {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+  color: var(--text);
+}
+
+.testlab__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.testlab__head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.testlab__chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.testlab__chip--busy {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent-strong);
+}
+
+.testlab__chip--ready {
+  border-color: var(--ok);
+  background: var(--ok-subtle);
+  color: var(--ok);
+}
+
+.testlab__chip--offline {
+  border-color: var(--bad);
+  background: var(--bad-subtle);
+  color: var(--bad);
+}
+
+.testlab__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.testlab__scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.testlab__choice {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.testlab__choice:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.testlab__choice[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent-strong);
+}
+
+.testlab__setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.testlab__setting input[type='range'] {
+  flex: 1 1 120px;
+  min-width: 100px;
+  accent-color: var(--accent);
+}
+
+.testlab__setting strong {
+  min-width: 7.5em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.testlab__run {
+  padding: 7px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.testlab__run:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.testlab__run:disabled,
+.testlab__choice:disabled,
+.testlab__setting input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.testlab__choice:focus-visible,
+.testlab__run:focus-visible,
+.testlab__setting input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.testlab__hint,
+.testlab__error {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.testlab__hint {
+  color: var(--text-muted);
+}
+
+.testlab__hint code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: var(--text-xs);
+}
+
+.testlab__error {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--bad);
+  background: var(--bad-subtle);
+  color: var(--bad);
+}
+
+.testlab-result {
+  display: grid;
+  gap: 10px;
+}
+
+.testlab-result__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text);
+}
