@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -57,6 +57,8 @@ from f1telemetry.physics import gearbox, powertrain
 from f1telemetry.physics.powertrain import RechargeEvent
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
 
 pytestmark = pytest.mark.powertrain
@@ -145,12 +147,10 @@ def test_the_curve_is_read_as_a_piecewise_linear_table(config: KernelConfig) -> 
 def test_the_turbo_multiplier_is_the_configured_value_below_the_threshold_and_one_at_or_above(
     config: KernelConfig,
 ) -> None:
-    """The reduction is checked from both sides of the number the file holds.
+    """The reduction is checked from both sides of the threshold.
 
-    One ULP below the threshold is the smallest step a caller can ask about, and it is enough to
-    catch an implementation that compares against the wrong side of it. The last two assertions
-    are the same claim at the torque level, so the multiplier is shown to divide the curve rather
-    than replace it.
+    One ULP below it catches an implementation that compares against the wrong side. The last
+    assertion shows the multiplier divides the curve rather than replacing it.
     """
     threshold = config.turbo_lag_collapse_rpm
     multiplier = config.turbo_lag_multiplier
@@ -201,18 +201,11 @@ def test_step_ice_torque_refuses_an_rpm_it_could_not_narrow_to_a_float(
     config: KernelConfig,
     rpm: float,
 ) -> None:
-    """Two ways an rpm fails, neither of which is the torque: not finite, or not a plain number.
+    """A NaN or infinite rpm is refused, as is a ``float32`` that is neither ``int`` nor ``float``.
 
-    A NaN rpm reaches the compiled lookup and comes back as a NaN torque: every comparison
-    against it is false, so the segment search never advances and the interpolation is handed a
-    NaN weight - a number rather than an error. The composed torque is what an integrator
-    multiplies by, so a NaN here is a run that looks like it finished. An infinity is the same
-    failure wearing a finite sign.
-
-    A ``float32`` is refused for a different reason, and a valid one: it is not an ``int`` or a
-    ``float``, so it would narrow to neither and compile a second Numba signature alongside the
-    ``float`` one. The caller narrows at the Python boundary instead, which is the same rule the
-    last test in this file pins from the other side.
+    A NaN makes every segment comparison false and comes back as a NaN torque, which an integrator
+    reads as a finished run. A ``float32`` would compile a second Numba signature, so the caller
+    narrows at the Python boundary instead.
     """
     with pytest.raises(ValueError, match="rpm"):
         powertrain.step_ice_torque(config, rpm)
@@ -251,11 +244,9 @@ def test_step_ice_torque_refuses_a_replaced_curve_it_could_not_read(
 ) -> None:
     """A replaced ``KernelConfig`` cannot get an unlookupable curve past the boundary.
 
-    ``ice_torque_nm`` is compiled with ``boundscheck=False``, so each of these returns a plausible
-    number rather than raising: an empty curve reads uninitialised memory, a mismatched length
-    reads past the end of ``torque_nm``, and a reversed axis finds a segment that is not there.
-    None of them can be caught downstream, because a wrong torque is exactly what the model is
-    asked to produce.
+    ``ice_torque_nm`` is compiled with ``boundscheck=False``, so each of these would return a
+    plausible number instead of raising: an empty curve reads uninitialised memory, a mismatched
+    length reads past the end, and a reversed axis finds a segment that is not there.
     """
     axis, values = config.torque_rpm, config.torque_nm
     repeated = axis.copy()
@@ -349,9 +340,8 @@ def test_the_ice_torque_reaches_the_rear_axle_without_the_synthetic_clutch_clamp
         offered_nm, rel=1e-12
     )
 
-    # And the same at a fraction of the pedal: the engine decides the torque through a closed
-    # clutch,
-    # so a half-throttle launch is half of it rather than the clamp or the demand.
+    # The same at a fraction of the pedal: through a closed clutch the engine sets the torque, so a
+    # half-throttle launch is half of it rather than the clamp or the demand.
     assert gearbox.step_gearbox(config, state, peak_rpm, 0.5) == pytest.approx(
         0.5 * offered_nm, rel=1e-12
     )
@@ -485,14 +475,10 @@ def test_a_greedy_engine_is_clipped_to_the_fuel_energy_flow_limit(config: Kernel
 def test_the_committed_ice_curve_is_not_clipped_by_the_fuel_energy_flow_limit(
     config: KernelConfig,
 ) -> None:
-    """The whole curve survives the cap at the committed efficiency, so the cap is a bound and not
-    a hidden calibration of the curve.
+    """The whole curve survives the cap at the committed efficiency, so the cap is a bound only.
 
-    A limit that quietly rewrote every torque the file holds would make this file's ICE tests
-    meaningless: ``test_the_curve_is_read_as_a_piecewise_linear_table`` compares the knots against
-    the file's own numbers, and a clip would pass that only if it never fired. Saying so here
-    means a later efficiency edit that does start clipping shows up as *this* test failing rather
-    than as every knot assertion quietly becoming about the clip.
+    If the cap started clipping, the knot tests would quietly become tests of the clip. This
+    test fails instead, pointing at the efficiency.
     """
     top_rpm = float(config.torque_rpm[-1])
     assert powertrain.step_ice_torque(config, top_rpm) == _torque(config, top_rpm), (
@@ -600,16 +586,12 @@ def test_the_c52_11_torque_cap_is_the_500_nm_crank_referenced_limit_and_not_the_
 ) -> None:
     """C5.2.11's 500 Nm is applied at the crankshaft, and C5.18.4's 520 Nm is nowhere in the path.
 
-    C5.2.11 states the limit on the MGU-K's mechanical torque *referenced to the crankshaft*. A
-    motor shaft spinning three times faster must carry one third the torque to deliver the same
-    power, and its crankshaft-equivalent torque is multiplied by the ratio. The returned value is
-    that equivalent torque, so a request above the cap is cut back to exactly 500 Nm, which makes
-    the test able to
-    distinguish 500 from 520 rather than merely to detect a cap.
+    C5.2.11 limits the MGU-K's torque *referenced to the crankshaft*, so the returned value is the
+    crankshaft-equivalent torque and a request above the cap is cut back to exactly 500 Nm. That
+    distinguishes 500 from 520 rather than merely detecting a cap.
 
-    C5.18.4's 520 Nm is the threshold above which an *optional* torque-limiting device may act. It
-    is not a second cap and is deliberately not read by the model at all: ``KernelConfig`` does not
-    carry it, so a 520 Nm cap could not be enforced even by accident.
+    C5.18.4's 520 Nm is the threshold for an *optional* device, not a second cap, so
+    ``KernelConfig`` does not carry it.
     """
     ratio = config.mgu_k_crankshaft_ratio
     assert config.mgu_k_torque_limit_nm == 500.0
@@ -839,8 +821,87 @@ def test_the_per_lap_recharge_limit_is_chosen_by_the_event_and_the_allowance_is_
     assert state[powertrain.SOC_INDEX] > 0.0, "a lap boundary is not a store reset"
 
 
+def _frozen_mgu_k_state(config: KernelConfig) -> np.ndarray:
+    frozen = powertrain.mgu_k_initial_state(config)
+    frozen.flags.writeable = False
+    return frozen
+
+
+def _mgu_k_call(
+    config: KernelConfig,
+    *,
+    state: np.ndarray | None = None,
+    request_nm: float = 100.0,
+    speed_m_s: float = 50.0,
+    **kwargs: Any,
+) -> object:
+    buffer = powertrain.mgu_k_initial_state(config) if state is None else state
+    return powertrain.step_mgu_k(config, buffer, request_nm, 5_000.0, speed_m_s, **kwargs)
+
+
+# Each case passes one input the boundary has to refuse at runtime, not trust the annotation.
+# A malformed C5.2.8 curve must be refused rather than looked up with `boundscheck=False`, and each
+# profile is checked against its own partner: the two differ in length by design, so one shared
+# bound would read past the end of the three-breakpoint Overtake curve.
+_MGU_K_REFUSALS: list[tuple[Callable[[KernelConfig], object], str]] = [
+    (lambda c: _mgu_k_call(c, state=_frozen_mgu_k_state(c)), "state"),
+    (lambda c: _mgu_k_call(c, state=powertrain.mgu_k_initial_state(c)[:-1]), "state"),
+    (lambda c: _mgu_k_call(c, state=powertrain.mgu_k_initial_state(c).astype(np.int64)), "state"),
+    (lambda c: _mgu_k_call(c, request_nm=math.nan), "request_nm"),
+    (lambda c: _mgu_k_call(c, speed_m_s=math.inf), "speed_m_s"),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, mgu_k_crankshaft_ratio=0.0), state=powertrain.mgu_k_initial_state(c)
+        ),
+        "crankshaft_ratio",
+    ),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, mgu_k_motor_inverter_efficiency=0.0),
+            state=powertrain.mgu_k_initial_state(c),
+        ),
+        "motor_inverter_efficiency",
+    ),
+    (lambda c: _mgu_k_call(c, dt_s=0.0), "dt_s"),
+    (lambda c: _mgu_k_call(c, grid_standing_start=1), "grid_standing_start"),
+    (lambda c: _mgu_k_call(c, recharge_event=9), "recharge_event"),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, ers_speed_km_h=c.ers_speed_km_h[:-1]),
+            state=powertrain.mgu_k_initial_state(c),
+        ),
+        "ers_speed_km_h",
+    ),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, ers_limit_kw=np.empty(0, dtype=np.float64)),
+            state=powertrain.mgu_k_initial_state(c),
+        ),
+        "ers_limit_kw",
+    ),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, ers_speed_km_h=c.ers_speed_km_h.tolist()),
+            state=powertrain.mgu_k_initial_state(c),
+        ),
+        "ers_speed_km_h",
+    ),
+    (
+        lambda c: _mgu_k_call(
+            replace(c, ers_overtake_speed_km_h=c.ers_overtake_speed_km_h[::-1].copy()),
+            state=powertrain.mgu_k_initial_state(c),
+            overtake=True,
+        ),
+        "ers_overtake_speed_km_h",
+    ),
+]
+
+
+@pytest.mark.parametrize(("call", "matched"), _MGU_K_REFUSALS)
 def test_step_mgu_k_refuses_the_state_and_the_numbers_it_could_not_use(
     config: KernelConfig,
+    call: Callable[[KernelConfig], object],
+    matched: str,
 ) -> None:
     """The MGU-K buffer is validated before a ``boundscheck=False`` step writes it.
 
@@ -849,68 +910,9 @@ def test_step_mgu_k_refuses_the_state_and_the_numbers_it_could_not_use(
     is a torque that reads as a finished run. Both are refused with a message naming what was
     wrong rather than surfacing as a plausible number.
     """
-    good = powertrain.mgu_k_initial_state(config)
     assert len(powertrain.mgu_k_initial_state(config)) == powertrain.MGU_K_STATE_SIZE
-    # The two calls below deliberately pass a wrong *type*, which is the point: the boundary has to
-    # refuse them at runtime rather than trust the annotation, and pyright is right to complain.
-    anything: object = math.nan
-    flag: object = 1
-
-    frozen = powertrain.mgu_k_initial_state(config)
-    frozen.flags.writeable = False
-    short = powertrain.mgu_k_initial_state(config)[:-1]
-    for broken in (frozen, short, powertrain.mgu_k_initial_state(config).astype(np.int64)):
-        with pytest.raises(ValueError, match="state"):
-            powertrain.step_mgu_k(config, broken, request_nm=100.0, ice_rpm=5_000.0, speed_m_s=50.0)
-
-    with pytest.raises(ValueError, match="request_nm"):
-        powertrain.step_mgu_k(config, good, anything, 5_000.0, 50.0)
-    with pytest.raises(ValueError, match="speed_m_s"):
-        powertrain.step_mgu_k(config, good, 100.0, 5_000.0, math.inf)
-    with pytest.raises(ValueError, match="crankshaft_ratio"):
-        powertrain.step_mgu_k(
-            replace(config, mgu_k_crankshaft_ratio=0.0), good, 100.0, 5_000.0, 50.0
-        )
-    with pytest.raises(ValueError, match="motor_inverter_efficiency"):
-        powertrain.step_mgu_k(
-            replace(config, mgu_k_motor_inverter_efficiency=0.0), good, 100.0, 5_000.0, 50.0
-        )
-    with pytest.raises(ValueError, match="dt_s"):
-        powertrain.step_mgu_k(config, good, 100.0, 5_000.0, 50.0, dt_s=0.0)
-    with pytest.raises(ValueError, match="grid_standing_start"):
-        powertrain.step_mgu_k(
-            config,
-            good,
-            100.0,
-            5_000.0,
-            50.0,
-            grid_standing_start=flag,  # pyright: ignore[reportArgumentType]
-        )
-    with pytest.raises(ValueError, match="recharge_event"):
-        powertrain.step_mgu_k(config, good, 100.0, 5_000.0, 50.0, recharge_event=9)
-
-    # A malformed C5.2.8 curve is refused rather than looked up with `boundscheck=False`, and each
-    # profile is checked against its own partner - the two have different lengths by design, so a
-    # single shared bound would read past the end of the three-breakpoint Overtake curve.
-    malformed = (
-        (replace(config, ers_speed_km_h=config.ers_speed_km_h[:-1]), "ers_speed_km_h"),
-        (replace(config, ers_limit_kw=np.empty(0, dtype=np.float64)), "ers_limit_kw"),
-        (replace(config, ers_speed_km_h=config.ers_speed_km_h.tolist()), "ers_speed_km_h"),
-        (
-            replace(config, ers_overtake_speed_km_h=config.ers_overtake_speed_km_h[::-1].copy()),
-            "ers_overtake_speed_km_h",
-        ),
-    )
-    for broken_curve, matched in malformed:
-        with pytest.raises(ValueError, match=matched):
-            powertrain.step_mgu_k(
-                broken_curve,
-                good,
-                100.0,
-                5_000.0,
-                50.0,
-                overtake=matched.startswith("ers_overtake"),
-            )
+    with pytest.raises(ValueError, match=matched):
+        call(config)
 
 
 def test_the_mgu_k_joins_the_crankshaft_upstream_of_the_gearbox_and_the_clutch(
@@ -986,9 +988,9 @@ def test_the_mgu_k_joins_the_crankshaft_upstream_of_the_gearbox_and_the_clutch(
 
 
 def test_step_ice_torque_narrows_numeric_scalars_before_numba(config: KernelConfig) -> None:
-    """Equivalent int and float inputs use the same compiled specialisation.
-    Without the narrowing, an int read off a config and a float read off one compile two
-    signatures and every later rpm value has to be checked against a second copy of the curve.
+    """Equivalent int and float inputs share one compiled specialisation.
+
+    Without the narrowing, an int from a config and a float from a caller would compile two.
     """
     powertrain.step_ice_torque(config, 5_000.0)
     compiled = len(powertrain.ice_torque_nm.nopython_signatures)

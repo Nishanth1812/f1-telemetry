@@ -1,23 +1,16 @@
 """The P1 configuration boundary: ``car_spec.yaml`` provenance and kernel-ready arrays.
 
-P1-T1's claim is that ``car_spec.yaml`` is the only place a physical coefficient lives.
-Two things have to be true for that to be more than a convention:
+``car_spec.yaml`` is the only place a physical coefficient lives. That holds only if every
+regulated value carries its FIA issue, clause and page, every unregulated value says why, and
+the loader hands the kernel plain numeric arrays and refuses invalid ones, so a bad edit fails
+in Python instead of inside Numba.
 
-* every regulated value carries the FIA issue, clause and page it was read from, and every
-  value that is *not* regulated says why, so a reviewer can tell a regulation number from a
-  synthesised one without opening the PDF;
-* the loader hands the kernel plain numeric arrays and refuses to hand over anything invalid,
-  so a bad edit fails in Python instead of inside Numba.
-
-The citation table below is pinned deliberately. It is the machine-checkable form of "read
-these clauses out of the current issue", and it fails loudly when the file drifts from the
+The citation table below is pinned deliberately: it fails loudly when the file drifts from the
 document it claims to cite.
 
-``KernelConfig`` is referenced through the module rather than imported by name. For the P0
-regression run, the ``contract`` pytest marker introduced with P1 was copied into the temporary
-P0 worktree so collection could proceed. With that marker registered, the P1 tests failed on
-behaviour rather than a missing symbol: no ``citations()``, no ``kernel_config()``, no grid
-check, and no ``front_weight_fraction`` range.
+``KernelConfig`` is referenced through the module rather than imported by name. The P0 regression
+run copied the ``contract`` marker into its worktree, so the P1 tests failed on behaviour rather
+than on a missing symbol.
 """
 
 from __future__ import annotations
@@ -96,9 +89,8 @@ EXPECTED_CITATIONS: dict[str, tuple[str, int]] = {
     "chassis.minimum_rear_axle_fraction": ("C4.2", 59),
 }
 
-# Sections that state no FIA basis at all, so every number in them is a project decision.
-# `gearbox` is not one of them: C9.2.5 and C9.8.4 fix the clutch demand model and the shifting
-# timings, so the section carries both claim blocks. See
+# Sections with no FIA basis, so every number in them is a project decision. `gearbox` is mixed
+# instead: C9.2.5 and C9.8.4 fix the clutch demand and the shift timings. See
 # ``test_the_gearbox_section_is_mixed_and_says_which_number_is_which``.
 NOT_REGULATED_SECTIONS = ("aero", "integration")
 
@@ -131,6 +123,31 @@ def _arrays(config: KernelConfig) -> dict[str, np.ndarray]:
     }
 
 
+def _assert_plain_float64(name: str, array: np.ndarray) -> None:
+    assert array.dtype == np.float64, name
+    assert array.ndim == 1, name
+    assert array.flags["C_CONTIGUOUS"], name
+    assert array.flags["WRITEABLE"], name
+    assert np.all(np.isfinite(array)), name
+
+
+def _assert_claim(claim: Mapping[str, Any], clause: str, page: int) -> None:
+    assert (claim["clause"], claim["page"]) == (clause, page)
+
+
+def _axles(section: Mapping[str, Any], stem: str) -> list[Any]:
+    return [section[f"front_{stem}"], section[f"rear_{stem}"]]
+
+
+def _expect_rejected(
+    tmp_path: Path, repo: Path, path: tuple[Any, ...], value: float, message: str
+) -> None:
+    root = _root(repo)
+    _at(root, path[:-1])[path[-1]] = value
+    with pytest.raises(ContractError, match=message):
+        load_car_spec(_write(root, tmp_path)).kernel_config()
+
+
 def test_spec_is_pinned_to_the_current_fia_issue(spec: CarSpec) -> None:
     """The citation table below only means anything against one named document."""
     assert spec.spec["issue"] == FIA_ISSUE
@@ -146,14 +163,8 @@ def test_every_regulated_value_cites_the_clause_it_was_read_from(spec: CarSpec) 
 
 
 def test_a_curve_claim_declares_its_derived_breakpoints(spec: CarSpec) -> None:
-    """A breakpoint the clause does not state must be machine-visible, not buried in prose.
-
-    C5.2.8 states the deployment limit as two linear segments meeting at 340 km/h, and C5.2.7
-    separately caps absolute ERS-K power at 350 kW. Below 290 km/h the first segment's
-    ``1800 - 5v`` would allow up to 1800 kW, so the effective limit is the smaller of the two
-    clauses and the curve has to turn where they cross. That crossing speed is derived, and
-    declaring it keeps the curve from reading as four regulated points.
-    """
+    """C5.2.7's cap meets C5.2.8's first segment at 290 km/h. That point is derived, so it must
+    be declared rather than read as a fourth regulated point on the curve."""
     assert spec.derived_points() == {
         "powertrain.mgu_k.deployment_curve_kw": (290.0,),
         "powertrain.mgu_k.overtake_curve_kw": (337.5,),
@@ -166,13 +177,8 @@ def test_a_curve_claim_declares_its_derived_breakpoints(spec: CarSpec) -> None:
 
 
 def test_the_ers_curves_never_exceed_the_absolute_cap(spec: CarSpec) -> None:
-    """C5.2.7 caps absolute ERS-K power at 350 kW, and C5.2.8 sits under it at low speed.
-
-    Taken alone, ``1800 - 5v`` permits 1800 kW at rest and ``7100 - 20v`` permits 7100 kW.
-    Both formulas are only ever the *propulsion* limit; the absolute cap still applies, so the
-    effective limit is the smaller of the two. A kernel reading the raw curve would be handed
-    five times the power the regulation allows.
-    """
+    """C5.2.7's 350 kW absolute cap binds where C5.2.8's raw formulas (1800 kW and 7100 kW at
+    rest) would exceed it, so the effective limit is the smaller of the two."""
     config = spec.kernel_config()
     cap = spec.mgu_k_peak_power_kw
     assert cap == 350.0
@@ -197,14 +203,11 @@ def test_the_ers_curve_knots_are_where_c52_8_and_c52_7_cross(spec: CarSpec) -> N
     assert list(config.ers_limit_kw) == [350.0, 350.0, 100.0, 0.0]
     assert list(config.ers_overtake_speed_km_h) == [0.0, 337.5, 355.0]
     assert list(config.ers_overtake_limit_kw) == [350.0, 350.0, 0.0]
-    # The clauses' own formulas must reproduce the knots they are stated to give, and the cap
-    # must be what binds below each crossover. C5.2.8's first segment agrees with the second at
-    # 340 km/h, which is why the sampled curve needs no knot there for the clause's own sake.
+    # C5.2.8's two segments meet at 340 km/h, so that knot is stated by the clause, not derived.
     assert _close(6900.0 - 20.0 * 340.0, 100.0)  # the 100 kW knot
     assert _close(1800.0 - 5.0 * 340.0, 100.0)  # same point from the first segment
     assert _close(6900.0 - 20.0 * 345.0, 0.0)  # zero from 345 km/h
     assert _close(7100.0 - 20.0 * 355.0, 0.0)  # Overtake zero from 355 km/h
-    # Where each clause's formula falls to the C5.2.7 cap - the derived crossover speeds.
     assert _close(1800.0 - 5.0 * 290.0, 350.0)
     assert _close(7100.0 - 20.0 * 337.5, 350.0)
 
@@ -213,13 +216,8 @@ def test_the_ers_curve_knots_are_where_c52_8_and_c52_7_cross(spec: CarSpec) -> N
 def test_an_ers_curve_point_above_the_absolute_cap_is_rejected(
     tmp_path: Path, repo: Path, curve: str
 ) -> None:
-    """The cap is enforced at the boundary, not merely correct in today's committed file.
-
-    Both curves in ``car_spec.yaml`` sit at or below 350 kW, but that is a property of the data,
-    not a guarantee. A later edit that restores a raw C5.2.8 value - 1800 kW at rest from
-    ``1800 - 5v``, 7100 kW from ``7100 - 20v`` - would otherwise reach the kernel unchecked.
-    351 kW is one kW over the cap, so this tests the boundary rather than a tolerance.
-    """
+    """The cap is enforced at the boundary, because 350 kW in today's file is a property of the
+    data, not a guarantee. 351 kW tests the boundary itself rather than a tolerance."""
     root = _root(repo)
     _at(root, ("powertrain", "mgu_k", curve))[0]["limit_kw"] = 351.0
     with pytest.raises(ContractError, match=rf"{curve}.*C5\.2\.7 absolute cap"):
@@ -227,13 +225,8 @@ def test_an_ers_curve_point_above_the_absolute_cap_is_rejected(
 
 
 def test_the_cap_check_covers_a_hand_built_and_a_replaced_curve(spec: CarSpec) -> None:
-    """The check must reach curves that never went through the YAML file.
-
-    ``CarSpec`` is a public frozen dataclass and ``dataclasses.replace`` is the obvious way to
-    try a variant, so a cap check confined to ``load_car_spec`` would be trivially bypassable.
-    Also pins that the bound is inclusive, because the committed curve sits exactly on it and a
-    strict bound would fail the project's own data.
-    """
+    """``replace`` builds variants without going through ``load_car_spec``, so the cap check
+    must run there too. The bound is inclusive: the committed curve sits exactly on 350 kW."""
     over_cap = car_spec_module.DeploymentCurve(
         speed_km_h=(0.0, 290.0, 340.0, 345.0),
         limit_kw=(1800.0, 350.0, 100.0, 0.0),
@@ -276,13 +269,7 @@ def test_a_derived_point_that_is_not_in_the_curve_is_an_audit_failure(
 def test_a_malformed_derived_point_speed_is_an_audit_finding_not_an_exception(
     tmp_path: Path, repo: Path
 ) -> None:
-    """The audit reports; it does not raise. A finding and a crash are different failures.
-
-    Every other malformed claim shape - a missing clause, a citation naming something that is
-    not a value - is already reported as a finding. A derived point with a string where a speed
-    belongs is the same class of mistake and must behave the same way, or a typo in the file
-    takes out the audit instead of telling anyone about it.
-    """
+    """The audit reports a malformed claim; it must not raise, or one typo takes out the audit."""
     root = _root(repo)
     _at(root, ("powertrain", "mgu_k", "regulation", "deployment_curve_kw"))["derived_points"] = [
         {"speed_km_h": "290", "basis": "the crossing"}
@@ -307,11 +294,8 @@ def test_a_derived_point_without_a_basis_is_an_audit_failure(tmp_path: Path, rep
 
 
 def test_the_overspecified_derived_point_is_the_only_one(spec: CarSpec) -> None:
-    """Both ERS curves have exactly one derived knot, the C5.2.7 crossover. Nothing else.
-
-    Every other knot - 340, 345 and 355 km/h, and the 100 kW and 0 kW limits - is stated by
-    C5.2.8 verbatim, so declaring more would over-report the synthesis.
-    """
+    """Only the C5.2.7 crossovers are derived. C5.2.8 states every other knot verbatim, so
+    declaring more would over-report the synthesis."""
     derived = spec.derived_points()
     assert derived == {
         "powertrain.mgu_k.deployment_curve_kw": (290.0,),
@@ -322,39 +306,23 @@ def test_the_overspecified_derived_point_is_the_only_one(spec: CarSpec) -> None:
 
 
 def test_the_mass_minimum_carries_the_nominal_tyre_mass_and_the_session(spec: CarSpec) -> None:
-    """C4.1's floor is 724 kg *plus* a supplier figure, and it is 726 kg in Qualifying.
-
-    Both halves are in the clause's own wording and both matter to anything that later wants
-    to check the floor: 724 kg on its own is not the minimum, and the minimum is a function of
-    the session. ``mass.total_kg`` sits well above either, which is why nothing enforces the
-    floor in P1 - see ``test_the_c42_floor_is_not_enforced_against_total_mass``.
-
-    The driver reference mass is cited to **C4.5.2**, not C4.5. The Phase 1 design records
-    that as a correction (gap G9), and a citation that points one clause out is a wrong claim
-    even when the number it carries is right.
-    """
+    """C4.1's floor is 724 kg plus the Nominal Tyre Mass, and 726 kg in Qualifying. Both halves
+    are in the clause's own wording. The driver reference mass is C4.5.2, not C4.5 (gap G9): a
+    citation one clause out is a wrong claim even when the number it carries is right."""
     mass = _at(spec.raw, ("mass",))
     assert "Nominal Tyre Mass" in mass["regulation"]["minimum_mass_kg"]["quote"]
     qualifying = mass["regulation"]["minimum_mass_qualifying_kg"]["quote"]
     assert "Nominal Tyre Mass" in qualifying
     assert "Qualifying" in qualifying
 
-    driver = mass["regulation"]["driver_reference_mass_kg"]
-    assert (driver["clause"], driver["page"]) == ("C4.5.2", 60)
+    _assert_claim(mass["regulation"]["driver_reference_mass_kg"], "C4.5.2", 60)
     assert mass["driver_reference_mass_kg"] == 82.0
 
 
 def test_the_clutch_demand_is_the_regulated_rear_axle_torque_demand(spec: CarSpec) -> None:
-    """C9.2.5 defines what the clutch is *asked* for, not what it can take.
-
-    The committed gearbox clamps transmitted torque to a synthetic 3000 Nm capacity. C9.2.5
-    says something else: the driver's clutch request is expressed as torque at the rear axle
-    by applying a gain of 5200 Nm over the 5-95 % engagement range - 90 % of travel - the
-    controller must track it within +/-150 Nm at the rear axle, and the first 85 ms of a launch
-    step is excepted from that band. Four numbers that used to live only in the design note are
-    configuration with a clause behind them, so the gearbox task consumes data rather than
-    hardcoding a constant.
-    """
+    """C9.2.5 defines what the clutch is asked for, not what it can take. The 5200 Nm demand,
+    90 % travel, +/-150 Nm error band and 85 ms launch exception are clause-backed, so the
+    gearbox consumes data rather than hardcoding them."""
     config = spec.kernel_config()
     assert config.clutch_demand_torque_nm == 5200.0
     assert config.clutch_demand_travel_fraction == 0.9
@@ -362,17 +330,12 @@ def test_the_clutch_demand_is_the_regulated_rear_axle_torque_demand(spec: CarSpe
     assert config.clutch_launch_exception_s == 0.085
 
     claim = _at(spec.raw, ("gearbox", "regulation", "clutch_demand_torque_nm"))
-    assert (claim["clause"], claim["page"]) == ("C9.2.5", 101)
+    _assert_claim(claim, "C9.2.5", 101)
 
 
 def test_the_shift_time_is_bounded_by_the_c98_4_direction_limits(spec: CarSpec) -> None:
-    """The one synthetic shift duration is only allowed to exist because of C9.8.4.
-
-    ``shift_time_s`` is a project number, so the clause is what keeps it honest: an up change
-    must complete within 200 ms, a down change within 300 ms, and the original gear must be
-    disengaged within 80 ms of the request. A single shared duration is therefore only legal
-    below the *smaller* of the two direction limits, which is what the loader now enforces.
-    """
+    """``shift_time_s`` is a project number, legal only below the smaller C9.8.4 direction limit:
+    200 ms up, 300 ms down. The original gear must also disengage within 80 ms."""
     config = spec.kernel_config()
     assert (config.shift_time_max_up_s, config.shift_time_max_down_s) == (0.2, 0.3)
     assert config.shift_disengage_max_s == 0.08
@@ -383,30 +346,19 @@ def test_the_shift_time_is_bounded_by_the_c98_4_direction_limits(spec: CarSpec) 
 def test_a_shift_time_beyond_the_regulated_direction_limit_is_rejected(
     tmp_path: Path, repo: Path
 ) -> None:
-    """The bound is inclusive at 200 ms, because the faster direction's limit is the one.
-
-    ``tests/test_gearbox.py`` already builds a variant at five times the committed duration -
-    exactly 200 ms - and it has to keep loading, so this pins which side of the bound that is
-    and rules out a stricter one.
-    """
+    """``tests/test_gearbox.py`` builds a variant at exactly 200 ms and it must keep loading, so
+    the bound is inclusive and a stricter one is ruled out."""
     root = _root(repo)
     _at(root, ("gearbox",))["shift_time_s"] = 0.2
     at_limit = load_car_spec(_write(root, tmp_path)).kernel_config()
     assert at_limit.shift_time_s == 0.2
 
-    root = _root(repo)
-    _at(root, ("gearbox",))["shift_time_s"] = 0.201
-    with pytest.raises(ContractError, match=r"shift_time_s.*C9\.8\.4"):
-        load_car_spec(_write(root, tmp_path)).kernel_config()
+    _expect_rejected(tmp_path, repo, ("gearbox", "shift_time_s"), 0.201, r"shift_time_s.*C9\.8\.4")
 
 
 def test_the_reverse_ratio_is_synthetic_and_never_claimed_to_a_clause(spec: CarSpec) -> None:
-    """C9.7 requires the car to be drivable in reverse; it states no reverse *ratio*.
-
-    So the ratio is a project choice with a clause behind the requirement and not behind the
-    number. Recording it as a value with no `regulation` claim is the point: a reverse gear is
-    required, a reverse ratio is invented, and only one of those two is the FIA's.
-    """
+    """C9.7 requires a reverse gear, not a reverse ratio. The requirement has a clause and the
+    number does not, so the ratio is recorded as synthetic with no ``regulation`` claim."""
     assert "reverse_ratio" not in _at(spec.raw, ("gearbox", "regulation"))
 
     config = spec.kernel_config()
@@ -417,22 +369,16 @@ def test_the_reverse_ratio_is_synthetic_and_never_claimed_to_a_clause(spec: CarS
 
 
 def test_the_mgu_k_torque_limit_is_referenced_to_crankshaft_speed(spec: CarSpec) -> None:
-    """500 Nm is a crankshaft-referenced limit, and 520 Nm is not another cap.
-
-    The reference is what makes the number comparable at all: a motor-shaft figure and a
-    crankshaft figure are different quantities, and the same sentence states both, so the quote
-    has to carry it. C5.18.4's 520 Nm is a threshold above which an *optional* torque-limiting
-    device may act; the Phase 1 design calls out treating it as a cap as a specific failure, so
-    it is recorded with that wording and deliberately kept out of ``KernelConfig`` - handing a
-    number that must not be used as a limit to the physics would invite exactly that.
-    """
+    """500 Nm is a crankshaft-referenced limit. C5.18.4's 520 Nm is a threshold for an optional
+    torque-limiting device, not a cap, so it is recorded with that wording and kept out of
+    ``KernelConfig``."""
     mgu_k = _at(spec.raw, ("powertrain", "mgu_k"))
     claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "torque_limit_nm"))
-    assert (claim["clause"], claim["page"]) == ("C5.2.11", 65)
+    _assert_claim(claim, "C5.2.11", 65)
     assert "crankshaft" in claim["quote"]
 
     threshold = mgu_k["regulation"]["transient_torque_limiter_threshold_nm"]
-    assert (threshold["clause"], threshold["page"]) == ("C5.18.4", 78)
+    _assert_claim(threshold, "C5.18.4", 78)
     assert "not an MGU-K torque cap" in threshold["basis"]
     assert "transient_torque_limiter_threshold_nm" not in fields(car_spec_module.KernelConfig)
 
@@ -440,13 +386,8 @@ def test_the_mgu_k_torque_limit_is_referenced_to_crankshaft_speed(spec: CarSpec)
 def test_the_mgu_k_crank_ratio_is_synthetic_and_the_relative_speed_cap_is_not(
     spec: CarSpec,
 ) -> None:
-    """C5.18.5 caps a number; C5.18.2 requires a property. Only the first states a value.
-
-    The MGU-K is permanently geared to the crankshaft, so joining its torque at the crankshaft
-    needs a ratio - and the clause fixes that the ratio is *fixed* without ever stating what it
-    is. The relative speed limit is the other half of the same coupling, and it is a real
-    number: 60 000 rpm of MGU-K part speed.
-    """
+    """C5.18.2 fixes the crank ratio as fixed without stating it, so it is synthetic. C5.18.5 is
+    a real number: 60 000 rpm of MGU-K part speed."""
     config = spec.kernel_config()
     assert config.mgu_k_crankshaft_ratio > 0.0
     assert config.mgu_k_relative_speed_limit_rpm == 60000.0
@@ -454,20 +395,15 @@ def test_the_mgu_k_crank_ratio_is_synthetic_and_the_relative_speed_cap_is_not(
     ratio_claim = _at(spec.raw, ("powertrain", "mgu_k", "not_regulated", "crankshaft_ratio"))
     assert "C5.18.2" in ratio_claim
     speed_claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "relative_speed_limit_rpm"))
-    assert (speed_claim["clause"], speed_claim["page"]) == ("C5.18.5", 78)
+    _assert_claim(speed_claim, "C5.18.5", 78)
 
 
 def test_the_c52_10_recharge_limits_are_event_conditioned_not_one_universal_cap(
     spec: CarSpec,
 ) -> None:
-    """C5.2.10 states a baseline and three event-conditioned values, not a single limit.
-
-    The Phase 1 design calls out reading the 8.5 MJ baseline as a universal cap as the failure
-    this replaces: the article lowers it to 7 MJ in defined circumstances, names 4 MJ as the
-    qualifying floor, and allows a conditional extra 0.5 MJ. All four are recorded, and the
-    loader refuses a file whose event-conditioned value is *above* the baseline it reduces -
-    which is the mistake a single-number reading invites.
-    """
+    """C5.2.10 states a baseline and three event-conditioned values. Reading the 8.5 MJ baseline
+    as a universal cap is the failure this replaces, so all four are recorded and the loader
+    refuses an event value above the baseline it reduces."""
     config = spec.kernel_config()
     assert config.recharge_limit_mj_per_lap == 8.5
     assert config.recharge_limit_reduced_mj_per_lap == 7.0
@@ -475,7 +411,7 @@ def test_the_c52_10_recharge_limits_are_event_conditioned_not_one_universal_cap(
     assert config.recharge_allowance_mj_per_lap == 0.5
 
     claim = _at(spec.raw, ("powertrain", "mgu_k", "regulation", "recharge_limit_mj_per_lap"))
-    assert (claim["clause"], claim["page"]) == ("C5.2.10", 64)
+    _assert_claim(claim, "C5.2.10", 64)
     assert "baseline" in claim["scope"]
 
 
@@ -490,24 +426,13 @@ def test_the_c52_10_recharge_limits_are_event_conditioned_not_one_universal_cap(
 def test_an_unordered_c52_10_recharge_limit_is_rejected(
     tmp_path: Path, repo: Path, key: str, value: float, message: str
 ) -> None:
-    root = _root(repo)
-    _at(root, ("powertrain", "mgu_k"))[key] = value
-    with pytest.raises(ContractError, match=message):
-        load_car_spec(_write(root, tmp_path)).kernel_config()
+    _expect_rejected(tmp_path, repo, ("powertrain", "mgu_k", key), value, message)
 
 
 def test_the_c52_5_partial_load_limit_is_expressed_in_engine_power(spec: CarSpec) -> None:
-    """The other fuel-energy-flow limit is a function of power, and its arms have to meet.
-
-    C5.2.3 and C5.2.4 bound the ICE by rpm; C5.2.5 bounds it by engine power instead, with a
-    flat 380 MJ/h arm at or below -50 kW and ``9.78*P + 869`` above it. The threshold is
-    therefore negative and must not be caught by a positivity rule - the only value in the ICE
-    block that may be below zero.
-
-    The two arms meeting at the threshold is arithmetic, not coincidence, so it is checked
-    rather than assumed: a mis-transcribed gain or offset would leave a step in the limit that
-    no citation would reveal.
-    """
+    """C5.2.5 bounds the ICE by engine power rather than rpm. Its threshold is the one ICE value
+    allowed below zero, so it must not be caught by a positivity rule. The two arms must meet at
+    the threshold, or the limit has a step that no citation would reveal."""
     config = spec.kernel_config()
     assert config.fuel_energy_flow_partial_load_threshold_kw == -50.0
     assert config.fuel_energy_flow_partial_load_min_mj_h == 380.0
@@ -527,20 +452,15 @@ def test_the_c52_5_partial_load_limit_is_expressed_in_engine_power(spec: CarSpec
         spec.raw,
         ("powertrain", "ice", "regulation", "fuel_energy_flow_partial_load_gain_mj_h_per_kw"),
     )
-    assert (claim["clause"], claim["page"]) == ("C5.2.5", 64)
+    _assert_claim(claim, "C5.2.5", 64)
 
 
 def test_the_two_efficiency_conversions_are_declared_synthetic_and_read_as_data(
     spec: CarSpec,
 ) -> None:
-    """The regulations bound power in fuel MJ/h and electrical kW, and state neither efficiency.
-
-    C5.2.3 through C5.2.5 cap the ICE by fuel *energy* flow while everything the model computes
-    at the crank is *shaft* power, and C5.2.7 caps the MGU-K in electrical DC power while the
-    model holds mechanical shaft torque. Both conversions need an efficiency the document does
-    not publish, so both are project numbers and are labelled as such rather than quoted to a
-    clause. A test that let them look regulated would be claiming a number the FIA never stated.
-    """
+    """C5.2.3 to C5.2.5 bound fuel energy flow while the model computes shaft power, and C5.2.7
+    bounds electrical power while the model holds shaft torque. Neither efficiency is published,
+    so both are labelled synthetic rather than quoted to a clause."""
     config = spec.kernel_config()
     assert 0.0 < config.fuel_to_shaft_efficiency < 1.0
     assert 0.0 < config.mgu_k_motor_inverter_efficiency < 1.0
@@ -560,14 +480,9 @@ def test_the_two_efficiency_conversions_are_declared_synthetic_and_read_as_data(
 def test_the_c52_3_per_cylinder_arm_is_recorded_and_the_file_says_it_is_not_enforced(
     spec: CarSpec,
 ) -> None:
-    """C5.2.3's per-cylinder figure is cited but stays out of the physics, and the file says why.
-
-    The per-cylinder limit is a real clause and its number is in the file with its quote, but
-    enforcing it needs a cylinder count, which no block of ``car_spec.yaml`` carries and which
-    this project's verified clause set does not cite. Rather than invent one, the arm is recorded
-    and named as unenforced: an unrecorded omission is indistinguishable from an oversight, and a
-    silently invented cylinder count would be an unsourced number doing regulatory work.
-    """
+    """C5.2.3's per-cylinder figure is cited but unenforced. Enforcing it needs a cylinder count
+    the file does not carry, and inventing one would be an unsourced number doing regulatory
+    work, so the arm is recorded and named as unenforced instead."""
     value = _at(spec.raw, ("powertrain", "ice", "fuel_energy_flow_per_cylinder_max_mj_h"))
     assert value == 550.0
     note = _at(spec.raw, ("powertrain", "ice", "note"))
@@ -579,13 +494,9 @@ def test_the_c52_3_per_cylinder_arm_is_recorded_and_the_file_says_it_is_not_enfo
 
 
 def test_the_gearbox_section_is_mixed_and_says_which_number_is_which(spec: CarSpec) -> None:
-    """`gearbox` moved from `synthesised` to `mixed`, and both claim blocks are load-bearing.
-
-    The ratios, the shift points, the shift duration, the reverse ratio and the clutch
-    capacity are all project choices. C9.2.5's demand model, C9.8.4's shifting timings and
-    C9.6.1's eight forward ratios are not, so a section claiming `synthesised` over all of it
-    would describe the opposite of the truth.
-    """
+    """`gearbox` is `mixed`: ratios, shift points and clutch capacity are project choices, while
+    C9.2.5, C9.8.4 and C9.6.1 are regulated. Claiming `synthesised` over the whole section would
+    describe the opposite of the truth."""
     gearbox = _at(spec.raw, ("gearbox",))
     assert gearbox["provenance"] == "mixed"
     assert set(gearbox["regulation"]) <= set(gearbox)
@@ -612,11 +523,8 @@ def test_every_value_is_either_cited_or_explained_as_not_regulated(spec: CarSpec
 
 
 def test_sections_without_a_regulation_basis_say_so(spec: CarSpec) -> None:
-    """`constants` is a standards block; the rest are outright project decisions.
-
-    Both states are recorded rather than left implicit, so "no FIA article covers this"
-    cannot be confused with "nobody checked".
-    """
+    """`constants` is a standards block; the rest are project decisions. Recording both states
+    keeps "no FIA article covers this" distinct from "nobody checked"."""
     assert set(NOT_REGULATED_SECTIONS).isdisjoint(EXPECTED_CITATIONS)
     for section in NOT_REGULATED_SECTIONS:
         block = _at(spec.raw, (section,))
@@ -665,13 +573,9 @@ def test_an_uncited_number_in_a_regulated_section_is_an_audit_failure(
 def test_a_drag_curve_on_a_different_speed_grid_is_rejected(
     tmp_path: Path, repo: Path, drop: int, message: str
 ) -> None:
-    """Cl and Cd share one speed axis in ``KernelConfig``, so the grids must agree.
-
-    A Cd curve with different breakpoints would silently produce a ``cd`` array of a
-    different length to the ``aero_speed_m_s`` axis it is indexed by, which is an
-    out-of-bounds read inside the kernel rather than a load error. The loader is the only
-    place that can catch it.
-    """
+    """Cl and Cd share one speed axis in ``KernelConfig``. A mismatched Cd grid would be an
+    out-of-bounds read inside the kernel rather than a load error, so only the loader can catch
+    it."""
     root = _root(repo)
     del _at(root, ("aero",))["cd_curve"][drop]
     with pytest.raises(ContractError, match=message):
@@ -694,9 +598,9 @@ def test_front_weight_fraction_must_be_a_strict_fraction(
 ) -> None:
     """It is a fraction of a total mass, so it has no meaning outside (0, 1).
 
-    Note what is deliberately *not* checked: C4.2's 0.44 / 0.54 are fractions of the
-    regulatory Minimum Mass, which includes a separately published Nominal Tyre Mass, not
-    fractions of ``mass.total_kg``. See ``test_the_c42_floor_is_not_enforced_against_total_mass``.
+    C4.2's 0.44 / 0.54 are deliberately *not* checked here: they are fractions of the regulatory
+    Minimum Mass, not of ``mass.total_kg``. See
+    ``test_the_c42_floor_is_not_enforced_against_total_mass``.
     """
     root = _root(repo)
     _at(root, ("chassis",))["front_weight_fraction"] = value
@@ -725,7 +629,6 @@ def test_the_c42_floor_is_not_enforced_against_total_mass(spec: CarSpec) -> None
 
     assert "minimum_front_axle_fraction" not in fields(car_spec_module.KernelConfig)
     assert "minimum_rear_axle_fraction" not in fields(car_spec_module.KernelConfig)
-    # The floors are still recorded, with their clause, even though nothing consumes them yet.
     chassis = _at(spec.raw, ("chassis",))
     assert chassis["minimum_front_axle_fraction"] == 0.44
     assert chassis["minimum_rear_axle_fraction"] == 0.54
@@ -735,8 +638,7 @@ def test_the_c42_floor_is_not_enforced_against_total_mass(spec: CarSpec) -> None
         "Qualifying and Sprint Qualifying"
         in chassis["regulation"]["minimum_front_axle_fraction"]["quote"]
     )
-    # And the missing input that blocks enforcement is named in the file, not glossed over -
-    # as an obtainable published figure, not as something fundamentally unavailable.
+    # The missing input is named in the file as an obtainable published figure, not glossed over.
     enforcement = chassis["c42_enforcement"]
     assert enforcement["status"] == "not_enforced"
     assert "Nominal Tyre Mass" in enforcement["scope"]
@@ -753,11 +655,7 @@ def test_kernel_config_hands_over_plain_float64_arrays(spec: CarSpec) -> None:
     arrays = _arrays(config)
     assert arrays, "the kernel config must hand over arrays, not only scalars"
     for name, array in arrays.items():
-        assert array.dtype == np.float64, name
-        assert array.ndim == 1, name
-        assert array.flags["C_CONTIGUOUS"], name
-        assert array.flags["WRITEABLE"], name
-        assert np.all(np.isfinite(array)), name
+        _assert_plain_float64(name, array)
     assert config.aero_speed_m_s.shape == config.cl.shape == config.cd.shape
     assert config.torque_rpm.shape == config.torque_nm.shape
     assert config.gear_ratios.shape == (8,)
@@ -793,14 +691,10 @@ def test_editing_the_yaml_changes_the_kernel_config_with_no_code_edit(
 
 
 def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpec) -> None:
-    """P1-T3's four Magic Formula coefficients and the slip guard are handed over as numbers.
-
-    Scalars, not a mapping, because a kernel cannot read a dict (PLAN.md section 4.1 rule 1) and
-    because the values are asserted against the file rather than against themselves: a builder
-    that read the right keys and attached them to the wrong fields would still satisfy a test
-    that only checked they were present. What the coefficients *do* is the force model's business
-    and is asserted in ``tests/test_forces.py``.
-    """
+    """P1-T3's Magic Formula coefficients and the slip guard are handed over as scalars, not a
+    mapping, because a kernel cannot read a dict (PLAN.md section 4.1 rule 1). They are checked
+    against the file rather than against themselves, so a builder that attached them to the wrong
+    fields would fail. The force model itself is asserted in ``tests/test_forces.py``."""
     config = spec.kernel_config()
     pacejka = _at(spec.raw, ("tyres", "longitudinal_pacejka"))
     assert config.pacejka_b == pacejka["b"] > 0.0
@@ -809,16 +703,14 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
     assert config.pacejka_mu == pacejka["mu"] > 0.0
     guard = _at(spec.raw, ("tyres",))["slip_ratio_min_speed_m_s"]
     assert config.slip_ratio_min_speed_m_s == guard > 0.0
-    # The wheel inertia is the fourth number the P1-T6 rotational state needs, and it is claimed
-    # as synthesised for the reason the claim block says: PLAN.md section 4 gives a band and no
-    # clause fixes it.
+    # Wheel inertia is the fourth P1-T6 number. PLAN.md gives a band and no clause fixes it.
     inertia = _at(spec.raw, ("tyres",))["wheel_inertia_kg_m2"]
     assert config.wheel_inertia_kg_m2 == inertia > 0.0
     inertia_claim = _at(spec.raw, ("tyres", "not_regulated", "wheel_inertia_kg_m2"))
     assert "inertia" in inertia_claim
     assert "PLAN.md" in inertia_claim
-    # Both are claimed as synthesised, and the claim says which model it is, so a later edit
-    # that imports a published parameter set without changing the claim fails the audit's eye.
+    # Claimed as synthesised, and the claim names the model, so a silently imported published
+    # parameter set fails review.
     claim = _at(spec.raw, ("tyres", "not_regulated", "longitudinal_pacejka"))
     assert "Pacejka" in claim
     assert "ynthesised" in claim
@@ -939,10 +831,7 @@ def test_the_longitudinal_tyre_coefficients_reach_the_kernel_config(spec: CarSpe
 def test_invalid_p1_configuration_fails_in_python_before_the_kernel(
     tmp_path: Path, repo: Path, path: tuple[Any, ...], value: float, message: str
 ) -> None:
-    root = _root(repo)
-    _at(root, path[:-1])[path[-1]] = value
-    with pytest.raises(ContractError, match=message):
-        load_car_spec(_write(root, tmp_path)).kernel_config()
+    _expect_rejected(tmp_path, repo, path, value, message)
 
 
 @pytest.mark.parametrize(
@@ -963,7 +852,10 @@ def test_a_missing_curve_or_ratio_list_fails_at_the_python_boundary(
         load_car_spec(_write(root, tmp_path)).kernel_config()
 
 
-@pytest.mark.parametrize("section", ["mass", "aero", "gearbox", "integration", "tyres"])
+@pytest.mark.parametrize(
+    "section",
+    ["mass", "aero", "gearbox", "integration", "tyres", "suspension", "steering"],
+)
 def test_a_missing_section_is_rejected_before_any_array_is_built(
     tmp_path: Path, repo: Path, section: str
 ) -> None:
@@ -993,25 +885,16 @@ def test_two_builds_from_one_spec_agree(spec: CarSpec) -> None:
 
 
 def test_a_replaced_spec_rebuilds_its_kernel_config(spec: CarSpec) -> None:
-    """`dataclasses.replace` must not leave a stale configuration behind.
-
-    A cached `KernelConfig` built at load time survives `replace`, so a replaced spec reports
-    the *old* mass while carrying a new one - the typed field and the config disagree, and
-    nothing notices. Building on access means the config is always derived from the fields it
-    is asked about.
-    """
+    """A config cached at load time would survive ``replace`` and disagree with the new mass, so
+    the config is built on access."""
     replaced = replace(spec, mass_kg=900.0)
     assert replaced.kernel_config().mass_kg == 900.0
     assert spec.kernel_config().mass_kg == 800.0
 
 
 def test_a_replaced_spec_still_gets_its_values_validated(spec: CarSpec) -> None:
-    """Validation must not depend on how the spec was constructed.
-
-    `CarSpec` is a public frozen dataclass and `replace` is the obvious way to build a variant
-    - a scenario setting a different mass, say. If validation only ran inside `load_car_spec`,
-    a replaced spec would hand an unchecked value straight to the kernel.
-    """
+    """``replace`` is how a scenario builds a variant, so validation cannot live only in
+    ``load_car_spec``."""
     with pytest.raises(ContractError, match="rolling_radius_m"):
         replace(spec, rolling_radius_m=0.0).kernel_config()
     with pytest.raises(ContractError, match="power_split_ice"):
@@ -1036,17 +919,12 @@ def test_the_audit_rejects_a_spec_claiming_to_be_calibrated(tmp_path: Path, repo
     ]
 
 
-# --- P2 (lateral + load transfer) configuration contract -------------------------------
-#
-# P2-T1 owns the *inputs* the P2 kernel work consumes: CG-relative geometry and body
-# inertias, the per-axle suspension/load-transfer coefficients, the steering contract,
-# the lateral/combined-slip tyre data and the relaxation lengths. Nothing in this block is
-# an FIA regulation number, and these tests assert that: the whole contract reaches the
-# kernel with no clause attached, so a synthesised value can never be read as a limit.
+# P2-T1's inputs are CG geometry, body inertias, suspension, steering, lateral tyre data and
+# relaxation lengths. None is an FIA regulation number, and the whole contract reaches the kernel
+# with no clause attached, so a synthesised value can never be read as a limit.
 
 P2_SECTIONS = ("suspension", "steering")
 
-# Every dotted path P2 adds that must *not* appear in ``CarSpec.citations()``.
 P2_UNCITED_PATHS = (
     "chassis.front_track_m",
     "chassis.rear_track_m",
@@ -1081,14 +959,8 @@ P2_UNCITED_PATHS = (
 
 
 def test_the_ice_rotational_inertia_reaches_the_kernel_config(spec: CarSpec) -> None:
-    """Task 0's ICE speed state divides by an inertia no clause states.
-
-    The P1 ICE has no rotational state, so rpm is derived from wheel speed and floored at
-    idle. Adding that state needs an engine-plus-flywheel inertia, which is a synthesised
-    input exactly like ``wheel_inertia_kg_m2``. It is carried here so the state can be
-    integrated without a hardcoded constant in the kernel; no integration is implemented in
-    this task.
-    """
+    """Task 0's ICE speed state divides by an inertia no clause states, so it is carried as a
+    synthesised input like ``wheel_inertia_kg_m2``. No integration is implemented in this task."""
     config = spec.kernel_config()
     claim = _at(spec.raw, ("powertrain", "ice"))
     assert config.ice_inertia_kg_m2 == claim["ice_inertia_kg_m2"] > 0.0
@@ -1112,13 +984,8 @@ def test_the_p2_geometry_reaches_the_kernel_config(spec: CarSpec) -> None:
 
 
 def test_the_derived_cg_arms_follow_the_static_axle_split(spec: CarSpec) -> None:
-    """The two CG-relative arms are derived, not configured twice.
-
-    The static front share *is* the fraction of the wheelbase behind the CG, so
-    ``cg_to_rear = wheelbase * front_weight_fraction`` and the front arm is its complement.
-    Storing them as independent YAML values would let a reader tune the split and the arms
-    into disagreement; deriving them is the one-consistent-input rule the phase asks for.
-    """
+    """The CG arms are derived from the static split, not configured twice, so a reader tuning
+    one value cannot leave the two disagreeing."""
     config = spec.kernel_config()
     assert config.cg_to_front_axle_m + config.cg_to_rear_axle_m == pytest.approx(config.wheelbase_m)
     assert config.cg_to_rear_axle_m == pytest.approx(
@@ -1141,26 +1008,11 @@ def test_the_p2_suspension_and_steering_reach_the_kernel_config(spec: CarSpec) -
     assert 0.0 < config.roll_stiffness_front_fraction < 1.0
     assert 0.0 < config.pitch_stiffness_front_fraction < 1.0
 
-    assert list(config.axle_ride_rate_n_per_m) == [
-        suspension["front_ride_rate_n_per_m"],
-        suspension["rear_ride_rate_n_per_m"],
-    ]
-    assert list(config.axle_camber_gain_deg_per_m) == [
-        suspension["front_camber_gain_deg_per_m"],
-        suspension["rear_camber_gain_deg_per_m"],
-    ]
-    assert list(config.axle_static_camber_deg) == [
-        suspension["front_static_camber_deg"],
-        suspension["rear_static_camber_deg"],
-    ]
-    assert list(config.axle_bump_steer_deg_per_m) == [
-        suspension["front_bump_steer_deg_per_m"],
-        suspension["rear_bump_steer_deg_per_m"],
-    ]
-    assert list(config.axle_travel_limit_m) == [
-        suspension["front_travel_limit_m"],
-        suspension["rear_travel_limit_m"],
-    ]
+    assert list(config.axle_ride_rate_n_per_m) == _axles(suspension, "ride_rate_n_per_m")
+    assert list(config.axle_camber_gain_deg_per_m) == _axles(suspension, "camber_gain_deg_per_m")
+    assert list(config.axle_static_camber_deg) == _axles(suspension, "static_camber_deg")
+    assert list(config.axle_bump_steer_deg_per_m) == _axles(suspension, "bump_steer_deg_per_m")
+    assert list(config.axle_travel_limit_m) == _axles(suspension, "travel_limit_m")
 
     assert config.steering_ratio == steering["steering_ratio"] > 0.0
     assert config.max_steering_wheel_angle_deg == steering["max_steering_wheel_angle_deg"] > 0.0
@@ -1169,11 +1021,8 @@ def test_the_p2_suspension_and_steering_reach_the_kernel_config(spec: CarSpec) -
 
 
 def test_the_p2_per_axle_values_are_float64_vectors_of_two_axles(spec: CarSpec) -> None:
-    """The per-axle contract is one array per quantity, front first, exactly two entries.
-
-    A per-axle array that disagreed in length with another would index the wrong axle inside
-    a ``boundscheck=False`` kernel, so the shared length is checked here rather than trusted.
-    """
+    """One array per quantity, front first, exactly two entries. A length mismatch would index the
+    wrong axle inside a ``boundscheck=False`` kernel, so the shared length is checked here."""
     config = spec.kernel_config()
     arrays = {
         "axle_track_m": config.axle_track_m,
@@ -1185,11 +1034,7 @@ def test_the_p2_per_axle_values_are_float64_vectors_of_two_axles(spec: CarSpec) 
     }
     lengths = set()
     for name, array in arrays.items():
-        assert array.dtype == np.float64, name
-        assert array.ndim == 1, name
-        assert array.flags["C_CONTIGUOUS"], name
-        assert array.flags["WRITEABLE"], name
-        assert np.all(np.isfinite(array)), name
+        _assert_plain_float64(name, array)
         lengths.add(array.shape)
     assert lengths == {(2,)}
 
@@ -1321,20 +1166,7 @@ def test_editing_the_p2_yaml_changes_the_kernel_config(tmp_path: Path, repo: Pat
 def test_invalid_p2_configuration_fails_in_python_before_the_kernel(
     tmp_path: Path, repo: Path, path: tuple[Any, ...], value: float, message: str
 ) -> None:
-    root = _root(repo)
-    _at(root, path[:-1])[path[-1]] = value
-    with pytest.raises(ContractError, match=message):
-        load_car_spec(_write(root, tmp_path)).kernel_config()
-
-
-@pytest.mark.parametrize("section", P2_SECTIONS)
-def test_a_missing_p2_section_is_rejected_before_any_array_is_built(
-    tmp_path: Path, repo: Path, section: str
-) -> None:
-    root = _root(repo)
-    del root[section]
-    with pytest.raises(ContractError, match="missing section"):
-        load_car_spec(_write(root, tmp_path))
+    _expect_rejected(tmp_path, repo, path, value, message)
 
 
 @pytest.mark.parametrize(
@@ -1358,12 +1190,8 @@ def test_a_missing_p2_input_fails_at_the_python_boundary(
 
 
 def test_a_replaced_spec_still_validates_the_p2_inputs(spec: CarSpec) -> None:
-    """P2 validation must not depend on how the spec was built.
-
-    ``replace(spec, raw=...)`` is how a scenario or a test tries a variant, so the P2
-    derivation and range checks in ``build_kernel_config`` have to read the replaced raw
-    document rather than a cached one.
-    """
+    """``replace(spec, raw=...)`` is how a variant is built, so the P2 derivation and range checks
+    must read the replaced raw document, not a cached one."""
     broken = replace(
         spec,
         raw={

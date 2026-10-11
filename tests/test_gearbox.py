@@ -92,29 +92,16 @@ def _driveline_torque_nm(
     ice_rpm: float,
     throttle: float,
     clutch: float = 1.0,
-    request: Any = None,
 ) -> float:
-    """``step_gearbox`` from a fresh caller-owned state at ``gear``, for tests with no history.
-
-    Most of this file cares about the *value* the step produces rather than where the state ended
-    up, so it needs a one-shot call at a chosen gear. A helper is the honest way to say that: a
-    fresh buffer, one step, no shared history. Tests that are about the state write it themselves.
-    ``request`` defaults to no request, so a test about a torque rather than about a shift does not
-    have to say so twice.
-    """
-    if request is None:
-        return gearbox.step_gearbox(config, _state(gear, clutch), ice_rpm, throttle)
-    return gearbox.step_gearbox(config, _state(gear, clutch), ice_rpm, throttle, request)
+    """One step from a fresh caller-owned state at ``gear``, for tests that only read the torque."""
+    return gearbox.step_gearbox(config, _state(gear, clutch), ice_rpm, throttle)
 
 
 def _ratio(config: KernelConfig, gear: float) -> float:
-    """The configured total reduction of ``gear``, read off the table in the test's own arithmetic.
+    """The configured total reduction of ``gear``, looked up independently of the model.
 
-    Deliberately *not* a call into the model: there is no public ratio helper to call, because a
-    compiled one would take an arbitrary gear with ``boundscheck=False`` and read past the end of a
-    short table. Writing the lookup here keeps the reference independent of the implementation and
-    documents the 1-based-gear/0-based-table rule in the one place a reader looks for it. Gear 0
-    has no ratio at all, which is why the caller below guards on ``gear >= 1`` rather than indexing.
+    Gears are 1-based and the table is 0-based. Gear 0 has no ratio, so callers guard on
+    ``gear >= 1``.
     """
     return float(config.gear_ratios[int(gear) - 1]) * config.final_drive
 
@@ -126,32 +113,22 @@ def _peak_rpm(config: KernelConfig) -> float:
 def _offered_nm(config: KernelConfig, gear: float, rpm: float, throttle: float = 1.0) -> float:
     """What the gear train offers the clutch: throttle, engine torque, then the reduction.
 
-    The engine torque is read through :func:`~f1telemetry.physics.powertrain.step_ice_torque` - the
-    same composition the model uses - and the reduction is the test's own lookup, so this is the
-    documented arithmetic rather than the gearbox's output restated. Reverse negates the configured
-    reverse ratio instead of indexing the forward table, which is the construction under test.
+    Reverse negates the configured reverse ratio instead of indexing the forward table.
     """
     ratio = _ratio(config, gear) if gear >= 1.0 else -config.reverse_ratio * config.final_drive
     return throttle * powertrain.step_ice_torque(config, rpm) * ratio
 
 
 def _travel_band(config: KernelConfig) -> tuple[float, float]:
-    """The engagement fractions the C9.2.5 gain spans, read off the configured travel fraction.
-
-    The 5 % and 95 % endpoints are not written down in the model; they are the ends of the travel
-    fraction C9.2.5 states, centred on the middle of the stroke. Deriving them here is what keeps
-    the expectations independent of the arithmetic they check.
-    """
+    """The engagement fractions the C9.2.5 gain spans, centred on the middle of the stroke."""
     low = (1.0 - config.clutch_demand_travel_fraction) / 2.0
     return low, low + config.clutch_demand_travel_fraction
 
 
 def _demand_nm(config: KernelConfig, engagement: float) -> float:
-    """The rear-axle torque the driver's engagement asks for, written out here.
+    """The rear-axle torque the engagement asks for: zero out, full gain at full travel, linear.
 
-    Nothing in the project states this, so the reference is the regulation's own sentence: the gain
-    applies to the engagement travel, the demand is zero with the clutch out and the full gain at
-    full travel, and it rises linearly between them.
+    Written from C9.2.5's wording, since nothing in the project states the mapping as code.
     """
     low, high = _travel_band(config)
     if engagement <= low:
@@ -169,12 +146,7 @@ def _sweep(
     gear: float = 1.0,
     throttle: float = 1.0,
 ) -> list[tuple[int, float]]:
-    """One step per rpm from one caller-owned state, holding the clutch closed and making no
-    request.
-
-    Used only where the caller holds rpm steady across steps, which after this slice is the only
-    way rpm is allowed to reach the gearbox at all.
-    """
+    """One step per rpm from one caller-owned state, with the clutch closed and no request."""
     state = _state(gear, 1.0)
     seen: list[tuple[int, float]] = []
     for rpm in rpms:
@@ -191,11 +163,9 @@ def _shifted(config: KernelConfig, gear: float, rpm: float, request: Any) -> np.
 
 
 def _selected(config: KernelConfig, gear: float, request: Any) -> np.ndarray:
-    """A buffer that has finished settling on the gear ``request`` selects from ``gear``.
+    """A buffer that has settled on the gear ``request`` selects, with the shift cut waited out.
 
-    Selecting a gear goes through a shift, so a test that wants to measure the torque of a selected
-    state has to wait the cut out first - otherwise it is measuring the cut. The gear the request
-    moves to and the torque it then transmits are two different claims and this separates them.
+    Otherwise the test would measure the cut rather than the selected gear.
     """
     state = _shifted(config, gear, 10_000.0, request)
     for _ in range(_cut_steps(config, state) + 2):
@@ -203,33 +173,26 @@ def _selected(config: KernelConfig, gear: float, request: Any) -> np.ndarray:
     return state
 
 
-def _cut_steps(config: KernelConfig, state: np.ndarray, request: Any = None) -> int:
-    """Hold ``request`` until the shift ends, and return how many steps the cut actually lasted.
+def _cut_steps(
+    config: KernelConfig, state: np.ndarray, request: Any = gearbox.GearRequest.HOLD
+) -> int:
+    """Step until the shift timer clears, and return how many steps the cut lasted.
 
-    Driven by the state rather than by a step count, because the point of every caller of this is to
-    measure the cut against the configured shift time instead of against the count it hoped for.
-    ``request`` is optional so a caller that means "keep asking" and a caller that means "stop
-    asking"
-    read differently at the call site.
+    Measured from the state rather than a step count, so the cut is compared with the configured
+    shift time instead of with the number the test hoped for.
     """
     steps = 0
     while state[gearbox.SHIFT_TIMER_INDEX] > 0.0:
-        if request is None:
-            torque = gearbox.step_gearbox(config, state, 10_000.0, 1.0)
-        else:
-            torque = gearbox.step_gearbox(config, state, 10_000.0, 1.0, request)
-        if torque != 0.0:
+        if gearbox.step_gearbox(config, state, 10_000.0, 1.0, request) != 0.0:
             break
         steps += 1
     return steps
 
 
 def _record(steps: list[tuple[int, float]], throttle: float) -> SampleRecord:
-    """A truth stream carrying only what invariant 7 reads, so the checker can be run on it.
+    """A truth stream carrying only the ``gear`` and ``throttle_pct`` that invariant 7 reads.
 
-    Every other field of :class:`GroundTruthStep` is about forces and is P1-T6/P1-T7's, and the
-    record gets its defaults for all of them. What invariant 7 looks at is ``gear`` and
-    ``throttle_pct``, and those are the two columns this file can honestly fill.
+    The force fields belong to P1-T6 and P1-T7 and keep their defaults here.
     """
     truth = tuple(
         GroundTruthStep(
@@ -316,8 +279,7 @@ def test_engine_speed_alone_never_changes_the_gear(config: KernelConfig) -> None
     over a rev-limited range, so a gearbox with any rpm comparison left in it - even one that
     required several steps above the threshold - would move here. Every step is otherwise a
     full-throttle, closed-clutch step with the engine on its torque curve, which is exactly the
-    input
-    the previous model used as its trigger.
+    input the previous model used as its trigger.
     """
     rpms = [
         config.idle_rpm + 250.0 * index
@@ -432,8 +394,7 @@ def test_a_shift_cuts_the_torque_for_exactly_the_configured_shift_time(
     the next gear on the step the timer expired and the torque would never be delivered at all.
 
     The count is allowed one step either side of ``shift_time_s / dt_s`` because the countdown is
-    accumulated in floating point - ``0.04`` is not representable - so the final subtraction can
-    land
+    accumulated in floating point (``0.04`` is not representable), so the final subtraction can land
     a step early or late. What is pinned is that the cut is neither one step nor a hundred.
     """
     dt_s = config.dt_s
@@ -527,8 +488,7 @@ def test_reverse_transmits_negative_torque_from_the_configured_reverse_ratio(
     assert engine > 0.0
     assert config.reverse_ratio > 0.0, "a negative reverse ratio would be the ratio counted twice"
 
-    # Selecting reverse goes through a shift, so the cut is waited out before the torque is read:
-    # what is under test is what reverse transmits, not what a shift transmits.
+    # Selecting reverse is a shift, so the cut is waited out before the torque is read.
     state = _selected(config, 1.0, gearbox.GearRequest.REVERSE)
     assert state[gearbox.GEAR_INDEX] == REVERSE
 
@@ -536,11 +496,10 @@ def test_reverse_transmits_negative_torque_from_the_configured_reverse_ratio(
     assert torque == pytest.approx(-engine * config.reverse_ratio * config.final_drive, rel=1e-12)
     assert torque < 0.0, "reverse under positive throttle has to drive the car backwards"
 
-    # Reverse is a state the driver selects at any time rather than a step on the way down the box,
-    # so it is reachable from top gear in one request. Its committed magnitude is deliberately equal
-    # to the first ratio - ``car_spec.yaml`` calls that the conventional reverse layout - so
-    # it is the
-    # *end* of the table it must not be borrowing: indexing gear -1 would give the last ratio.
+    # Reverse is a state the driver selects at any time rather than a step down the box, so it is
+    # reachable from top gear in one request. Its magnitude equals the first ratio, the
+    # conventional reverse layout in ``car_spec.yaml``, so it must not borrow the *end* of the
+    # table: indexing gear -1 would give the last ratio.
     from_top = _selected(config, float(config.gear_ratios.size), gearbox.GearRequest.REVERSE)
     assert from_top[gearbox.GEAR_INDEX] == REVERSE
     assert config.reverse_ratio == pytest.approx(float(config.gear_ratios[0]))
@@ -729,10 +688,9 @@ def test_the_boost_cut_is_the_clutch_and_not_a_second_multiplier(config: KernelC
     """Zero torque through the cut whatever the engagement was, and zero only through the cut.
 
     ``PHASES.md`` P1-T5 asks for trailing throttle and the boost cut to route through the clutch,
-    which is a claim about there being *one* path. It shows up as: with the clutch shut, a fully
-    open
-    throttle at high rpm delivers exactly nothing, and with the clutch open by any amount the
-    delivery is that same nothing - not a fraction of it.
+    which is a claim about there being *one* path. With the clutch shut, a fully open throttle at
+    high rpm delivers exactly nothing, and with the clutch open by any amount the delivery is that
+    same nothing - not a fraction of it.
     """
     state = _state(1.0, 1.0)
     gearbox.step_gearbox(config, state, 10_000.0, 1.0, gearbox.GearRequest.UP)
@@ -752,8 +710,7 @@ def test_gear_progression_satisfies_invariant_7(config: KernelConfig, spec: CarS
     actually produces rather than on a supplied fixture. The trace is driven by requests only - a
     rising rpm is the situation the invariant describes - because invariant 7 reads *any* gear
     decrease as a violation and a requested downshift is legal behaviour that a later task turns
-    into
-    an assertion of its own.
+    into an assertion of its own.
     """
     top = int(config.gear_ratios.size)
     state = _state(1.0, 1.0)
@@ -816,9 +773,8 @@ def test_trailing_throttle_passes_through_the_clutch_unmodulated(config: KernelC
     Trailing throttle is the reason the model scales the engine torque by a pedal before the clutch
     sees it: a driver part-way down the throttle at 12 000 rpm wants that fraction of the engine's
     torque through a closed clutch, and a model that limited the clutch would hand back the demand
-    instead. The expectation is the documented arithmetic - throttle fraction, engine torque, then
-    the
-    gear - written out here rather than taken from the model.
+    instead. The expectation is the documented arithmetic (throttle, engine torque, then the gear),
+    written out here rather than taken from the model.
     """
     rpm = 12_000.0
     gear = 3.0
@@ -836,13 +792,10 @@ def test_trailing_throttle_passes_through_the_clutch_unmodulated(config: KernelC
 def test_the_state_is_the_callers_and_the_step_writes_the_gear_and_the_timer_only(
     config: KernelConfig,
 ) -> None:
-    """One caller-owned buffer, and the step writes two of its three slots.
+    """The step writes the gear and the shift timer, and reads the clutch engagement.
 
-    Caller-owned is the whole point: a run steps one array over and over with no allocation and no
-    second copy to keep in step, which is the rule ``kernels.longitudinal`` already follows for
-    ``out``. What the step *writes* is the gear and the shift timer; the clutch engagement it reads.
-    The engagement check is the one that matters here - if the boost cut ever wrote zero back, a
-    caller ramping a launch would have its input silently destroyed on its first upshift.
+    The engagement check matters most: if the boost cut ever wrote zero back, a caller ramping a
+    launch would have its input silently destroyed on its first upshift.
     """
     state = gearbox.initial_state(gear=1.0, clutch_engagement=0.6)
     assert state.dtype == np.float64
@@ -956,9 +909,8 @@ def test_the_ratios_reverse_ratio_and_demand_gain_are_read_off_the_kernel_config
         0.5 * config.clutch_demand_torque_nm, rel=1e-12
     ), "the demand gain is not reaching the output"
 
-    # The travel fraction is the span the gain is applied over, so widening it lowers the
-    # demand at a
-    # fixed engagement. Derived here rather than asserted against a written constant.
+    # The travel fraction is the span the gain is applied over, so widening it lowers the demand at
+    # a fixed engagement.
     wide = replace(config, clutch_demand_travel_fraction=0.5)
     engagement = 0.75
     assert gearbox.clutch_demand_nm(
@@ -1014,9 +966,8 @@ def test_editing_the_car_spec_changes_the_gearbox_with_no_code_edit(
         "half the C9.2.5 gain has to halve the launch torque"
     )
 
-    # A longer shift keeps the clutch open for longer, and the timer is armed at the full
-    # duration on
-    # the step the gear changes rather than starting from a partial step.
+    # A longer shift keeps the clutch open for longer; the timer is armed at the full duration on
+    # the step the gear changes, not from a partial step.
     long_shift = _state()
     gearbox.step_gearbox(edited, long_shift, 10_000.0, 1.0, gearbox.GearRequest.UP)
     assert long_shift[gearbox.GEAR_INDEX] == 2.0
@@ -1056,11 +1007,9 @@ def test_step_gearbox_refuses_a_state_value_it_could_not_use(config: KernelConfi
     """The gear is ``{-1, 0, 1..n}`` and integral; the engagement and the timer are ranges.
 
     ``boundscheck=False`` is about *arrays*; a state value is arithmetic that returns a plausible
-    number instead of an error, and the gear is what indexes the ratio table. Neutral and reverse
-    are
-    *inside* the domain now - C9.7 requires the car to be drivable in reverse and ``channels.yaml``
-    already publishes the three states - so the assertions here are about the two ends, the
-    integrality, and the two read-only slots, none of which the channel contract can produce.
+    number instead of an error, and the gear indexes the ratio table. Neutral and reverse are
+    inside the domain (C9.7 requires reverse, and ``channels.yaml`` publishes the three states),
+    so the assertions here cover the two ends, integrality, and the read-only slots.
     """
     top = float(config.gear_ratios.size)
     for gear in (REVERSE, NEUTRAL, 1.0, top):
@@ -1096,15 +1045,10 @@ def test_step_gearbox_refuses_a_request_it_could_not_narrow_to_a_code(
     config: KernelConfig,
     command: Any,
 ) -> None:
-    """The request is a driver command, so it has to be one this model knows how to act on.
+    """An unknown code would fall through every comparison in the compiled step, so it is refused.
 
-    A float, a bool and an unknown code are all refused rather than coerced. An unknown code
-    reaching
-    the compiled step would fall through every comparison; the public boundary prevents that.
-    A typo in a
-    scenario would silently stop the gearbox changing gear instead of failing - and a float would
-    compile a second Numba specialisation alongside the integer one. The enum members and their
-    plain integer equivalents are both accepted, because a channel reader hands over an int.
+    A float would also compile a second Numba specialisation. Enum members and their plain integer
+    values are both accepted, because a channel reader hands over an int.
     """
     for good in (*gearbox.GearRequest, *(int(member) for member in gearbox.GearRequest)):
         gearbox.step_gearbox(config, _state(), 6_000.0, 1.0, good)
@@ -1130,12 +1074,7 @@ def test_step_gearbox_refuses_a_demand_it_could_not_narrow_to_a_float(
     rpm: float,
     throttle: float,
 ) -> None:
-    """Two ways a demand fails, neither of which is the torque: not finite, or not a pedal.
-
-    A NaN reaches the compiled step and comes back as a NaN torque, which reads as a finished run. A
-    throttle outside ``[0, 1]`` is a value the channel contract cannot produce either, and a
-    ``float32`` would compile a second Numba specialisation alongside the ``float`` one.
-    """
+    """A NaN comes back as a NaN torque, which reads as a finished run, so it is refused."""
     state = _state()
     with pytest.raises(ValueError, match=r"ice_rpm|throttle"):
         gearbox.step_gearbox(config, state, rpm, throttle)
@@ -1167,15 +1106,10 @@ def test_step_gearbox_refuses_a_gearbox_configuration_it_could_not_use(
     name: str,
     value: float,
 ) -> None:
-    """The gearbox scalars carry the ranges ``car_spec.yaml`` checks them against.
+    """The scalars carry the ranges ``car_spec.yaml`` checks them against.
 
-    ``clutch_demand_travel_fraction`` is the span of engagement travel the C9.2.5 gain is applied
-    over, so it is a fraction and strictly positive: zero would make the demand undefined, and a
-    value above one would ask for more travel than the paddle has. The downshift point has to sit
-    below the upshift one, or the driver's two rules overlap and a single rpm could satisfy both -
-    and that pair is validated even though it is no longer a trigger, because ``car_spec.yaml``
-    still records the shift points as the driver's schedule and a replaced config should not be able
-    to invert it silently.
+    The shift-point pair is still validated although rpm no longer triggers a shift: the points are
+    the driver's schedule, and a replaced config should not be able to invert it silently.
     """
     state = _state()
     with pytest.raises(ValueError, match=name):
@@ -1185,13 +1119,10 @@ def test_step_gearbox_refuses_a_gearbox_configuration_it_could_not_use(
 def test_step_gearbox_refuses_a_replaced_ratio_table_it_could_not_index(
     config: KernelConfig,
 ) -> None:
-    """The gear count comes off the ratios, so the array is checked before it is read.
+    """The gear count comes off the ratios, and ``boundscheck=False`` never catches a bad table.
 
-    ``boundscheck=False`` is the reason for the shape, dtype and contiguity rules: the array is
-    handed
-    to the same caller as the step, and a strided or ``float32`` buffer compiles as a differently
-    typed kernel. The ratio values matter for a different reason - a table of zeroes would transmit
-    nothing however hard the driver asked.
+    A strided or ``float32`` array would compile as a differently typed kernel, and a table of
+    zeroes would transmit nothing however hard the driver asked.
     """
     ratios = config.gear_ratios
     empty = np.array([], dtype=np.float64)
@@ -1213,13 +1144,9 @@ def test_step_gearbox_refuses_a_replaced_ratio_table_it_could_not_index(
 def test_step_gearbox_refuses_a_replaced_torque_curve_it_could_not_read(
     config: KernelConfig,
 ) -> None:
-    """The engine torque still comes through the engine's own validated composition.
+    """The engine torque comes through ``step_ice_torque``, so the same bad curves are refused.
 
-    ``PHASES.md`` P1-T5 has no new torque model, so the gearbox reaches the ICE curve through
-    :func:`~f1telemetry.physics.powertrain.step_ice_torque` rather than around it. These are the
-    same
-    malformed curves that composition refuses, and a gearbox that read past the end of one would
-    return a torque nothing downstream could question.
+    A gearbox that read past the end of a bad curve would return a torque nothing could question.
     """
     values = config.torque_nm
     infinite = values.copy()
@@ -1239,12 +1166,9 @@ def test_step_gearbox_refuses_a_replaced_torque_curve_it_could_not_read(
 
 
 def test_step_gearbox_narrows_numeric_scalars_before_numba(config: KernelConfig) -> None:
-    """Equivalent int and float inputs use the same compiled specialisation.
+    """Equivalent int and float inputs, and the request as int or enum, share one signature.
 
-    Without the narrowing, an int read off a config and a float read off one compile two signatures
-    of the same step and every later demand has to be checked against a second copy of the gearbox
-    table. The request is included because a channel reader hands over an int and a scenario an enum
-    member, and those have to reach the kernel as the same type.
+    Without the narrowing each spelling compiles its own copy of the step.
     """
     gearbox.step_gearbox(config, _state(), 6_000.0, 1.0)
     compiled = len(COMPILED_STEP.nopython_signatures)
@@ -1256,14 +1180,9 @@ def test_step_gearbox_narrows_numeric_scalars_before_numba(config: KernelConfig)
 
 
 def test_every_request_code_reaches_the_state_it_names(config: KernelConfig) -> None:
-    """The enumeration and the codes the compiled step compares against are the same numbers.
+    """``step_requested_gear`` is compiled and takes integer codes, so the enum values are pinned.
 
-    ``step_requested_gear`` is compiled, so it takes an integer code rather than the enum object,
-    and
-    the only thing keeping those two in step is that this module assigns the values once. If a
-    member
-    were renumbered the compiled step would act on a different command than the caller asked for - a
-    request for neutral selecting a gear, say - and nothing else in the file would see it.
+    A renumbered member would make the compiled step act on a different command than the one asked.
     """
     assert {member.name: int(member) for member in gearbox.GearRequest} == {
         "HOLD": 0,

@@ -1,43 +1,34 @@
 """P1-T1: the fixed-step straight-line kernel, tested against the claims it makes.
 
-``PHASES.md`` P1-T1 asks for a flat ``@njit(cache=True, fastmath=False)`` kernel over
-preallocated float64 arrays at ``dt = 100 µs``, and P1-T2 asks for the determinism harness
-that proves it. The claims are checked here in the form that would actually fail:
+``PHASES.md`` P1-T1 asks for a flat ``@njit(cache=True, fastmath=False)`` kernel over preallocated
+float64 arrays at ``dt = 100 µs``; P1-T2 asks for the determinism harness that proves it. The claims
+are checked in the form that would actually fail:
 
-* **It really is a compiled, cached kernel.** The dispatcher's own options are read back
-  (``fastmath=False``, ``nogil``, ``boundscheck=False``) instead of being trusted from the
-  decorator text, and ``cache=True`` is proven by a fresh interpreter writing a cache index
-  into a directory that was empty a moment earlier.
-* **Fixed step, semi-implicit.** Row ``n`` of a trace is the state after exactly ``n`` steps of
-  the configured ``dt_s``, and position advances with the *updated* speed, so the scheme is
-  semi-implicit rather than explicit. The scheme is pinned against the explicit alternative,
+* **A compiled, cached kernel.** The dispatcher's options are read back rather than trusted from the
+  decorator text, and ``cache=True`` is proven by a fresh interpreter writing a cache index into a
+  directory that was empty a moment earlier.
+* **Fixed step, semi-implicit.** Row ``n`` is the state after exactly ``n`` steps of ``dt_s``, and
+  position advances with the *updated* speed. The scheme is pinned against the explicit alternative,
   not against a number copied out of a run.
-* **The loop is closed, and its ordering is pinned.** Four caller-owned wheel angular speeds sit in
-  the state, and one step reads ``drive torque -> wheel torque -> slip -> Fx -> force on the car``
-  with the wheel states and the speed both advanced on the forces evaluated at the state they
-  started from. That ordering is a model, not an implementation detail, so it is asserted: an
-  ordering that advanced the wheels on the *new* speed would give a different and equally plausible
-  launch.
-* **Determinism.** Two runs with the same configuration and the same buffers produce
-  byte-identical traces, and the run reads no clock and no random source. Byte comparison, not
-  ``allclose``: a tolerance would hide the last-bit differences a wall-clock read introduces.
-* **No work the caller did not ask for.** The step loop allocates nothing measurable in Numba's
-  runtime, the caller owns every buffer, and the inputs are left untouched.
+* **A closed loop with a pinned ordering.** Each step reads ``drive torque -> wheel torque ->
+  slip -> Fx -> force on the car``, and advances the wheels and the speed on the forces evaluated
+  at the state the step started from. An ordering that advanced the wheels on the *new* speed would
+  give a different and equally plausible launch, so the order is asserted.
+* **Determinism.** Same configuration and buffers give byte-identical traces, and the run reads no
+  clock and no random source. Bytes, not ``allclose``: a tolerance would hide the last-bit
+  differences a wall-clock read introduces.
+* **No work the caller did not ask for.** The loop allocates nothing measurable in Numba's runtime,
+  the caller owns every buffer, and the inputs are left untouched.
 * **One way in.** The compiled loop runs with ``boundscheck=False``, so ``simulate`` is the only
-  door: a buffer of the wrong type, layout, size or writability, a step count that is not an
-  integer, or a ``dt_s``/``mass_kg`` that would quietly produce NaNs is refused in Python,
-  before the loop starts. P1-T6/T7 widened that door's list: the kernel now indexes the aero
-  curves and divides by the wheel inertia and the rolling radius inside the loop, so every
-  coefficient it reads is checked at the same boundary, and a seeded wheel speed that is not finite
-  is refused rather than carried into every later row.
+  door. Every buffer, step count and coefficient the loop reads is checked in Python first, because
+  the loop cannot check them itself.
 
-Every physical number here comes from the loaded ``car_spec.yaml``, including the drive torque
-used for the representative runs. The one-step launch checks take their drive torque from the
-configuration's own gearbox - first gear, full engagement - so a run that is analytically exact is
-still a run this car would actually make, and there is no tuned constant in this file.
+Every physical number comes from the loaded ``car_spec.yaml``, including the drive torque for the
+representative runs: the one-step launch checks take it from the configuration's own gearbox, so
+there is no tuned constant in this file.
 
-The ``kernel`` marker keeps these apart from the ``toolchain`` probe: that one proves Numba
-compiles here, this one proves the car's integrator is right.
+The ``kernel`` marker keeps these apart from the ``toolchain`` probe: that one proves Numba compiles
+here, this one proves the car's integrator is right.
 """
 
 from __future__ import annotations
@@ -73,14 +64,12 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.kernel
 
-# The compiled loop is private to the module - that is the point of the fix these tests cover -
-# and the dispatcher's own attributes are the only honest evidence of what the compiler was
-# told, so the two tests below read them off the object rather than off the decorator text.
+# Private to the module. The dispatcher's own attributes are the only honest record of what the
+# compiler was told, so the options test reads them off the object rather than the decorator text.
 COMPILED_LOOP = longitudinal._integrate  # pyright: ignore[reportPrivateUsage]
 
-# The four wheel columns of the state, in the order `forces` numbers the contact patches. Held here
-# as the kernel's own names and asserted against `forces`'s, so a reordering of one and not the
-# other cannot quietly drive the wrong wheel.
+# The four wheel columns in the order `forces` numbers the contact patches. Asserted against
+# `forces`'s own constants, so a reordering of one and not the other cannot drive the wrong wheel.
 WHEEL_COLUMNS: tuple[int, ...] = (
     longitudinal.FL_WHEEL_INDEX,
     longitudinal.FR_WHEEL_INDEX,
@@ -88,8 +77,7 @@ WHEEL_COLUMNS: tuple[int, ...] = (
     longitudinal.RR_WHEEL_INDEX,
 )
 
-# Wall-clock and randomness entry points. A simulation that reads any of them cannot be
-# byte-reproducible, so the determinism test replaces them with functions that raise.
+# A simulation that reads any of these cannot be byte-reproducible.
 TIME_AND_RANDOM: tuple[tuple[str, str], ...] = (
     ("time", "perf_counter"),
     ("time", "monotonic"),
@@ -99,10 +87,8 @@ TIME_AND_RANDOM: tuple[tuple[str, str], ...] = (
     ("random", "randrange"),
 )
 
-# The body of the fresh interpreter the cache test runs: the same entry point this file uses,
-# with the configuration loaded from the same car_spec.yaml, so the only thing isolated from the
-# pytest process is the compile cache. It prints the speed reached so the parent can see that the
-# run happened rather than taking the child's silence as success.
+# Same entry point and the same car_spec.yaml as this file, so only the compile cache is isolated
+# from the pytest process. It prints the final speed so the parent sees the run happened.
 CACHE_PROBE_SCRIPT = (
     "import numpy as np\n"
     "from f1telemetry.contracts.car_spec import load_car_spec\n"
@@ -128,7 +114,6 @@ def config(spec: CarSpec) -> KernelConfig:
 
 @pytest.fixture(scope="module")
 def steps_per_second(config: KernelConfig) -> int:
-    """How many fixed steps one simulated second takes, read from the configured step."""
     return round(1.0 / config.dt_s)
 
 
@@ -136,10 +121,8 @@ def steps_per_second(config: KernelConfig) -> int:
 def launch_torque(config: KernelConfig) -> float:
     """The differential-side torque this car makes in first gear at full engagement, in Nm.
 
-    Taken from the car's own drivetrain rather than written down: :func:`gearbox.step_gearbox` with
-    the launch state (first gear, no shift running, clutch closed) and an idle engine is the
-    torque a standing start actually begins with, and reading it keeps this file free of tuned
-    numbers while still being a torque the car would really transmit.
+    Read from the drivetrain rather than written down, so the file stays free of tuned numbers while
+    still using a torque the car would really transmit.
     """
     state = gearbox.initial_state()
     torque = gearbox.step_gearbox(config, state, config.idle_rpm, 1.0)
@@ -148,8 +131,31 @@ def launch_torque(config: KernelConfig) -> float:
 
 
 def _rolling_wheels(config: KernelConfig, speed_m_s: float) -> float:
-    """The wheel angular speed that makes ``omega r`` equal the road speed."""
     return speed_m_s / config.rolling_radius_m
+
+
+def _rolling_state(
+    config: KernelConfig,
+    speed_m_s: float,
+    previous_acceleration_m_s2: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> np.ndarray:
+    return longitudinal.initial_state(
+        speed_m_s=speed_m_s,
+        wheel_omega_rad_s=_rolling_wheels(config, speed_m_s),
+        previous_acceleration_m_s2=previous_acceleration_m_s2,
+    )
+
+
+def _aero(config: KernelConfig, speed_m_s: float) -> tuple[float, float]:
+    """The downforce and drag at ``speed_m_s``, from the same call the kernel makes."""
+    return forces.aero_forces(
+        speed_m_s,
+        config.air_density_kg_m3,
+        config.reference_area_m2,
+        config.aero_speed_m_s,
+        config.cl,
+        config.cd,
+    )
 
 
 def _run(
@@ -158,7 +164,6 @@ def _run(
     drive_torque_nm: np.ndarray,
     state: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Integrate into a fresh caller-owned buffer and hand it back."""
     seed = longitudinal.initial_state() if state is None else state
     return longitudinal.simulate(config, steps, seed, drive_torque_nm, longitudinal.allocate(steps))
 
@@ -170,11 +175,7 @@ def _run_with_diagnostics(
     state: np.ndarray | None = None,
     brake_torque_nm: np.ndarray | None = None,
 ) -> tuple[np.ndarray, longitudinal.StepOutputs]:
-    """A run that also records the per-step corner diagnostics, and both of the caller's buffers.
-
-    The same shape as :func:`_run` with the optional ``step_outputs`` buffer added, so a test that
-    needs the loads has to ask for them rather than infer them from the trace.
-    """
+    """Like :func:`_run`, and also returns the per-step corner diagnostics."""
     seed = longitudinal.initial_state() if state is None else state
     out = longitudinal.allocate(steps)
     step_outputs = longitudinal.allocate_step_outputs(steps)
@@ -197,13 +198,10 @@ def _reference_loads(
     az_m_s2: float,
     downforce_n: float,
 ) -> loads.CornerLoads:
-    """The load model's own Python composition, called with the inputs one kernel step would use.
+    """The load model's own composition, not the kernel's arithmetic.
 
-    Deliberately *not* the kernel's arithmetic: it goes through
-    :func:`~f1telemetry.physics.loads.step_loads`, which validates the configuration, refuses the
-    impossible cases and reads the accelerations as keyword arguments. So a kernel that passed the
-    accelerations in the wrong order or dropped the ``az`` term would disagree with this even though
-    both sides call the same compiled primitives.
+    Going through :func:`~f1telemetry.physics.loads.step_loads` means a kernel that passed the
+    accelerations in the wrong order, or dropped the ``az`` term, would disagree with this.
     """
     return loads.step_loads(
         config,
@@ -215,25 +213,19 @@ def _reference_loads(
 
 
 def _coasting(config: KernelConfig, steps: int, speed_m_s: float) -> np.ndarray:
-    """A run with no drive torque and all four wheels rolling at the road speed.
+    """No drive torque and all four wheels rolling at the road speed.
 
-    The one state in which the closed loop has nothing to do: every slip is zero, so every tyre
-    force is zero, the wheels do not move, and the only force left on the car is drag. That makes
-    it the cleanest fixture for the scheme and the buffer claims, which are about the integrator
-    rather than about the tyre model.
+    Every slip is zero, so every tyre force is zero and the only force left on the car is drag.
+    That makes it the cleanest fixture for the integrator and buffer claims, which are not about
+    the tyres.
     """
-    state = longitudinal.initial_state(
-        speed_m_s=speed_m_s, wheel_omega_rad_s=_rolling_wheels(config, speed_m_s)
-    )
-    return _run(config, steps, np.zeros(steps, dtype=np.float64), state)
+    return _run(config, steps, np.zeros(steps, dtype=np.float64), _rolling_state(config, speed_m_s))
 
 
 def test_caller_brake_torque_slows_car_and_applies_to_front_wheels(config: KernelConfig) -> None:
     steps = 100
     speed = 30.0
-    state = longitudinal.initial_state(
-        speed_m_s=speed, wheel_omega_rad_s=_rolling_wheels(config, speed)
-    )
+    state = _rolling_state(config, speed)
     brake = np.full((steps, forces.WHEEL_COUNT), -500.0, dtype=np.float64)
     trace = longitudinal.simulate(
         config,
@@ -271,7 +263,6 @@ def test_brake_torque_history_is_validated(config: KernelConfig) -> None:
 
 
 def test_allocate_step_outputs_hands_back_caller_owned_buffers_of_the_declared_layout() -> None:
-    """Diagnostics have a named, caller-owned buffer for every reported per-wheel value."""
     steps = 5
     step_outputs = longitudinal.allocate_step_outputs(steps)
     assert isinstance(step_outputs, longitudinal.StepOutputs)
@@ -304,14 +295,7 @@ def test_every_step_loads_what_the_load_model_says_from_that_row(
     launch_torque: float,
     steps_per_second: int,
 ) -> None:
-    """The kernel's corner loads, travel and flags against the load model's own composition.
-
-    Step for step and corner for corner, from the acceleration and downforce the row that the step
-    started from carries - not from a closed form and not from a number copied out of a run. The
-    reference goes through :func:`~f1telemetry.physics.loads.step_loads`, which takes the three
-    accelerations as separate keyword arguments, so a kernel that passed them in the wrong order,
-    dropped the ``az`` term or distributed the aero load the P1 way would disagree here even though
-    both sides call the same compiled primitives.
+    """Corner loads, travel and flags against the load model, step for step and corner for corner.
 
     Equality rather than a tolerance: both sides run the same compiled functions on the same inputs,
     so anything but bit identity would mean the kernel had done something in between.
@@ -327,14 +311,7 @@ def test_every_step_loads_what_the_load_model_says_from_that_row(
     )
 
     for index in range(steps):
-        downforce_n, _ = forces.aero_forces(
-            float(trace[index, longitudinal.V_INDEX]),
-            config.air_density_kg_m3,
-            config.reference_area_m2,
-            config.aero_speed_m_s,
-            config.cl,
-            config.cd,
-        )
+        downforce_n, _ = _aero(config, float(trace[index, longitudinal.V_INDEX]))
         corner = _reference_loads(
             config,
             float(trace[index, longitudinal.PREVIOUS_AX_INDEX]),
@@ -349,7 +326,6 @@ def test_every_step_loads_what_the_load_model_says_from_that_row(
         assert np.array_equal(
             step_outputs.travel_limited[index], np.array(corner.travel_limited, dtype=np.int64)
         ), index
-        # Check the exact combined-slip force from the integrated slip state and applied load.
         for wheel in range(forces.WHEEL_COUNT):
             expected_fx_n, expected_fy_n = combined_slip.combined_tyre_forces(
                 float(step_outputs.slip_ratio[index, wheel]),
@@ -368,35 +344,18 @@ def test_the_longitudinal_transfer_moves_load_rearward_under_power_and_forward_u
 ) -> None:
     """``dFz = m ax h / L`` from the front axle to the rear, with the total untouched.
 
-    Two one-step runs from the same rolling state that differ only in the seeded previous
-    acceleration, so the transfer is the *only* thing that differs. Under power the rear axle must
-    end up carrying more than the front, under braking less, and both must still carry the car's
-    weight plus its own downforce - transfer moves load around the car, it does not create any.
+    Two one-step runs that differ only in the seeded acceleration, so the transfer is the only thing
+    that differs. Transfer moves load around the car and does not create any.
     """
     steps = 1
     speed = 40.0
-    rolling = _rolling_wheels(config, speed)
     torque = np.zeros(steps, dtype=np.float64)
-    downforce_n, _ = forces.aero_forces(
-        speed,
-        config.air_density_kg_m3,
-        config.reference_area_m2,
-        config.aero_speed_m_s,
-        config.cl,
-        config.cd,
-    )
+    downforce_n, _ = _aero(config, speed)
     front, rear = forces.FL_WHEEL_INDEX, forces.RL_WHEEL_INDEX
 
     def axle_loads(ax_m_s2: float) -> tuple[float, float, np.ndarray]:
         _, step_outputs = _run_with_diagnostics(
-            config,
-            steps,
-            torque,
-            longitudinal.initial_state(
-                speed_m_s=speed,
-                wheel_omega_rad_s=rolling,
-                previous_acceleration_m_s2=(ax_m_s2, 0.0, 0.0),
-            ),
+            config, steps, torque, _rolling_state(config, speed, (ax_m_s2, 0.0, 0.0))
         )
         row = step_outputs.load_n[0]
         return (
@@ -412,8 +371,7 @@ def test_the_longitudinal_transfer_moves_load_rearward_under_power_and_forward_u
 
     assert accelerating_rear_n > accelerating_front_n, "power loads the rear axle"
     assert braking_rear_n < braking_front_n, "braking loads the front axle"
-    # Symmetric about the untransferred split: +ax and -ax move the same load in opposite
-    # directions, so the two runs' rear loads bracket the static one equally.
+    # +ax and -ax shift load in opposite directions, so the rear loads bracket the static one.
     assert accelerating_rear_n - static_rear_n == pytest.approx(
         static_rear_n - braking_rear_n, rel=1e-12
     )
@@ -426,50 +384,31 @@ def test_the_longitudinal_transfer_moves_load_rearward_under_power_and_forward_u
 def test_a_corner_that_reaches_its_travel_limit_is_flagged_and_the_limit_is_reported(
     config: KernelConfig,
 ) -> None:
-    """The travel band is enforced and the corner that hit it says so.
+    """The travel band is enforced, and the corner that hit it says so.
 
-    Checked against a car with a deliberately tiny configured travel limit, because this car's own
-    25 mm of travel is more than a normal acceleration can use - which is itself worth asserting,
-    since a flag that can only be raised by an absurd number is not evidence that the limit is
-    wired up at all. Three things are checked on the flagged run: the flag is set on the corners
-    that ran out of travel and clear on the axle that did not, the front axle's reported travel is
-    inside the band it was clamped to, and the flags match the load model's own report corner for
-    corner.
+    Checked against a car with a tiny travel limit, because this car's own 25 mm is more
+    than a normal acceleration can use. A flag that only an absurd number can raise is not evidence
+    that the limit is wired up.
     """
     tight = replace(config, axle_travel_limit_m=np.full(2, 5.0e-4, dtype=np.float64))
     steps = 1
     speed = 40.0
-    rolling = _rolling_wheels(config, speed)
     torque = np.zeros(steps, dtype=np.float64)
-    downforce_n, _ = forces.aero_forces(
-        speed,
-        config.air_density_kg_m3,
-        config.reference_area_m2,
-        config.aero_speed_m_s,
-        config.cl,
-        config.cd,
-    )
+    downforce_n, _ = _aero(config, speed)
 
-    def flagged(ax_m_s2: float, config_used: KernelConfig = config) -> longitudinal.StepOutputs:
+    def flagged(cfg: KernelConfig, ax_m_s2: float) -> longitudinal.StepOutputs:
         _, step_outputs = _run_with_diagnostics(
-            config_used,
-            steps,
-            torque,
-            longitudinal.initial_state(
-                speed_m_s=speed,
-                wheel_omega_rad_s=rolling,
-                previous_acceleration_m_s2=(ax_m_s2, 0.0, 0.0),
-            ),
+            cfg, steps, torque, _rolling_state(config, speed, (ax_m_s2, 0.0, 0.0))
         )
         return step_outputs
 
     # A normal run on this car never reaches its own stops.
-    assert np.count_nonzero(flagged(10.0).travel_limited) == 0
+    assert np.count_nonzero(flagged(config, 10.0).travel_limited) == 0
 
     # 4.5 m/s^2 moves 158.9 N onto each rear corner and off each front one. That is past the tight
     # front band (150 N) and inside the rear one (175 N), which is what makes the flag per corner
     # rather than per car.
-    loaded = flagged(4.5, tight)
+    loaded = flagged(tight, 4.5)
     drooping = loaded.travel_limited[0]
     assert drooping[forces.FL_WHEEL_INDEX] == 1
     assert drooping[forces.FR_WHEEL_INDEX] == 1
@@ -486,8 +425,7 @@ def test_a_corner_that_reaches_its_travel_limit_is_flagged_and_the_limit_is_repo
     assert np.array_equal(loaded.travel_limited[0], np.array(corner.travel_limited, dtype=np.int64))
     assert np.array_equal(loaded.load_n[0], corner.load_n)
     assert np.array_equal(loaded.travel_m[0], corner.travel_m)
-    # The transfer the clamp removed is handed to the corners that still have room, so the total is
-    # still the car's weight plus its own downforce.
+    # The transfer the clamp removed goes to the corners that still have room, so the total holds.
     assert float(loaded.load_n[0].sum()) == pytest.approx(
         config.mass_kg * config.gravity_m_s2 + downforce_n, rel=1e-12
     )
@@ -498,21 +436,19 @@ def test_the_step_resolves_an_acceleration_and_carries_it_into_the_next_step(
     launch_torque: float,
     steps_per_second: int,
 ) -> None:
-    """The load lag is one step, and it is fed by the acceleration this kernel actually resolved.
+    """The load lag is one step, fed by the acceleration this kernel actually resolved.
 
-    ``PREVIOUS_AX`` is written every step with ``F/m`` for that step, so the loads the *next* step
-    asks for are the ones this step's forces imply - which is the plan's explicit answer to the
-    load/force algebraic loop. Three things make that checkable rather than assumed: the column
-    equals the speed increment the row pair implies, the seeded value is *replaced* after one step
-    rather than held, and the first step's loads are visibly different when the seed is different.
+    ``PREVIOUS_AX`` is written every step with ``F/m`` for that step, which is the plan's explicit
+    answer to the load/force algebraic loop. The column equals the speed increment the row pair
+    implies, the seed is replaced after one step rather than held, and a different seed changes the
+    first step's loads.
     """
     steps = steps_per_second // 20
     torque = np.full(steps, launch_torque, dtype=np.float64)
 
     seeded = longitudinal.initial_state(previous_acceleration_m_s2=(9.0, 0.0, 0.0))
     trace, step_outputs = _run_with_diagnostics(config, steps, torque, seeded)
-    zero_seed = longitudinal.initial_state()
-    _, unseeded = _run_with_diagnostics(config, steps, torque, zero_seed)
+    _, unseeded = _run_with_diagnostics(config, steps, torque, longitudinal.initial_state())
 
     # Row 0 is the caller's state, so the seed is what the first step's loads are computed from.
     assert trace[0, longitudinal.PREVIOUS_AX_INDEX] == 9.0
@@ -535,17 +471,13 @@ def test_the_step_resolves_an_acceleration_and_carries_it_into_the_next_step(
         trace[1:, longitudinal.PREVIOUS_AY_INDEX], ay_from_body_velocity, rtol=1e-8, atol=1e-8
     )
     assert np.array_equal(trace[1:, longitudinal.PREVIOUS_AZ_INDEX], np.zeros(steps))
-    assert np.array_equal(trace[1:, longitudinal.PREVIOUS_AZ_INDEX], np.zeros(steps))
 
 
 def test_the_kernel_picks_the_same_axle_the_load_model_does(config: KernelConfig) -> None:
-    """The kernel derives an axle from the corner order; this pins it against the load model.
+    """The kernel derives an axle from the corner order; this pins it against the load module.
 
-    The load module keeps its corner-to-axle table private and reads it positionally, because an
-    axle is the two adjacent corners in ``FL, FR, RL, RR`` order. The kernel needs the same mapping
-    to pick a corner's ride rate, and derives it from the wheel count per axle rather than
-    restating a table - which is only safe while the two agree, so this is the test that says they
-    do.
+    The load module keeps its corner-to-axle table private. The kernel derives the same mapping from
+    the wheel count per axle, which is only safe while the two agree.
     """
     derived = tuple(wheel // forces.WHEELS_PER_AXLE_COUNT for wheel in range(forces.WHEEL_COUNT))
     assert derived == loads._AXLE_OF_CORNER  # pyright: ignore[reportPrivateUsage]
@@ -556,12 +488,10 @@ def test_a_run_without_diagnostics_is_byte_identical_to_one_with_them(
     launch_torque: float,
     steps_per_second: int,
 ) -> None:
-    """Asking for the per-step diagnostics is the only difference between the two calls.
+    """Asking for the diagnostics is the only difference between the two calls.
 
-    The buffers are the caller's to fill, so the P1 signature - five positional arguments and
-    nothing else - has to keep working and has to keep producing the same bytes. Also pinned: the
-    keyword is keyword-only, so a caller cannot accidentally pass a diagnostics buffer into the
-    brake-torque slot, and a zero-step run against zero-row diagnostics is not a special case.
+    The P1 signature has to keep working and produce the same bytes. The diagnostics keyword is
+    keyword-only, so a diagnostics buffer cannot land in the brake-torque slot by accident.
     """
     steps = steps_per_second // 4
     torque = np.full(steps, launch_torque, dtype=np.float64)
@@ -645,9 +575,8 @@ def test_a_diagnostic_buffer_the_run_cannot_fill_is_refused_in_python(
     """Every diagnostic buffer is checked at the same boundary as every other kernel buffer.
 
     ``boundscheck=False`` writes into these, so a short row count or a missing wheel column is an
-    out-of-bounds write rather than an error - the same argument that makes ``simulate`` the only
-    way into the loop applies to the optional buffers too. The dtype is part of it: the flags are
-    ``int64`` and a ``float32`` one would compile as a differently-typed kernel.
+    out-of-bounds write rather than an error. The flags are ``int64``, and a ``float32`` one would
+    compile as a differently-typed kernel.
     """
     steps = 3
     out = longitudinal.allocate(steps)
@@ -670,8 +599,8 @@ def test_diagnostic_buffers_that_are_not_writeable_or_are_aliased_are_refused(
 ) -> None:
     """The four buffers are separate destinations, so a read-only or shared one is a caller bug.
 
-    Aliasing is the nastier of the two: handing the same array for the loads and the longitudinal
-    force would produce a run that looks finished, with one corner quantity overwritten by another.
+    Aliasing is the nastier case: a run that shared the loads with the longitudinal force would look
+    finished, with one corner quantity silently overwritten by another.
     """
     steps = 3
     out = longitudinal.allocate(steps)
@@ -693,10 +622,8 @@ def test_diagnostic_buffers_that_are_not_writeable_or_are_aliased_are_refused(
 def test_something_that_is_not_a_step_output_group_is_refused(config: KernelConfig) -> None:
     """The four buffers arrive as one named group, not as four loose arguments.
 
-    A plain tuple of four correctly shaped arrays would be accepted by a loose signature and
-    rejected here, which is the point: the fields are named in the contract, and a caller that
-    ordered them by hand would be one refactor away from silently swapping the travel flags for
-    the longitudinal force.
+    A caller that ordered the fields by hand would be one refactor away from silently swapping the
+    travel flags for the longitudinal force.
     """
     steps = 3
     good = longitudinal.allocate_step_outputs(steps)
@@ -722,7 +649,7 @@ def _reference(
     drive_torque_nm: np.ndarray,
     state: np.ndarray,
 ) -> np.ndarray:
-    """P2 step written in Python, retaining the kernel's explicit update order."""
+    """The P2 step written in plain Python, keeping the kernel's explicit update order."""
     out = np.zeros((steps + 1, longitudinal.STATE_SIZE), dtype=np.float64)
     out[0] = state
     parameters = combined_slip.prepare_combined_slip_parameters(config, "_reference")
@@ -741,14 +668,7 @@ def _reference(
         vx, vy = previous[longitudinal.V_INDEX], previous[longitudinal.VY_INDEX]
         yaw = previous[longitudinal.YAW_RATE_INDEX]
         speed = math.hypot(vx, vy)
-        downforce, drag = forces.aero_forces(
-            speed,
-            config.air_density_kg_m3,
-            config.reference_area_m2,
-            config.aero_speed_m_s,
-            config.cl,
-            config.cd,
-        )
+        downforce, drag = _aero(config, speed)
         corner = _reference_loads(
             config,
             float(previous[longitudinal.PREVIOUS_AX_INDEX]),
@@ -854,21 +774,13 @@ def test_the_kernel_compiles_to_machine_code_and_writes_a_compile_cache(
     config: KernelConfig,
     tmp_path: Path,
 ) -> None:
-    """A dispatcher entry is not a compiled kernel, and `cache=True` can do nothing silently.
+    """A dispatcher entry is not a compiled kernel, and ``cache=True`` can do nothing silently.
 
-    Two pieces of evidence, both measured rather than read back out of this file.
-
-    Calling the kernel registers a compiled signature, which rules out a Python fallback. The
-    cache claim needs more than that, because it is not a claim about this process: a test that
-    accepts a cache index from anywhere on disk is happy with one an earlier run left behind, so
-    it goes on passing after the decorator is changed to `cache=False`. A test that cannot fail
-    when the thing it names breaks is not a test.
-
-    So the compile happens in a fresh interpreter whose `NUMBA_CACHE_DIR` is this test's empty
-    `tmp_path`, and the index has to turn up there. The subprocess is not optional: this module
-    and its dispatcher are already imported in the pytest process, so its signature was compiled
-    before the test could ask for a cold one. `NUMBA_CACHE_DIR` also takes priority over the
-    `__pycache__` beside the source, so the child cannot load an index an earlier run wrote.
+    A cache index found anywhere on disk would satisfy a check that only globbed for one, and that
+    check would keep passing after the decorator became ``cache=False``. So the compile happens in a
+    fresh interpreter whose ``NUMBA_CACHE_DIR`` is an empty ``tmp_path``, and the index must turn up
+    there. This module's dispatcher is compiled in the pytest process, so the child is the only
+    place a cold compile can be observed.
     """
     _run(config, 4, np.zeros(4, dtype=np.float64))
     assert len(COMPILED_LOOP.signatures) >= 1, (
@@ -888,8 +800,7 @@ def test_the_kernel_compiles_to_machine_code_and_writes_a_compile_cache(
     assert reported, f"the fresh interpreter printed no trace row; stderr was {completed.stderr}"
     assert math.isfinite(float(reported)), f"the fresh interpreter reported {reported}"
 
-    # numba nests the index under a subdirectory derived from the source location, so the temp
-    # dir is searched rather than listed.
+    # numba nests the index under a subdirectory derived from the source location, so search for it.
     written = sorted(tmp_path.rglob("longitudinal.*.nbi"))
     assert written, (
         f"numba wrote no .nbi cache index for the longitudinal kernel into the empty {tmp_path}, "
@@ -899,11 +810,10 @@ def test_the_kernel_compiles_to_machine_code_and_writes_a_compile_cache(
 
 
 def test_the_kernel_options_match_plan_section_4_1() -> None:
-    """PLAN.md section 4.1 rule 4, read off the dispatcher rather than off the decorator.
+    """PLAN.md section 4.1 rule 4, read off the dispatcher.
 
-    ``boundscheck=False`` is the option that makes the compiled loop unsafe to call directly -
-    an undersized buffer is a silent out-of-bounds write - and it is why ``_integrate`` is
-    private and ``simulate`` validates. Asserted here so that cannot be changed by accident.
+    ``boundscheck=False`` makes the compiled loop unsafe to call directly, and why ``_integrate``
+    is private and ``simulate`` validates. Asserted so that cannot change by accident.
     """
     options = dict(COMPILED_LOOP.targetoptions)
     assert options["fastmath"] is False
@@ -919,18 +829,14 @@ def test_the_step_is_data_and_each_row_is_exactly_one_configured_step(
 ) -> None:
     """100 µs is what the spec says, and each row advances by exactly that, using its own speed.
 
-    This is the fixed-step claim in its simplest falsifiable form: one simulated second of rows
-    covers exactly one second of travel. The increment is checked against the speed *that row*
-    produced rather than the one the row started with, because that is the semi-implicit rule and
-    because a coasting car's speed is not constant - the two are not the same number here, which is
-    what makes the check able to fail.
+    The increment is checked against the speed *that row* produced, which is the semi-implicit rule.
+    A coasting car's speed is not constant, so the two numbers differ and the check can fail.
     """
     assert config.dt_s == pytest.approx(1.0e-4, rel=0.0, abs=0.0)
     assert round(1.0 / config.dt_s) == 10_000
 
     steps = steps_per_second
-    speed = 30.0
-    out = _coasting(config, steps, speed)
+    out = _coasting(config, steps, 30.0)
     assert out.shape == (steps + 1, longitudinal.STATE_SIZE)
     heading = out[1:, longitudinal.PSI_INDEX]
     vx = out[1:, longitudinal.V_INDEX]
@@ -939,16 +845,11 @@ def test_the_step_is_data_and_each_row_is_exactly_one_configured_step(
     expected_dy = (vx * np.sin(heading) + vy * np.cos(heading)) * config.dt_s
     assert np.allclose(np.diff(out[:, longitudinal.X_INDEX]), expected_dx, rtol=0.0, atol=1e-12)
     assert np.allclose(np.diff(out[:, longitudinal.Y_INDEX]), expected_dy, rtol=0.0, atol=1e-12)
-    # One row per step, plus the seed, and the seed is the row zero the caller handed over.
     assert out.shape[0] == steps + 1
 
 
 def test_the_caller_owns_the_state_and_trace_buffers(config: KernelConfig) -> None:
-    """Row 0 of the trace is the caller's state, and the caller hands over the whole buffer.
-
-    ``steps`` of zero is the degenerate case of the same rule: row 0 is the seeded state and
-    nothing else is written, so a run of no length is not a special case.
-    """
+    """Row 0 of the trace is the caller's state; ``steps == 0`` is the same rule with no rows."""
     state = longitudinal.initial_state(distance_m=12.5, speed_m_s=30.0, wheel_omega_rad_s=140.0)
     assert state.shape == (longitudinal.STATE_SIZE,)
     assert state.dtype == np.float64
@@ -967,15 +868,13 @@ def test_the_caller_owns_the_state_and_trace_buffers(config: KernelConfig) -> No
     assert np.array_equal(returned, state.reshape(1, longitudinal.STATE_SIZE))
 
 
-def test_the_state_carries_four_wheel_angular_speeds_in_the_physysics_corner_order(
+def test_the_state_carries_four_wheel_angular_speeds_in_the_physics_corner_order(
     config: KernelConfig,
 ) -> None:
-    """The P2 extension preserves the P1 prefix and its four wheel-speed columns.
+    """The P2 extension keeps the P1 prefix and four wheel-speed columns in the force model's order.
 
-    Asserted against the force model's own constants rather than against numbers written here, so
-    the two cannot disagree about which column is which - a trace whose left wheel was driven and
-    right wheel not would still be finite, still accelerate, and still pass every other test.
-    ``PLAN.md`` section 4's state vector lists ``omega`` per wheel, and this is where that lands.
+    A trace whose left wheel was driven and right wheel not would still be finite, still accelerate,
+    and still pass every other test, so the column identities are asserted here.
     """
     assert longitudinal.STATE_SIZE == 24
     assert WHEEL_COLUMNS == (2, 3, 4, 5)
@@ -983,15 +882,14 @@ def test_the_state_carries_four_wheel_angular_speeds_in_the_physysics_corner_ord
     assert WHEEL_COLUMNS[forces.FR_WHEEL_INDEX] == longitudinal.FR_WHEEL_INDEX
     assert WHEEL_COLUMNS[forces.RL_WHEEL_INDEX] == longitudinal.RL_WHEEL_INDEX
     assert WHEEL_COLUMNS[forces.RR_WHEEL_INDEX] == longitudinal.RR_WHEEL_INDEX
-    # The rear pair starts at the offset the drive split tests against, so C9.1.1's axle is a
-    # contiguous block of the state and not two indices chosen by hand.
+    # The rear pair starts at the offset the drive split tests against, so the axle is a contiguous
+    # block of the state and not two indices chosen by hand.
     assert (
         longitudinal.RL_WHEEL_INDEX == longitudinal.FL_WHEEL_INDEX + forces.FIRST_REAR_WHEEL_INDEX
     )
     assert longitudinal.RR_WHEEL_INDEX == longitudinal.RL_WHEEL_INDEX + 1
 
-    # Every column the run writes is a wheel speed, and a rolling start puts the same number in all
-    # four: the default is zero, and a caller seeding a moving car has to say so explicitly.
+    # The default is zero, and a caller seeding a moving car has to say so explicitly.
     assert [float(longitudinal.initial_state()[column]) for column in WHEEL_COLUMNS] == [0.0] * 4
     rolling = _rolling_wheels(config, 45.0)
     seeded = longitudinal.initial_state(speed_m_s=45.0, wheel_omega_rad_s=rolling)
@@ -1037,9 +935,7 @@ def test_p2_state_uses_named_columns_and_seeds_caller_owned_transient_states() -
     ] == pytest.approx([5.0, -6.0, 0.7])
 
 
-def test_integrator_advances_appended_planar_state(
-    config: KernelConfig,
-) -> None:
+def test_integrator_advances_appended_planar_state(config: KernelConfig) -> None:
     state = longitudinal.initial_state(
         vy_m_s=1.25,
         yaw_rate_rad_s=-0.5,
@@ -1054,24 +950,27 @@ def test_integrator_advances_appended_planar_state(
         np.zeros(3, dtype=np.float64),
         longitudinal.allocate(3),
     )
-    assert out[-1, longitudinal.VY_INDEX] != state[longitudinal.VY_INDEX]
-    assert out[-1, longitudinal.YAW_RATE_INDEX] != state[longitudinal.YAW_RATE_INDEX]
-    assert out[-1, longitudinal.PSI_INDEX] != state[longitudinal.PSI_INDEX]
-    assert out[-1, longitudinal.ROLL_INDEX] != state[longitudinal.ROLL_INDEX]
-    assert out[-1, longitudinal.PITCH_INDEX] != state[longitudinal.PITCH_INDEX]
-    assert out[-1, longitudinal.HEAVE_INDEX] != state[longitudinal.HEAVE_INDEX]
+    for column in (
+        longitudinal.VY_INDEX,
+        longitudinal.YAW_RATE_INDEX,
+        longitudinal.PSI_INDEX,
+        longitudinal.ROLL_INDEX,
+        longitudinal.PITCH_INDEX,
+        longitudinal.HEAVE_INDEX,
+    ):
+        assert out[-1, column] != state[column], column
 
 
 def test_the_first_step_of_a_standing_launch_is_exactly_predictable(
     config: KernelConfig,
     launch_torque: float,
 ) -> None:
-    """One step from rest, written out by hand, with every number the car supplies.
+    """One step from rest, written out by hand with every number the car supplies.
 
-    At rest with stationary wheels the slip is exactly zero, so the tyre force is exactly zero and
-    the drag is exactly zero: the car cannot move on step one however hard it is driven. The rear
-    wheels, and only the rear wheels, gain ``T / 2 / I`` of angular speed. That is C9.1.1, the
-    equal split and the whole of P1-T6 in four assertions with no tolerance in any of them.
+    At rest, stationary wheels the slip is exactly zero, so the tyre force and the drag are exactly
+    zero, and the car cannot move on step one however hard it is driven. Only the rear wheels gain
+    ``T / 2 / I`` of angular speed. That is the equal rear split, checked with no tolerance except
+    where the arithmetic has one.
     """
     steps = 1
     torque = np.full(steps, launch_torque, dtype=np.float64)
@@ -1087,8 +986,7 @@ def test_the_first_step_of_a_standing_launch_is_exactly_predictable(
         (launch_torque / 2.0) / inertia * dt_s, rel=1e-12
     )
     assert out[1, longitudinal.RR_WHEEL_INDEX] == out[1, longitudinal.RL_WHEEL_INDEX]
-    # And nothing was invented on the way: the trace is exactly the seed with two rear wheels
-    # turned, which is what "the forces are zero at zero slip" has to mean for the integrator too.
+    # Nothing else was invented: the trace is the seed with two rear wheels turned.
     assert np.count_nonzero(out[1]) == 2
 
 
@@ -1097,33 +995,21 @@ def test_aero_downforce_is_conserved_across_the_four_contact_patches(
 ) -> None:
     """The four corner loads sum to weight plus downforce, not weight plus four downforces.
 
-    The conservation is the invariant and it is checked per step, against the load model's own
-    composition rather than against a number out of a run. The *distribution* of the aerodynamic
-    load is the part that deliberately changed in P2-T2: it follows the same CG share as the weight,
-    so the front axle - 46% of the static load - takes 46% of the downforce rather than the quarter
-    P1's kernel added to every patch. Both halves are asserted, because a kernel that kept the old
-    quarter-each split would still conserve the total.
+    The *split* of aero load changed in P2-T2: it follows the CG share, so the front axle takes
+    46% of the downforce rather than the quarter P1 added to every patch. Both halves are asserted,
+    because a kernel that kept the quarter-each split would still conserve the total.
     """
     steps = 5
     speed = 50.0
-    rolling_omega = speed / config.rolling_radius_m
-    state = longitudinal.initial_state(speed_m_s=speed, wheel_omega_rad_s=rolling_omega)
+    state = _rolling_state(config, speed)
     trace, step_outputs = _run_with_diagnostics(
         config, steps, np.zeros(steps, dtype=np.float64), state
     )
 
     front_share = config.cg_to_rear_axle_m / (config.cg_to_front_axle_m + config.cg_to_rear_axle_m)
     for index in range(steps):
-        # Row `index` is the state the step started from, so it is also the speed the aero, and
-        # therefore the downforce, was evaluated at.
-        downforce_n, _ = forces.aero_forces(
-            float(trace[index, longitudinal.V_INDEX]),
-            config.air_density_kg_m3,
-            config.reference_area_m2,
-            config.aero_speed_m_s,
-            config.cl,
-            config.cd,
-        )
+        # Row `index` is the state the step started from, so it is where the aero was evaluated.
+        downforce_n, _ = _aero(config, float(trace[index, longitudinal.V_INDEX]))
         row = step_outputs.load_n[index]
         assert float(row.sum()) == pytest.approx(
             config.mass_kg * config.gravity_m_s2 + downforce_n, rel=1e-12
@@ -1136,8 +1022,7 @@ def test_aero_downforce_is_conserved_across_the_four_contact_patches(
             config.cg_to_front_axle_m + config.cg_to_rear_axle_m,
         )
         assert front_axle_n == pytest.approx(front_share * float(row.sum()) - transfer_n, rel=1e-12)
-        # Not the P1 convention any more: a quarter of the downforce on each front patch would put
-        # the front axle on exactly 50% of the total.
+        # The P1 convention would put the front axle on exactly 50% of the total.
         assert front_axle_n != pytest.approx(0.5 * float(row.sum()), rel=1e-6)
 
 
@@ -1148,10 +1033,9 @@ def test_drive_torque_accelerates_the_car_through_the_rear_wheels_only(
 ) -> None:
     """The end-to-end path: torque -> rear wheel spin -> slip -> force -> car.
 
-    A tenth of a second of this car's own launch is enough for the loop to reach positive slip on
-    the driven axle, so the car has to accelerate; and because only the rear wheels were driven, the
-    fronts are only ever responding to the road. That is checked rather than assumed: a kernel that
-    fed the front axle too would still accelerate, plausibly.
+    A tenth of a second of this car's launch is enough for the driven axle to reach slip-producing
+    speed. The fronts only respond to the road, checked rather than assumed: a kernel that fed
+    the front axle too would still accelerate, plausibly.
     """
     steps = steps_per_second // 10
     outputs = longitudinal.allocate_step_outputs(steps)
@@ -1165,8 +1049,7 @@ def test_drive_torque_accelerates_the_car_through_the_rear_wheels_only(
     )
 
     assert np.isfinite(out).all()
-    # The first step cannot move the car: at rest with stationary wheels the slip is exactly zero,
-    # so the tyre force is exactly zero. From the second step on the car is under power.
+    # The first step cannot move the car: zero slip is zero force. From step two it is under power.
     assert np.all(np.diff(out[1:, longitudinal.V_INDEX]) > 0.0), "the car accelerates under power"
     assert out[-1, longitudinal.X_INDEX] > 0.0
     rear = out[:, [longitudinal.RL_WHEEL_INDEX, longitudinal.RR_WHEEL_INDEX]]
@@ -1177,24 +1060,20 @@ def test_drive_torque_accelerates_the_car_through_the_rear_wheels_only(
         "equal drive torque keeps the two driven wheel speeds within a sub-millimetre-per-second "
         "difference despite tiny mirrored-force roundoff"
     )
-    # The fronts stay at rest for the first rows, because a stationary car with stationary wheels
-    # has no slip and so no force at all; from there they are driven by the road alone.
+    # A stationary car with stationary wheels has no slip and so no force until the road moves them.
     assert np.all(front[:3] == 0.0), "three zero-force steps before the road moves them"
     assert np.all(front[3:] > 0.0), "the fronts are driven by the road, not by the transmission"
-    # Relaxation lets the unpowered front wheels lag the low-speed chassis during this short launch.
-    # They respond to road force, while the driven rear axle retains the larger spin state.
+    # Relaxation lets the unpowered fronts lag the chassis during this short launch.
     assert 0.0 < front[-1, 0] < rear[-1, 0]
 
 
 def test_a_locked_front_wheel_is_spun_up_by_the_road_and_no_lock_is_held(
     config: KernelConfig,
 ) -> None:
-    """C11.4.1 forbids a system designed to prevent wheels locking; C9.1.2 forbids suppressing spin.
+    """Neither a wheel lock nor a suppressed spin is held; both resolve from ordinary inputs.
 
-    There is nothing in the loop that can do either, and the two states are reached here from
-    ordinary inputs rather than by asking for them: a car seeded with stationary wheels is a locked
-    axle, and a car seeded with wheels far faster than the road is a spinning axle. Both have to
-    resolve themselves, in opposite directions, with no flag set.
+    A car seeded with stationary wheels is a locked axle, and one seeded with wheels far faster than
+    the road is a spinning axle. Both must resolve, in opposite directions, with no flag.
     """
     steps = 20_000
     speed = 40.0
@@ -1211,10 +1090,9 @@ def test_a_locked_front_wheel_is_spun_up_by_the_road_and_no_lock_is_held(
         "the road spun the locked wheel up, monotonically at first"
     )
     assert locked[-1, longitudinal.V_INDEX] < speed, "and the slip cost the car speed"
-    # It resolves: with no slip left there is no force left, so the locked axle ends up rolling at
-    # the car's own speed. A large initial overspeed first accelerates the chassis before the
-    # rotating assembly catches up, so this uses enough simulated time for the coupled wheel/chassis
-    # states to settle rather than treating a short transient as steady state.
+    # With no slip left there is no force left, so the axle ends up rolling at the car's speed. A
+    # large overspeed first accelerates the chassis, so this runs long enough for the coupled states
+    # to settle rather than treating a short transient as steady state.
     assert locked[-1, longitudinal.FL_WHEEL_INDEX] == pytest.approx(
         locked[-1, longitudinal.V_INDEX] / config.rolling_radius_m, rel=1.0e-3
     )
@@ -1241,10 +1119,9 @@ def test_the_wheels_and_the_chassis_advance_on_the_same_step_in_a_fixed_order(
 ) -> None:
     """The update order is pinned, because a different one is a different launch.
 
-    Every wheel's speed and the car's speed are advanced from the state they *started* the step
-    with, and the position from the speed that step produced. Both halves are checked as exact
-    identities against the trace rather than against a number out of a run: recompute the step's
-    forces from the row that went in, then require the row that came out to be exactly that.
+    Every wheel and the car's speed advance from the state they *started* the step with, and the
+    position advances from that step's speed. Each step's forces are recomputed from the row
+    that went in, and the row that came out must match them exactly.
     """
     steps = steps_per_second // 20
     outputs = longitudinal.allocate_step_outputs(steps)
@@ -1264,14 +1141,7 @@ def test_the_wheels_and_the_chassis_advance_on_the_same_step_in_a_fixed_order(
         vy = float(previous[longitudinal.VY_INDEX])
         yaw = float(previous[longitudinal.YAW_RATE_INDEX])
         speed = math.hypot(vx, vy)
-        _downforce_n, drag_n = forces.aero_forces(
-            speed,
-            config.air_density_kg_m3,
-            config.reference_area_m2,
-            config.aero_speed_m_s,
-            config.cl,
-            config.cd,
-        )
+        _downforce_n, drag_n = _aero(config, speed)
         net_fx = drag_n * vx / speed if speed > 0.0 else 0.0
         net_fy = drag_n * vy / speed if speed > 0.0 else 0.0
         moment = 0.0
@@ -1332,19 +1202,16 @@ def test_the_wheels_and_the_chassis_advance_on_the_same_step_in_a_fixed_order(
 
 
 def test_a_negative_drive_torque_moves_the_car_backwards(config: KernelConfig) -> None:
-    """Reverse is the same loop with a negative torque, which is what C9.7 asks to be drivable.
+    """Reverse is the same loop with a negative torque, so nothing in the loop knows about gears.
 
-    A reverse gear hands P1-T7 a negative differential-side torque, so nothing in the loop has to
-    know about gears. Checked from rest, where the slip is unambiguous, and on both the sign of the
-    wheel speeds and the sign of the travel - a model that produced a backwards car with forward
-    wheel speeds would be braking, not reversing.
+    Checked on the sign of the wheel speeds and travel. A backwards car with forward wheel speeds
+    would be braking, not reversing.
     """
     steps = 2_000
     torque = np.full(steps, -1_500.0, dtype=np.float64)
     out = _run(config, steps, torque)
 
     assert np.isfinite(out).all()
-    # As forward, the very first step cannot move the car: zero slip is zero force.
     assert np.all(np.diff(out[1:, longitudinal.V_INDEX]) < 0.0)
     assert out[-1, longitudinal.X_INDEX] < 0.0
     assert out[-1, longitudinal.RL_WHEEL_INDEX] < 0.0
@@ -1358,14 +1225,11 @@ def test_a_negative_drive_torque_moves_the_car_backwards(config: KernelConfig) -
 def test_position_uses_the_updated_speed_so_the_scheme_is_semi_implicit(
     config: KernelConfig,
 ) -> None:
-    """Symplectic Euler advances position with the *new* speed; explicit Euler does not.
+    """Symplectic Euler advances position with the *new* speed; explicit Euler uses the old one.
 
-    The scheme is pinned twice against a real run rather than a constant-force one, because the
-    force is now a function of the state and there is no longer a closed form to compare a gap
-    against. First, exactly: row one advances by ``out[1, V] * dt`` and *not* by ``out[0, V] * dt``,
-    which are different numbers here because the car is decelerating into its own drag. Second,
-    against the explicit alternative over the whole run, which integrates position with the previous
-    speed and therefore always covers less ground while the car is moving forwards.
+    Pinned twice against a real run. First exactly: row one advances by ``out[1, V] * dt``, not by
+    ``out[0, V] * dt``, which differ because the car decelerates into its own drag. Second against
+    the explicit alternative over the whole run, which always covers less ground moving forwards.
     """
     steps = 2_000
     speed = 40.0
@@ -1411,10 +1275,8 @@ def test_position_uses_the_updated_speed_so_the_scheme_is_semi_implicit(
             + (vx * math.sin(psi) + vy * math.cos(psi)) * dt_s
         )
     assert not np.array_equal(out, explicit)
-    # The gap's sign follows the car's speed change, not the direction of travel: semi-implicit
-    # advances with the *new* speed, so it covers more ground while accelerating and less while
-    # decelerating. This run coasts into its own drag, so it covers less - and saying which way
-    # without the reason would be a trap for the next person to change the fixture.
+    # The gap's sign follows the speed change, not the travel direction. Semi-implicit covers more
+    # ground while accelerating and less while decelerating, and this run coasts into its own drag.
     assert out[-1, longitudinal.V_INDEX] < speed
     assert out[-1, longitudinal.X_INDEX] < explicit[-1, longitudinal.X_INDEX]
 
@@ -1424,13 +1286,11 @@ def test_the_kernel_agrees_with_a_plain_python_reference(
     launch_torque: float,
     steps_per_second: int,
 ) -> None:
-    """Bit for bit, not approximately: the compiled loop must do the arithmetic it claims.
+    """Two orderings of the same arithmetic, compared to 1e-12.
 
-    The reference borrows the compiled tyre and aero primitives - so this is a comparison of two
-    *orderings* of the same arithmetic rather than of two evaluations of ``sin`` and ``atan``, whose
-    last bits belong to the platform's libm and are not this project's to assert on. Everything the
-    kernel owns - which state a wheel reads, which force a row is built from, and the order the
-    updates happen in - is written out again here in plain Python.
+    The reference borrows the compiled tyre and aero primitives, so the last bits of ``sin`` and
+    ``atan`` belong to libm and go unasserted. Everything the kernel owns - which state a wheel
+    reads, which force a row is built from, and the update order - is written out again in Python.
     """
     steps = steps_per_second // 20
     state = longitudinal.initial_state(speed_m_s=5.0, wheel_omega_rad_s=0.0)
@@ -1444,13 +1304,7 @@ def test_a_car_at_rest_with_no_drive_torque_does_not_move(
     config: KernelConfig,
     steps_per_second: int,
 ) -> None:
-    """Zero in, zero out - the degenerate run, and the check that nothing invents a force.
-
-    Both halves of the loop are at their zeros here: slip is zero, so the Magic Formula returns
-    exactly ``0.0``, and dynamic pressure is zero, so the drag is exactly ``0.0``. A model that
-    produced a small force in that state would quietly manufacture a launch out of numerical dust,
-    and a coast that drifts would make every later trace harder to read.
-    """
+    """Zero in, zero out. Nothing may invent a force from numerical dust."""
     steps = steps_per_second
     out = _run(config, steps, np.zeros(steps, dtype=np.float64))
     assert np.isfinite(out).all()
@@ -1461,14 +1315,11 @@ def test_a_coasting_run_loses_speed_to_drag_while_its_wheels_stay_rolling(
     config: KernelConfig,
     steps_per_second: int,
 ) -> None:
-    """A representative second of coasting: finite throughout, decelerating, wheels barely moving.
+    """A representative coast: finite, decelerating, and the wheels held near rolling.
 
-    Not an analytic claim any more - with the tyre model in the loop the force is a function of the
-    state - so what is asserted is the shape of the run and its finiteness, which is what a
-    diverging formula breaks. The wheels must stay within a slip ratio of rolling rather than
-    running away:
-    the loop is what holds them there, and a kernel that dropped the reaction term would let them
-    drift freely.
+    With the tyre model in the loop the force is a function of state, so this asserts the shape of
+    the run, not a closed form. The loop is what keeps wheels near rolling, and a kernel that
+    dropped the reaction term would let them drift freely.
     """
     steps = steps_per_second
     speed = 60.0
@@ -1488,12 +1339,11 @@ def test_a_second_run_reproduces_the_first_byte_for_byte(
     steps_per_second: int,
     spec: CarSpec,
 ) -> None:
-    """P1-T2: same spec, same buffers, same inputs -> the same bytes, not merely the same numbers.
+    """Same spec, same buffers, same inputs: the same bytes, not merely the same numbers.
 
-    The second run is deliberately hostile in two ways. Its config is rebuilt from the spec, so the
-    check also rules out a kernel keyed off the identity of the config object rather than its
-    values; and it writes over a buffer poisoned with NaN, so anything the first run left behind -
-    an accumulator the caller never zeroed, a row the loop skipped - would show up.
+    The second run is hostile in two ways. Its config is rebuilt from spec, so a kernel keyed off
+    the config object's identity would fail. It also writes over a NaN-poisoned buffer, so anything
+    the first run left behind would show up.
     """
     steps = steps_per_second // 4
     drive_torque = np.full(steps, launch_torque, dtype=np.float64)
@@ -1510,7 +1360,7 @@ def test_the_run_reads_no_clock_and_no_random_source(
     steps_per_second: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Byte-identity is only a determinism claim if nothing outside the arithmetic varies."""
+    """Byte identity is only a determinism claim if nothing outside the arithmetic varies."""
     for module_name, attribute in TIME_AND_RANDOM:
         module = importlib.import_module(module_name)
         if hasattr(module, attribute):
@@ -1525,24 +1375,18 @@ def test_the_run_reads_no_clock_and_no_random_source(
 def test_the_step_loop_performs_no_allocation(config: KernelConfig) -> None:
     """PLAN.md section 4.1 rule 2: no allocation inside the loop, at any step count.
 
-    Measured with Numba's own NRT allocation counters, the only thing that can see an
-    allocation made inside compiled code. Compiled-to-compiled dispatch costs a fixed handful of
-    allocations whatever the loop length, so the claim is that the count does not grow with the
-    number of steps - a run a hundred times longer must not allocate any more than the short one.
-    Closing the loop calls the tyre and aero primitives from inside the loop, so this is the test
-    that says those calls do not allocate either.
+    Measured with Numba's NRT counters, the only thing that sees an allocation made inside compiled
+    code. The count must not grow with step count, and the tyre and aero primitives called from
+    the loop are covered by the same claim.
 
-    The first half of the test is the control: a kernel that *does* allocate inside its loop has
-    to show a count that grows, otherwise the counters are not measuring anything and the second
-    half would pass vacuously. The counters themselves are asserted on rather than skipped when
-    they are off, for the same reason - a measurement that silently stops measuring is not a pass.
+    The control kernel must show a growing count, or the counters are not measuring anything and the
+    kernel half would pass vacuously.
     """
     from numba import njit
     from numba.core import config as numba_config
     from numba.core.runtime import nrt
 
-    # numba parses this flag into its own config namespace at import time by writing module
-    # globals, so it is read through getattr rather than off the module directly.
+    # numba writes this flag into its own config namespace at import time, so read it via getattr.
     assert getattr(numba_config, "NRT_STATS", False), (
         "numba's NRT allocation counters are off, so this test would pass vacuously; "
         "tests/conftest.py sets NUMBA_NRT_STATS before numba is imported"
@@ -1607,17 +1451,14 @@ def test_read_only_state_and_torque_are_accepted_because_the_kernel_never_writes
     config: KernelConfig,
     launch_torque: float,
 ) -> None:
-    """A caller may hand over inputs it does not own outright; ``out`` is the only destination.
+    """A caller may hand over inputs it does not own; ``out`` is the only destination.
 
-    Seeded rolling, so the run is a plain acceleration rather than a locked-axle deceleration -
-    the state has to be one the loop can be asked about at all.
+    Seeded rolling, so the run is a plain acceleration rather than a locked-axle deceleration.
     """
     steps = 64
     drive_torque = np.full(steps, launch_torque, dtype=np.float64)
     drive_torque.flags.writeable = False
-    state = longitudinal.initial_state(
-        speed_m_s=3.0, wheel_omega_rad_s=3.0 / config.rolling_radius_m
-    )
+    state = _rolling_state(config, 3.0)
     state.flags.writeable = False
     out = longitudinal.allocate(steps)
     returned = longitudinal.simulate(config, steps, state, drive_torque, out)
@@ -1652,8 +1493,7 @@ def test_editing_the_car_spec_changes_the_run_with_no_code_edit(
     heavier = _run(replace(spec, mass_kg=spec.mass_kg * 2.0).kernel_config(), steps, torque)
     assert heavier[1, longitudinal.RL_WHEEL_INDEX] == baseline[1, longitudinal.RL_WHEEL_INDEX]
 
-    # Load sensitivity makes the tyre's effective peak change as mass changes, so acceleration does
-    # not cancel exactly against mass. This is a small but measurable response to the edited data.
+    # Load sensitivity moves the tyre's peak with mass, so acceleration does not cancel against it.
     assert not np.isclose(
         heavier[2, longitudinal.V_INDEX],
         baseline[2, longitudinal.V_INDEX],
@@ -1671,9 +1511,8 @@ def test_editing_the_car_spec_changes_the_run_with_no_code_edit(
         "load-then-torque order means for acceleration"
     )
 
-    # The wheel states are *not* mass-free, because the reaction term scales with the load: a
-    # heavier car is a heavier car to spin up. The two lines above are what make that asymmetry
-    # visible rather than something a reader has to notice.
+    # The wheel states are *not* mass-free: the reaction term scales with load, so a heavier car is
+    # a heavier car to spin up.
     assert heavier[2, longitudinal.RL_WHEEL_INDEX] != baseline[2, longitudinal.RL_WHEEL_INDEX]
 
 
@@ -1702,20 +1541,52 @@ def test_a_buffer_the_run_cannot_fill_is_refused_in_python(
         longitudinal.simulate(config, steps, state, torque, out)
 
 
-def test_a_float32_buffer_is_refused_in_python(config: KernelConfig) -> None:
-    """The kernel is float64; a float32 buffer would silently re-quantise the trace."""
-    torque = np.zeros(4, dtype=np.float32)
-    state = np.zeros(longitudinal.STATE_SIZE, dtype=np.float32)
-    out = np.zeros((5, longitudinal.STATE_SIZE), dtype=np.float32)
-    with pytest.raises(ValueError, match="float64"):
+def _read_only_out(steps: int) -> np.ndarray:
+    out = longitudinal.allocate(steps)
+    out.flags.writeable = False
+    return out
+
+
+@pytest.mark.parametrize(
+    ("state", "torque", "out", "message"),
+    [
+        pytest.param(
+            np.zeros(longitudinal.STATE_SIZE, dtype=np.float32),
+            np.zeros(4, dtype=np.float32),
+            np.zeros((5, longitudinal.STATE_SIZE), dtype=np.float32),
+            "float64",
+            id="float32",
+        ),
+        pytest.param(
+            [0.0] * longitudinal.STATE_SIZE,
+            np.zeros(4),
+            np.zeros((5, 2)),
+            "ndarray",
+            id="not-an-ndarray",
+        ),
+        pytest.param(
+            longitudinal.initial_state(),
+            np.zeros(4),
+            _read_only_out(4),
+            "read-only",
+            id="read-only-out",
+        ),
+    ],
+)
+def test_a_buffer_of_the_wrong_kind_is_refused_in_python(
+    config: KernelConfig,
+    state: Any,
+    torque: np.ndarray,
+    out: np.ndarray,
+    message: str,
+) -> None:
+    """The kernel is float64, takes ndarrays, and writes into ``out``, so each of these is refused.
+
+    A float32 buffer would silently re-quantise the trace. A list is converted by the dispatcher
+    and the caller would not get the buffer back. A read-only ``out`` is an out-of-bounds write.
+    """
+    with pytest.raises(ValueError, match=message):
         longitudinal.simulate(config, 4, state, torque, out)
-
-
-def test_a_buffer_that_is_not_an_ndarray_is_refused_in_python(config: KernelConfig) -> None:
-    """A list would be converted by the dispatcher, and the caller would not get the buffer back."""
-    not_an_array: Any = [0.0] * longitudinal.STATE_SIZE
-    with pytest.raises(ValueError, match="ndarray"):
-        longitudinal.simulate(config, 4, not_an_array, np.zeros(4), np.zeros((5, 2)))
 
 
 def test_a_strided_buffer_is_refused_in_python(config: KernelConfig) -> None:
@@ -1724,15 +1595,6 @@ def test_a_strided_buffer_is_refused_in_python(config: KernelConfig) -> None:
     assert not torque.flags.c_contiguous
     with pytest.raises(ValueError, match="contiguous"):
         longitudinal.simulate(config, 4, longitudinal.initial_state(), torque, np.zeros((5, 2)))
-
-
-def test_a_read_only_output_buffer_is_refused_in_python(config: KernelConfig) -> None:
-    """``out`` is the kernel's only destination, so a read-only buffer is an out-of-bounds write."""
-    steps = 4
-    out = longitudinal.allocate(steps)
-    out.flags.writeable = False
-    with pytest.raises(ValueError, match="read-only"):
-        longitudinal.simulate(config, steps, longitudinal.initial_state(), np.zeros(steps), out)
 
 
 @pytest.mark.parametrize(
@@ -1751,12 +1613,11 @@ def test_a_seeded_state_that_is_not_finite_is_refused_in_python(
     column: int,
     value: float,
 ) -> None:
-    """A nonfinite seed poisons every row after it, and the trace still looks finished.
+    """A nonfinite seed poisons every later row, and the trace still looks finished.
 
-    This is the boundary check P1-T6 adds. A NaN wheel speed is not a slow wheel - it reaches the
-    slip ratio, from there the tyre force, from there the force on the car, and every later row is
-    NaN while the run reports success. Six values are checked once, before the loop, which is
-    nothing next to the trace it protects.
+    A NaN wheel speed is not a slow wheel: it reaches the slip ratio, the tyre force, then the force
+    on the car, and every later row is NaN while the run reports success. Values are checked once,
+    before the loop, which costs nothing next to the trace it protects.
     """
     state = longitudinal.initial_state(speed_m_s=10.0, wheel_omega_rad_s=30.0)
     state[column] = value
@@ -1764,47 +1625,19 @@ def test_a_seeded_state_that_is_not_finite_is_refused_in_python(
         _run(config, 4, np.zeros(4, dtype=np.float64), state)
 
 
-@pytest.mark.parametrize("value", [0.0, -1.0e-4, math.nan, math.inf])
-def test_a_step_that_could_not_produce_a_run_is_refused_in_python(
-    config: KernelConfig,
-    value: float,
-) -> None:
-    """``KernelConfig`` is a public frozen dataclass, so it can carry a step the loader would not.
-
-    Nothing in the loop checks ``dt_s``; a zero or nonfinite step is arithmetic that returns NaNs
-    or an empty-looking run rather than an error, which is the kind of bug that surfaces three
-    tasks later as an implausible trace.
-    """
-    broken = replace(config, dt_s=value)
-    with pytest.raises(ValueError, match="dt_s"):
-        _run(broken, 4, np.zeros(4, dtype=np.float64))
-
-
-@pytest.mark.parametrize("value", [0.0, -1.0, math.nan])
-def test_a_mass_that_could_not_produce_a_run_is_refused_in_python(
-    config: KernelConfig,
-    value: float,
-) -> None:
-    """Same for ``mass_kg``: the loop divides by it, so zero mass is a silent NaN trace."""
-    broken = replace(config, mass_kg=value)
-    with pytest.raises(ValueError, match="mass_kg"):
-        _run(broken, 4, np.zeros(4, dtype=np.float64))
-
-
-@pytest.mark.parametrize("value", [0.0, -9.80665, math.nan])
-def test_a_gravity_that_could_not_produce_a_run_is_refused_in_python(
-    config: KernelConfig,
-    value: float,
-) -> None:
-    """Gravity now reaches the kernel, since the static axle loads are a fraction of the weight."""
-    broken = replace(config, gravity_m_s2=value)
-    with pytest.raises(ValueError, match="gravity_m_s2"):
-        _run(broken, 4, np.zeros(4, dtype=np.float64))
-
-
 @pytest.mark.parametrize(
     ("name", "value"),
     [
+        ("dt_s", 0.0),
+        ("dt_s", -1.0e-4),
+        ("dt_s", math.nan),
+        ("dt_s", math.inf),
+        ("mass_kg", 0.0),
+        ("mass_kg", -1.0),
+        ("mass_kg", math.nan),
+        ("gravity_m_s2", 0.0),
+        ("gravity_m_s2", -9.80665),
+        ("gravity_m_s2", math.nan),
         ("wheel_inertia_kg_m2", 0.0),
         ("wheel_inertia_kg_m2", -0.9),
         ("rolling_radius_m", 0.0),
@@ -1815,18 +1648,18 @@ def test_a_gravity_that_could_not_produce_a_run_is_refused_in_python(
         ("pacejka_mu", math.nan),
     ],
 )
-def test_a_coefficient_the_closed_loop_now_reads_is_refused_in_python(
+def test_a_config_value_the_loop_cannot_run_on_is_refused_in_python(
     config: KernelConfig,
     name: str,
     value: float,
 ) -> None:
-    """P1-T6/T7 turned eight more coefficients into things the loop divides by or indexes.
+    """``KernelConfig`` is a public frozen dataclass, so it can carry a value the loader refuses.
 
-    Until the loop was closed, only ``dt_s`` and ``mass_kg`` were checked: force was an input, so
-    nothing else could be reached. Now the wheel inertia and the rolling radius are divisors, the
-    aero curves are indexed with ``boundscheck=False``, and the front weight fraction decides how
-    the load splits - a malformed value in any of them is a wrong run rather than an error, and it
-    would be a wrong run all the way to the end of the trace.
+    The loop checks none of these. ``dt_s`` and ``mass_kg`` are divided by, so a zero or nonfinite
+    one is a NaN trace rather than an error. Gravity now reaches the kernel through the static axle
+    loads. The wheel inertia and rolling radius are divisors, the aero curves are indexed with
+    ``boundscheck=False``, and the front weight fraction sets how the load splits. A bad value
+    in any of them would be a wrong run all the way to the end of the trace.
     """
     broken = replace(config, **{name: value})
     with pytest.raises(ValueError, match=name):
@@ -1834,12 +1667,11 @@ def test_a_coefficient_the_closed_loop_now_reads_is_refused_in_python(
 
 
 def test_replaced_aero_arrays_cannot_reach_the_kernel_loop(config: KernelConfig) -> None:
-    """``simulate`` now indexes ``Cl(v)`` and ``Cd(v)``, so it has to re-check them itself.
+    """``simulate`` indexes ``Cl(v)`` and ``Cd(v)``, so it re-checks them itself.
 
-    The loader's guarantees are a property of the loader, and ``CarSpec`` plus ``dataclasses``
-    are the documented way to get a config that never went through it. ``fastmath=False`` does not
-    turn off ``boundscheck=False``, so a short or reversed curve here is an out-of-bounds read in
-    compiled code.
+    A ``CarSpec`` plus ``dataclasses`` is a documented way to get a config that skipped the
+    loader. ``fastmath=False`` does not undo ``boundscheck=False``, so a short or reversed curve
+    would be an out-of-bounds read in compiled code.
     """
     reversed_axis = config.aero_speed_m_s.copy()
     reversed_axis[2] = reversed_axis[1]
@@ -1863,8 +1695,8 @@ def test_a_step_count_that_is_not_an_integer_is_refused_in_python(
 ) -> None:
     """A float count would compile a second float64 specialisation of the same integrator.
 
-    ``int(4.0)`` would hide that, and ``bool`` is an ``int`` by Python's rules but never a
-    meaningful step count, so both are refused rather than coerced.
+    ``int(4.0)`` would hide that, and ``bool`` is an ``int`` by Python's rules but never meaningful
+    step count, so both are refused rather than coerced.
     """
     with pytest.raises(ValueError, match="steps"):
         longitudinal.simulate(
