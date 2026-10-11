@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Final
 
 from f1telemetry.contracts.car_spec import load_car_spec
+from f1telemetry.synthetic import Frame
 from f1telemetry.testing.headless import run_headless
 from f1telemetry.testing.scenarios import Scenario, ScenarioRun, build_scenarios
 
-__all__ = ["ScenarioLabError", "run_lab_request"]
+__all__ = ["LabRun", "ScenarioLabError", "resting_car_values", "run_lab", "run_lab_request"]
 
 _REQUEST_ID: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _POINT_LIMIT: Final[int] = 120
@@ -36,6 +37,14 @@ _SCENARIOS: Final[dict[str, tuple[str, str, str, float, float]]] = {
 
 class ScenarioLabError(ValueError):
     """A request does not match the small Scenario Lab contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class LabRun:
+    """One finished request: the summary for the browser and the full-rate frames behind it."""
+
+    result: dict[str, object]
+    frames: tuple[Frame, ...]
 
 
 def _read_request(value: object) -> tuple[str, str, float]:
@@ -112,6 +121,11 @@ def _result_points(run: ScenarioRun) -> list[dict[str, float]]:
 
 def run_lab_request(value: object) -> dict[str, object]:
     """Validate and run one supported Scenario Lab experiment."""
+    return run_lab(value).result
+
+
+def run_lab(value: object) -> LabRun:
+    """Like :func:`run_lab_request`, but keep the run's frames so the car can be shown driving."""
     request_id, scenario_id, setting = _read_request(value)
     config = load_car_spec().kernel_config()
     _, label, setting_name, _, _ = _SCENARIOS[scenario_id]
@@ -124,7 +138,7 @@ def run_lab_request(value: object) -> dict[str, object]:
     longitudinal_g = max(abs(frame.values["accel_longitudinal"]) for frame in frames) / 9.80665
     lateral_g = max(abs(frame.values["accel_lateral"]) for frame in frames) / 9.80665
     peak_speed = max(frame.values["speed"] for frame in frames)
-    return {
+    result: dict[str, object] = {
         "type": "scenario_result",
         "request_id": request_id,
         "scenario_id": scenario_id,
@@ -141,3 +155,18 @@ def run_lab_request(value: object) -> dict[str, object]:
         ),
         "points": points,
     }
+    playback = tuple(
+        Frame(
+            round(frame.t_s * 1_000_000),
+            {name: float(number) for name, number in frame.values.items() if math.isfinite(number)},
+        )
+        for frame in frames
+    )
+    return LabRun(result, playback)
+
+
+def resting_car_values() -> dict[str, float]:
+    """Every channel the simulator publishes, as the car reads at standstill before a test."""
+    config = load_car_spec().kernel_config()
+    run = run_headless(config, build_scenarios(config)["accelerate_to_speed"])
+    return {name: float(value) for name, value in run.record.frames[0].values.items()}

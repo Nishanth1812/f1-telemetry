@@ -40,17 +40,18 @@ import logging
 import signal
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, override
 from urllib.parse import urlsplit
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from f1telemetry.contracts.channels import load_channel_contract
+from f1telemetry.live_car import DrivenCarSource
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
 from f1telemetry.telemetry.pipeline import read_annotations
 from f1telemetry.testing.replay import ReplaySource
-from f1telemetry.testing.scenario_lab import ScenarioLabError, run_lab_request
+from f1telemetry.testing.scenario_lab import ScenarioLabError, resting_car_values, run_lab
 
 __all__ = [
     "DEFAULT_HOST",
@@ -121,7 +122,7 @@ class TelemetryServer:
         self._clients: set[ServerConnection] = set()
         self._detailed_clients: set[ServerConnection] = set()
         self._stop: asyncio.Event | None = None
-        self._scenario_lock = asyncio.Lock()
+        self._scenario_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def url(self) -> str:
@@ -273,7 +274,7 @@ class TelemetryServer:
                     "A scenario is already running. Wait for it to finish first."
                 )
             async with self._scenario_lock:
-                result = await asyncio.to_thread(run_lab_request, request)
+                lab_run = await asyncio.to_thread(run_lab, request)
         except ScenarioLabError as error:
             await self._send_scenario_error(connection, request_id, str(error))
         except Exception:
@@ -282,7 +283,11 @@ class TelemetryServer:
                 connection, request_id, "The run failed. Check that the server is still running."
             )
         else:
-            await connection.send(json.dumps(result, separators=(",", ":"), allow_nan=False))
+            if isinstance(self._source, DrivenCarSource):
+                self._source.start_run(lab_run.frames)
+            await connection.send(
+                json.dumps(lab_run.result, separators=(",", ":"), allow_nan=False)
+            )
 
     @staticmethod
     async def _send_scenario_error(
@@ -349,7 +354,7 @@ def replay_source(path: Path) -> ReplaySource:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="f1-serve",
-        description="Serve synthetic contract telemetry to the dashboard on loopback.",
+        description="Serve the simulated car's telemetry to the dashboard on loopback.",
     )
     _ = parser.add_argument(
         "--channels",
@@ -362,6 +367,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="replay saved frames from a Parquet file instead of synthetic data",
+    )
+    _ = parser.add_argument(
+        "--noise",
+        action="store_true",
+        help="stream uniform random contract data instead of the simulated car",
     )
     _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
     _ = parser.add_argument(
@@ -392,6 +402,7 @@ class _DroppedBeforeHandshake(logging.Filter):
     request is sent, so this is routine rather than a server fault.
     """
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         if record.getMessage() != "opening handshake failed" or record.exc_info is None:
             return True
@@ -402,10 +413,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("websockets.server").addFilter(_DroppedBeforeHandshake())
     args = _parse_args(argv)
     source: FrameSource
-    if args.replay_parquet is None:
+    if args.replay_parquet is not None:
+        source = replay_source(args.replay_parquet)
+    elif args.noise:
         source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
     else:
-        source = replay_source(args.replay_parquet)
+        print("starting the simulated car...")
+        source = DrivenCarSource(resting_car_values())
     server = TelemetryServer(
         source,
         host=args.host,
@@ -417,6 +431,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
         rate = source.contract.samples_per_second()
         print(f"sampling {rate:.0f} channel-samples/s of contract rate")
+    elif isinstance(source, DrivenCarSource):
+        print(f"simulated car at rest, serving {server.url}")
+        print("start a test from the dashboard to watch it drive")
     elif isinstance(source, ReplaySource):
         print(
             f"replaying {args.replay_parquet} at {server.url} "
