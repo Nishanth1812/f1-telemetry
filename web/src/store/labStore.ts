@@ -48,9 +48,11 @@ export const useLabStore = create<LabState>((set, get) => ({
     }
     const { scenarioId, setting } = get();
     set({ running: true, error: null, startedAtMs: null });
-    useTelemetryStore.getState().resetForRun();
     try {
       const newResult = await requestScenarioRun(scenarioId, setting);
+      // The server queues the run before it replies, so the car's first frames follow this
+      // reply. Clearing now drops the held values from before the test, not the new run.
+      useTelemetryStore.getState().resetForRun();
       set((state) => ({
         prevResult: state.lastRuns[scenarioId] ?? null,
         lastRuns: { ...state.lastRuns, [scenarioId]: newResult },
