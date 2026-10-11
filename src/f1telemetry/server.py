@@ -44,6 +44,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 
 from f1telemetry.contracts.channels import load_channel_contract
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
@@ -384,7 +385,21 @@ async def _serve_forever(server: TelemetryServer) -> None:
     await server.run(stop)
 
 
+class _DroppedBeforeHandshake(logging.Filter):
+    """Hide the traceback websockets logs when a client hangs up mid-handshake.
+
+    The dashboard's page setup opens a socket and closes it again before the first
+    request is sent, so this is routine rather than a server fault.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "opening handshake failed" or record.exc_info is None:
+            return True
+        return not isinstance(record.exc_info[1], ConnectionClosed)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.getLogger("websockets.server").addFilter(_DroppedBeforeHandshake())
     args = _parse_args(argv)
     source: FrameSource
     if args.replay_parquet is None:
