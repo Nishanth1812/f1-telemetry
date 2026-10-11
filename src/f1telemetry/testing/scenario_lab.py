@@ -166,7 +166,21 @@ def run_lab(value: object) -> LabRun:
 
 
 def resting_car_values() -> dict[str, float]:
-    """Every channel the simulator publishes, as the car reads at standstill before a test."""
+    """Every channel the simulator publishes, as the car reads parked before a test.
+
+    The first frame of a launch is taken mid-start (engine revving, clutch slipping), so the
+    controls are put back to a parked car: idling engine, no throttle, neutral, clutch out.
+    """
     config = load_car_spec().kernel_config()
     run = run_headless(config, build_scenarios(config)["accelerate_to_speed"])
-    return {name: float(value) for name, value in run.record.frames[0].values.items()}
+    values = {name: float(value) for name, value in run.record.frames[0].values.items()}
+    values.update(
+        ice_rpm=float(config.idle_rpm),
+        throttle_pct=0.0,
+        gear=0.0,
+        clutch_pct=0.0,
+        ice_torque_nm=0.0,
+        mgu_k_rpm=0.0,
+        mgu_k_power_kw=0.0,
+    )
+    return values

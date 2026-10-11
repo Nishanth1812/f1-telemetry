@@ -46,3 +46,13 @@ def test_time_only_moves_forward_across_runs() -> None:
     source.start_run(_run(10))
     times += [frame.time_us for frame in _deliver(source, 6)]
     assert times == sorted(set(times))
+
+
+def test_resting_car_is_parked_not_mid_launch() -> None:
+    from f1telemetry.testing.scenario_lab import resting_car_values
+
+    values = resting_car_values()
+    assert values["speed"] == 0.0
+    assert values["throttle_pct"] == 0.0
+    assert values["gear"] == 0.0
+    assert 0.0 < values["ice_rpm"] <= 4_000.0
