@@ -68,6 +68,7 @@ def test_tyre_pressure_tracks_temperature_and_leak_independently() -> None:
     assert leaked_mass == mass_kg - 1e-4
 
 
+@pytest.mark.slow
 def test_long_thermal_trace_is_finite_and_repeatable(config: KernelConfig) -> None:
     count = 3_000
     slip = np.full((count, 4), 20.0)

@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
     from f1telemetry.testing.scenarios import Scenario, ScenarioRun
 
-pytestmark = [pytest.mark.kernel, pytest.mark.invariant]
+pytestmark = [pytest.mark.kernel, pytest.mark.invariant, pytest.mark.slow]
 
 # The two straight-line references in `PLAN.md` §11.1 and `docs/calibration.md` §6. The 0–100
 # median is reported without a pass/fail band because its ±0.30 s is feed quantisation; 325.8 km/h

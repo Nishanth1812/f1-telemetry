@@ -41,7 +41,7 @@ from f1telemetry.testing.scenarios import (
 )
 from f1telemetry.tracks import Track, load_track
 
-pytestmark = pytest.mark.kernel
+pytestmark = [pytest.mark.kernel, pytest.mark.slow]
 
 # Measured P2 steady-state-circle lateral capability, ~7.5 m/s^2. The
 # untuned fixture model cannot hold the 25-30 m/s^2 the unit tests

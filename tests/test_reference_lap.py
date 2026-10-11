@@ -59,6 +59,9 @@ _WHEELBASE_M = 3.0
 _AXLE_TRACK_M = 2.0
 
 
+pytestmark = pytest.mark.slow
+
+
 def _load_square(tmp_path: Path) -> Track:
     track_path = tmp_path / "square.yaml"
     track_path.write_text(_SQUARE, encoding="utf-8")

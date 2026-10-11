@@ -107,7 +107,7 @@ markers = [
   "contract: channels.yaml / car_spec.yaml schema, validation and provenance",
   "toolchain: environment and dependency toolchain probes",
   "kernel: P1 physics kernel - fixed step, state layout, caller-owned buffers, determinism",
-  "slow: closed-loop lap sweeps, about 340 s of wall time per simulated lap (measured); run explicitly with -m slow",
+  "slow: closed-loop laps, scenario, golden and sweep suites; CI skips them (-m \"not slow\") and full.yml runs them nightly",
   "forces: P1 aero and longitudinal tyre force model - Cl/Cd(v), dynamic pressure, slip ratio, Pacejka, grip limit",
   "powertrain: P1 ICE torque curve and turbo-lag multiplier (P1-T4)",
   "gearbox: P1 gearbox step - gear progression, shift timer, clutch engagement (P1-T5)",

@@ -16,7 +16,7 @@ jobs:
   python:
     name: contracts, codegen and invariants
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -59,17 +59,8 @@ jobs:
           git diff --exit-code -- src/f1telemetry/generated web/src/generated
           test -z "$(git status --porcelain --untracked-files=all -- src/f1telemetry/generated web/src/generated)"
 
-      - name: Invariant stage
-        run: uv run pytest -m invariant
-
-      - name: Golden stage
-        run: uv run pytest -m golden
-
-      - name: Report the straight-line baseline
-        run: uv run --frozen pytest -s -q tests/test_scenarios.py::test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference
-
-      - name: Full suite
-        run: uv run pytest
+      - name: Fast tests (the slow lap and golden suites run in full.yml)
+        run: uv run pytest -m "not slow"
 
   numba-windows:
     name: Numba toolchain (Windows x64)

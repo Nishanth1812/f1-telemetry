@@ -107,6 +107,9 @@ def _column(rows: tuple[SweepRow, ...], response: str) -> np.ndarray:
     return np.array([proxy_responses(row.run)[response] for row in rows], dtype=np.float64)
 
 
+pytestmark = pytest.mark.slow
+
+
 def test_latin_hypercube_is_stratified_and_deterministic() -> None:
     samples = latin_hypercube(_LATERAL_BOX, 8, seed=4)
 

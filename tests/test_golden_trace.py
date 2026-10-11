@@ -36,7 +36,7 @@ from f1telemetry.testing.golden import (
 )
 from f1telemetry.testing.records import SampleRecord, SensorFrame, with_frame_value
 
-pytestmark = pytest.mark.golden
+pytestmark = [pytest.mark.golden, pytest.mark.slow]
 
 BASELINES = {
     "straight_line": "tests/golden/straight_line.json",

@@ -28,6 +28,9 @@ _SETUP_HASH = "ab" * 32
 _GIT_SHA = "cd" * 20
 
 
+pytestmark = pytest.mark.slow
+
+
 @pytest.fixture(scope="module")
 def config(spec: CarSpec) -> KernelConfig:
     return spec.kernel_config()

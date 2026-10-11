@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
     from f1telemetry.testing.scenarios import ScenarioRun
 
-pytestmark = [pytest.mark.kernel]
+pytestmark = [pytest.mark.kernel, pytest.mark.slow]
 
 # The two scenarios the equality claim is made on. The first is the one `docs/latency.md` profiles
 # and the only long one here; the second is short, steers, and is the reason this file's wall time
