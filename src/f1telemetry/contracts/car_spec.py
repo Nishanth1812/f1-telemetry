@@ -35,6 +35,8 @@ import yaml
 from f1telemetry.contracts.channels import ContractError, repo_root
 
 __all__ = [
+    "ABSOLUTE_ZERO_C",
+    "THERMAL_NODES",
     "AeroCurve",
     "CarSpec",
     "ContractError",
@@ -54,6 +56,7 @@ _TOP_LEVEL_SECTIONS: Final[tuple[str, ...]] = (
     "chassis",
     "suspension",
     "steering",
+    "thermal",
     "integration",
 )
 _NEEDS_SOURCE_DATE: Final[frozenset[str]] = frozenset(
@@ -61,6 +64,22 @@ _NEEDS_SOURCE_DATE: Final[frozenset[str]] = frozenset(
 )
 _REGULATED_PROVENANCE: Final[frozenset[str]] = frozenset({"regulated", "mixed"})
 _CLAIM_BLOCKS: Final[tuple[str, ...]] = ("regulation", "not_regulated")
+
+#: Celsius value of absolute zero, the boundary every temperature in the P3 thermal model has
+#: to stay above. Duplicated from ``physics.thermal.ABSOLUTE_ZERO_C`` rather than imported:
+#: this module is the layer below the physics core, and a loader that imported from the layer
+#: it configures would invert the dependency. The two agree by construction - both are
+#: ``-273.15`` - and ``tests/test_car_spec.py`` asserts the thermal boundary refuses the same
+#: temperature the loader does.
+ABSOLUTE_ZERO_C: Final[float] = -273.15
+
+#: The four lumped thermal nodes, in the order every ``thermal_node_*`` vector is built. A
+#: node is a thermal mass with its own capacity, cooling area, emissivity, airflow coefficient
+#: and initial temperature; the tyre and brake records are shared by all four corners in the
+#: committed data, which is the synthetic four-corner symmetry, and engine and gearbox are one
+#: node each. The order is fixed rather than configurable so a consumer can index a node by
+#: position - a mapping would be a string lookup inside a boundary that hands out numbers.
+THERMAL_NODES: Final[tuple[str, ...]] = ("tyre", "brake", "engine", "gearbox")
 
 
 def car_spec_path() -> Path:
@@ -215,6 +234,28 @@ class KernelConfig:
     relaxation_min_speed_m_s: float
     # Task 0 P1 prerequisite carried here so the ICE speed state divides by configured data.
     ice_inertia_kg_m2: float
+    # --- P3 thermal: the four lumped nodes, in THERMAL_NODES order ----------------------
+    # One vector per node quantity rather than a scalar per node, because a node is described
+    # by six numbers and the scenario boundary reads them all at once. The node order is
+    # `(tyre, brake, engine, gearbox)` and is fixed here rather than configurable, so a caller
+    # can index a node by position instead of by name; `physics/thermal.py` declares the same
+    # order and `tests/test_thermal.py` pins the two against each other.
+    thermal_node_initial_temp_c: np.ndarray
+    thermal_node_heat_capacity_j_per_k: np.ndarray
+    thermal_node_cooling_area_m2: np.ndarray
+    thermal_node_emissivity: np.ndarray
+    thermal_node_airflow_base_w_m2_k: np.ndarray
+    thermal_node_airflow_speed_gain_w_m2_k_per_m_s: np.ndarray
+    # Shares of the drivetrain's rejected energy each powertrain node absorbs, and the brake
+    # node's share of the dissipated brake power.
+    thermal_brake_heat_fraction: float
+    thermal_engine_waste_heat_share: float
+    thermal_gearbox_loss_share: float
+    # The declared tyre gas state: fixed air volume, air's gas constant, and the cold gauge
+    # pressure that seeds the gas mass at the tyre node's own initial temperature.
+    thermal_tyre_volume_m3: float
+    thermal_tyre_gas_constant_j_per_kg_k: float
+    thermal_tyre_initial_pressure_psi_gauge: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +367,7 @@ class CarSpec:
         chassis = _section(raw, "chassis")
         suspension = _section(raw, "suspension")
         steering = _section(raw, "steering")
+        thermal = _section(raw, "thermal")
 
         cl = self.cl_curve
         cd = self.cd_curve
@@ -778,6 +820,96 @@ class CarSpec:
             ice.get("ice_inertia_kg_m2"), "car_spec: powertrain.ice.ice_inertia_kg_m2"
         )
 
+        # --- P3 thermal: the four lumped nodes, and the shares that feed them ------------
+        # One vector per node quantity, built here in `THERMAL_NODES` order so the scenario
+        # boundary can index a node by position. The order is a contract rather than a file
+        # convention: `physics/thermal.py` declares the same sequence, and the six vectors are
+        # handed over as one block rather than as a mapping because a kernel - or a caller that
+        # has already validated the config - cannot read a dict.
+        nodes = _section(thermal, "nodes")
+        missing_nodes = [name for name in THERMAL_NODES if name not in nodes]
+        if missing_nodes:
+            raise ContractError(
+                f"car_spec: thermal.nodes is missing node record(s) {missing_nodes}; the four "
+                f"lumped nodes are {list(THERMAL_NODES)} and the node order is fixed rather than "
+                "configurable, so a record cannot be added or dropped without changing the "
+                "order every consumer indexes by"
+            )
+        extra_nodes = [name for name in nodes if name not in THERMAL_NODES]
+        if extra_nodes:
+            raise ContractError(
+                f"car_spec: thermal.nodes holds unknown node record(s) {extra_nodes}; the node "
+                f"set is fixed at {list(THERMAL_NODES)}"
+            )
+        node_initial_temp = _thermal_node_vector(nodes, "initial_temp_c", non_negative=False)
+        node_capacity = _thermal_node_vector(nodes, "heat_capacity_j_per_k", non_negative=False)
+        node_area = _thermal_node_vector(nodes, "cooling_area_m2", non_negative=False)
+        node_emissivity = _thermal_node_vector(nodes, "emissivity", non_negative=False)
+        node_airflow_base = _thermal_node_vector(
+            nodes, "airflow_heat_transfer_base_w_m2_k", non_negative=False
+        )
+        node_airflow_gain = _thermal_node_vector(
+            nodes, "airflow_heat_transfer_speed_gain_w_m2_k_per_m_s", non_negative=False
+        )
+        # Each vector above was only narrowed to finite floats. The per-node ranges are checked
+        # here, at the boundary that can name the node, so an error says which mass is wrong
+        # rather than which array position.
+        for name, vector, minimum in (
+            ("heat_capacity_j_per_k", node_capacity, 0.0),
+            ("cooling_area_m2", node_area, 0.0),
+            ("emissivity", node_emissivity, 0.0),
+            ("airflow_heat_transfer_base_w_m2_k", node_airflow_base, 0.0),
+            ("airflow_heat_transfer_speed_gain_w_m2_k_per_m_s", node_airflow_gain, 0.0),
+        ):
+            for index, value in enumerate(vector):
+                if value <= minimum:
+                    raise ContractError(
+                        f"car_spec: thermal.nodes.{THERMAL_NODES[index]}.{name} must be > "
+                        f"{minimum}, got {value}"
+                    )
+        for index, value in enumerate(node_emissivity):
+            if value > 1.0:
+                raise ContractError(
+                    f"car_spec: thermal.nodes.{THERMAL_NODES[index]}.emissivity must be in "
+                    f"(0, 1], got {value}. A surface cannot emit more than a blackbody"
+                )
+        # The initial state is above absolute zero or the first radiation term is a negative
+        # temperature to the fourth power, which is not a temperature at all.
+        for index, value in enumerate(node_initial_temp):
+            if value <= ABSOLUTE_ZERO_C:
+                raise ContractError(
+                    f"car_spec: thermal.nodes.{THERMAL_NODES[index]}.initial_temp_c must be "
+                    f"above absolute zero ({ABSOLUTE_ZERO_C} degC), got {value}"
+                )
+        # Both drivetrain shares and the brake share are shares of something, so zero is a
+        # legal value - a node that absorbs none of the rejected energy - but a value above one
+        # would put more heat in the node than the boundary computed.
+        brake_heat_fraction = _share(
+            thermal.get("brake_heat_fraction"), "car_spec: thermal.brake_heat_fraction"
+        )
+        engine_waste_heat_share = _share(
+            thermal.get("engine_waste_heat_share"), "car_spec: thermal.engine_waste_heat_share"
+        )
+        gearbox_loss_share = _share(
+            thermal.get("gearbox_loss_share"), "car_spec: thermal.gearbox_loss_share"
+        )
+        tyre_gas = _section(thermal, "tyre_gas")
+        # Both of these are divisors of the ideal gas law: the volume divides the pressure and
+        # the gas constant divides the mass, so neither can be zero.
+        tyre_volume = _positive(tyre_gas.get("volume_m3"), "car_spec: thermal.tyre_gas.volume_m3")
+        tyre_gas_constant = _positive(
+            tyre_gas.get("gas_constant_j_per_kg_k"),
+            "car_spec: thermal.tyre_gas.gas_constant_j_per_kg_k",
+        )
+        # The cold gauge pressure seeds the declared gas mass. It is a gauge pressure, so zero is
+        # a legal value - a tyre sitting exactly at the standard atmosphere - but a negative one
+        # would seed a mass below atmospheric pressure, which is a flat tyre rather than a cold
+        # one and is not a state this model starts from.
+        tyre_initial_pressure = _non_negative(
+            tyre_gas.get("initial_pressure_psi_gauge"),
+            "car_spec: thermal.tyre_gas.initial_pressure_psi_gauge",
+        )
+
         return KernelConfig(
             dt_s=dt_s,
             mass_kg=mass_kg,
@@ -903,6 +1035,18 @@ class CarSpec:
             relaxation_length_longitudinal_m=relaxation_longitudinal,
             relaxation_min_speed_m_s=relaxation_min_speed,
             ice_inertia_kg_m2=ice_inertia,
+            thermal_node_initial_temp_c=node_initial_temp,
+            thermal_node_heat_capacity_j_per_k=node_capacity,
+            thermal_node_cooling_area_m2=node_area,
+            thermal_node_emissivity=node_emissivity,
+            thermal_node_airflow_base_w_m2_k=node_airflow_base,
+            thermal_node_airflow_speed_gain_w_m2_k_per_m_s=node_airflow_gain,
+            thermal_brake_heat_fraction=brake_heat_fraction,
+            thermal_engine_waste_heat_share=engine_waste_heat_share,
+            thermal_gearbox_loss_share=gearbox_loss_share,
+            thermal_tyre_volume_m3=tyre_volume,
+            thermal_tyre_gas_constant_j_per_kg_k=tyre_gas_constant,
+            thermal_tyre_initial_pressure_psi_gauge=tyre_initial_pressure,
         )
 
 
@@ -940,6 +1084,44 @@ def _fraction(node: Any, where: str) -> float:
     if not 0.0 < value <= 1.0:
         raise ContractError(f"{where}: expected a number in (0, 1], got {node!r}")
     return value
+
+
+def _share(node: Any, where: str) -> float:
+    """A value inside ``[0, 1]`` - a share of something the caller already computed.
+
+    Distinct from :func:`_fraction`, whose lower bound is one because the value divides
+    something. A P3 heat share does not: zero is a legal declaration that a node absorbs none
+    of the rejected energy, and only a value above one is a contradiction - a node cannot take
+    more heat than the boundary put into it.
+    """
+    value = _number(node, where)
+    if not 0.0 <= value <= 1.0:
+        raise ContractError(f"{where}: expected a number in [0, 1], got {node!r}")
+    return value
+
+
+def _thermal_node_vector(nodes: Mapping[str, Any], key: str, *, non_negative: bool) -> np.ndarray:
+    """One node quantity as a length-four ``float64`` vector, in :data:`THERMAL_NODES` order.
+
+    The six P3 node quantities are all shaped the same way - a value per thermal mass - so they
+    are all read through this one helper rather than six near-identical loops. The shared length
+    is what makes the node order a positional contract: a vector of three or five entries would
+    index the wrong node silently, so the length is fixed here and asserted by the array itself
+    rather than by each caller.
+
+    Only finiteness is enforced here. The per-node ranges differ by quantity - a capacity is a
+    divisor and an emissivity is bounded above by one - so they are checked in
+    :meth:`CarSpec.build_kernel_config`, where the message can name the node rather than the
+    array position.
+    """
+    read = _non_negative if non_negative else _number
+    values = []
+    for name in THERMAL_NODES:
+        node = nodes.get(name)
+        if not isinstance(node, Mapping):
+            raise ContractError(f"car_spec: thermal.nodes.{name}: expected a node mapping")
+        values.append(read(node.get(key), f"car_spec: thermal.nodes.{name}.{key}"))
+    return np.array(values, dtype=np.float64)
 
 
 def _positive_values(values: Sequence[float], where: str) -> None:

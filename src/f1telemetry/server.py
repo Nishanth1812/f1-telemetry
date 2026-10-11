@@ -22,6 +22,12 @@ Design constraints this file honours:
 
 Run it with ``just serve`` (or ``uv run f1-serve``); the default endpoint is
 ``ws://localhost:8765/ws``, matching ``web/src/telemetry/config.ts``.
+
+With ``--replay-parquet`` the source is a saved run instead of synthetic data
+(P5-T9). The run's saved fault annotations are attached to the replay source, so
+the dashboard's event view shows the injections along with the channel stream -
+the frames themselves keep the live contract, annotations ride the optional
+``events`` key.
 """
 
 from __future__ import annotations
@@ -30,14 +36,22 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import signal
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Protocol, override
+from urllib.parse import urlsplit
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 
 from f1telemetry.contracts.channels import load_channel_contract
+from f1telemetry.live_car import DrivenCarSource
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
+from f1telemetry.telemetry.pipeline import read_annotations
+from f1telemetry.testing.replay import ReplaySource
+from f1telemetry.testing.scenario_lab import ScenarioLabError, resting_car_values, run_lab
 
 __all__ = [
     "DEFAULT_HOST",
@@ -55,10 +69,21 @@ DEFAULT_PATH = "/ws"
 _CHUNK_US = 1_000_000
 """Simulated microseconds pulled from the source per pass. Bounds generator lag only."""
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"})
+_MAX_COMMAND_BYTES = 2_048
+_LOGGER = logging.getLogger(__name__)
 
 
 class TransportError(ValueError):
     """Raised for a transport configuration that must not be served."""
+
+
+class FrameSource(Protocol):
+    """Minimal source contract required by the WebSocket publisher."""
+
+    @property
+    def now_us(self) -> int: ...
+
+    def iter_frames(self, duration_us: int, *, max_hz: float) -> Iterator[Frame]: ...
 
 
 class TelemetryServer:
@@ -75,7 +100,7 @@ class TelemetryServer:
 
     def __init__(
         self,
-        source: SyntheticSource,
+        source: FrameSource,
         *,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
@@ -89,13 +114,15 @@ class TelemetryServer:
             )
         if not 0 <= port <= 65535:
             raise TransportError(f"port must be in 0..65535, got {port}")
-        self._source: SyntheticSource = source
+        self._source: FrameSource = source
         self._host: str = host.lower()
         self._port: int = port
         self._path: str = path
         self._max_hz: float = max_hz
         self._clients: set[ServerConnection] = set()
+        self._detailed_clients: set[ServerConnection] = set()
         self._stop: asyncio.Event | None = None
+        self._scenario_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def url(self) -> str:
@@ -120,7 +147,13 @@ class TelemetryServer:
         self._stop = asyncio.Event() if stop is None else stop
         loop = asyncio.get_running_loop()
         try:
-            async with serve(self._handle, self._host, self._port, compression=None) as server:
+            async with serve(
+                self._handle,
+                self._host,
+                self._port,
+                compression=None,
+                max_size=_MAX_COMMAND_BYTES,
+            ) as server:
                 self._port = _bound_port(server, self._port)
                 await self._pump(loop)
         finally:
@@ -136,9 +169,11 @@ class TelemetryServer:
         """
         start = loop.time() - self._source.now_us / 1_000_000
         while not self._stop_set():
+            emitted = False
             for frame in self._source.iter_frames(_CHUNK_US, max_hz=self._max_hz):
                 if self._stop_set():
                     return
+                emitted = True
                 await self._broadcast(frame)
                 delay = (start + frame.time_us / 1_000_000) - loop.time()
                 if delay <= 0:
@@ -146,6 +181,13 @@ class TelemetryServer:
                 assert self._stop is not None
                 with contextlib.suppress(TimeoutError):
                     _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
+            if not emitted and getattr(self._source, "exhausted", False):
+                return
+            if not emitted:
+                delay = (start + self._source.now_us / 1_000_000) - loop.time()
+                if delay > 0 and self._stop is not None:
+                    with contextlib.suppress(TimeoutError):
+                        _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
 
     def _stop_set(self) -> bool:
         return self._stop is not None and self._stop.is_set()
@@ -157,10 +199,24 @@ class TelemetryServer:
         # allow_nan=False is a third guard: json would happily emit the invalid token
         # NaN, which the browser's JSON.parse rejects and the store counts as
         # malformed. Fail here instead of shipping a frame nobody can decode.
-        payload = json.dumps(frame.to_wire(), separators=(",", ":"), allow_nan=False)
+        detailed_payload = (
+            json.dumps(frame.to_wire(), separators=(",", ":"), allow_nan=False)
+            if self._detailed_clients
+            else None
+        )
+        snapshot_payload = json.dumps(
+            frame.to_wire(include_samples=False), separators=(",", ":"), allow_nan=False
+        )
         targets = tuple(self._clients)
         results = await asyncio.gather(
-            *(connection.send(payload) for connection in targets),
+            *(
+                connection.send(
+                    detailed_payload
+                    if connection in self._detailed_clients and detailed_payload is not None
+                    else snapshot_payload
+                )
+                for connection in targets
+            ),
             return_exceptions=True,
         )
         for connection, result in zip(targets, results, strict=True):
@@ -168,16 +224,82 @@ class TelemetryServer:
                 self._clients.discard(connection)
 
     async def _handle(self, connection: ServerConnection) -> None:
-        """Hold the connection open until the client goes away."""
+        """Publish live frames and accept bounded requests from local browser pages."""
         request = connection.request
         if request is not None and request.path != self._path:
             await connection.close(code=1008, reason=f"this endpoint serves {self._path}")
             return
+        if request is not None and not _loopback_origin(request.headers.get("Origin")):
+            await connection.close(code=1008, reason="browser origin must be localhost")
+            return
         self._clients.add(connection)
         try:
-            await connection.wait_closed()
+            async for message in connection:
+                await self._handle_command(connection, message)
         finally:
             self._clients.discard(connection)
+            self._detailed_clients.discard(connection)
+
+    async def _handle_command(self, connection: ServerConnection, message: str | bytes) -> None:
+        """Run one small scenario request off the event loop and return its result."""
+        if not isinstance(message, str) or len(message.encode("utf-8")) > _MAX_COMMAND_BYTES:
+            await self._send_scenario_error(connection, None, "Request is too large.")
+            return
+        try:
+            request = json.loads(message)
+        except json.JSONDecodeError:
+            await self._send_scenario_error(connection, None, "Request must be valid JSON.")
+            return
+        if not isinstance(request, dict):
+            await self._send_scenario_error(connection, None, "Request must be a JSON object.")
+            return
+        if request.get("type") == "telemetry_detail":
+            if set(request) != {"type", "enabled"} or not isinstance(request.get("enabled"), bool):
+                await self._send_scenario_error(
+                    connection, None, "Invalid telemetry detail setting."
+                )
+                return
+            if request["enabled"]:
+                self._detailed_clients.add(connection)
+            else:
+                self._detailed_clients.discard(connection)
+            return
+        if request.get("type") != "scenario_run":
+            await self._send_scenario_error(connection, None, "Unknown dashboard request.")
+            return
+        request_id = request.get("request_id")
+        try:
+            if self._scenario_lock.locked():
+                raise ScenarioLabError(
+                    "A scenario is already running. Wait for it to finish first."
+                )
+            async with self._scenario_lock:
+                lab_run = await asyncio.to_thread(run_lab, request)
+        except ScenarioLabError as error:
+            await self._send_scenario_error(connection, request_id, str(error))
+        except Exception:
+            _LOGGER.exception("Scenario Lab run failed")
+            await self._send_scenario_error(
+                connection, request_id, "The run failed. Check that the server is still running."
+            )
+        else:
+            if isinstance(self._source, DrivenCarSource):
+                self._source.start_run(lab_run.frames)
+            await connection.send(
+                json.dumps(lab_run.result, separators=(",", ":"), allow_nan=False)
+            )
+
+    @staticmethod
+    async def _send_scenario_error(
+        connection: ServerConnection, request_id: object, detail: str
+    ) -> None:
+        safe_id = request_id if isinstance(request_id, str) else None
+        await connection.send(
+            json.dumps(
+                {"type": "scenario_error", "request_id": safe_id, "error": detail},
+                separators=(",", ":"),
+            )
+        )
 
     async def _close_clients(self) -> None:
         connections = tuple(self._clients)
@@ -201,16 +323,55 @@ def _bound_port(server: Server, fallback: int) -> int:
     return int(sockets[0].getsockname()[1])
 
 
+def _loopback_origin(origin: str | None) -> bool:
+    """Allow non-browser clients and pages served from a loopback host only."""
+    if origin is None:
+        return True
+    try:
+        parsed = urlsplit(origin)
+        hostname = (parsed.hostname or "").lower()
+        _ = parsed.port
+        return (
+            parsed.scheme in {"http", "https"}
+            and parsed.username is None
+            and parsed.password is None
+            and hostname in _LOOPBACK_HOSTS
+        )
+    except ValueError:
+        return False
+
+
+def replay_source(path: Path) -> ReplaySource:
+    """A replay source with the run's saved fault annotations attached.
+
+    Legacy files without the annotation metadata key read as "no annotations"
+    (:func:`f1telemetry.telemetry.pipeline.read_annotations`), so an old saved
+    run still replays exactly as before.
+    """
+    return ReplaySource(path, annotations=read_annotations(path))
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="f1-serve",
-        description="Serve synthetic contract telemetry to the dashboard on loopback.",
+        description="Serve the simulated car's telemetry to the dashboard on loopback.",
     )
     _ = parser.add_argument(
         "--channels",
         type=Path,
         default=None,
         help="contract to drive (default: the repository channels.yaml)",
+    )
+    _ = parser.add_argument(
+        "--replay-parquet",
+        type=Path,
+        default=None,
+        help="replay saved frames from a Parquet file instead of synthetic data",
+    )
+    _ = parser.add_argument(
+        "--noise",
+        action="store_true",
+        help="stream uniform random contract data instead of the simulated car",
     )
     _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
     _ = parser.add_argument(
@@ -234,9 +395,31 @@ async def _serve_forever(server: TelemetryServer) -> None:
     await server.run(stop)
 
 
+class _DroppedBeforeHandshake(logging.Filter):
+    """Hide the traceback websockets logs when a client hangs up mid-handshake.
+
+    The dashboard's page setup opens a socket and closes it again before the first
+    request is sent, so this is routine rather than a server fault.
+    """
+
+    @override
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "opening handshake failed" or record.exc_info is None:
+            return True
+        return not isinstance(record.exc_info[1], ConnectionClosed)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.getLogger("websockets.server").addFilter(_DroppedBeforeHandshake())
     args = _parse_args(argv)
-    source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
+    source: FrameSource
+    if args.replay_parquet is not None:
+        source = replay_source(args.replay_parquet)
+    elif args.noise:
+        source = SyntheticSource(load_channel_contract(args.channels), seed=args.seed)
+    else:
+        print("starting the simulated car...")
+        source = DrivenCarSource(resting_car_values())
     server = TelemetryServer(
         source,
         host=args.host,
@@ -244,9 +427,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         path=args.path,
         max_hz=args.hz,
     )
-    print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
-    rate = source.contract.samples_per_second()
-    print(f"sampling {rate:.0f} channel-samples/s of contract rate")
+    if isinstance(source, SyntheticSource):
+        print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
+        rate = source.contract.samples_per_second()
+        print(f"sampling {rate:.0f} channel-samples/s of contract rate")
+    elif isinstance(source, DrivenCarSource):
+        print(f"simulated car at rest, serving {server.url}")
+        print("start a test from the dashboard to watch it drive")
+    elif isinstance(source, ReplaySource):
+        print(
+            f"replaying {args.replay_parquet} at {server.url} "
+            f"({len(source.annotations)} saved fault annotations)"
+        )
     try:
         asyncio.run(_serve_forever(server))
     except KeyboardInterrupt:

@@ -1,14 +1,15 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, memo } from 'react';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { formatValue } from '../telemetry/format';
+import { channelLabel } from './Tile';
+import { startVisibleCanvasLoop } from '../telemetry/visibleCanvasLoop';
 
-const MAX_POINTS = 1_200;
 const WINDOW_OPTIONS = [5, 10, 30, 60] as const;
 const STATS_INTERVAL_MS = 250;
 const GRID_ROWS = 4;
 const PADDING = { top: 12, right: 76, bottom: 22, left: 10 };
 
-export function TracePanel() {
+const TracePanelComponent = () => {
   const channelNames = useTelemetryStore((state) => state.channelNames);
   const [channel, setChannel] = useState('');
   const [windowSeconds, setWindowSeconds] = useState(10);
@@ -30,21 +31,21 @@ export function TracePanel() {
       return;
     }
     const history = useTelemetryStore.getState().history;
-    const times = new Float64Array(MAX_POINTS);
-    const values = new Float32Array(MAX_POINTS);
+    // Draw buffers are bound by the plot's pixel width (min 2 points),
+    // reallocated only when that width changes.
+    let times: Float64Array | null = null;
+    let values: Float32Array | null = null;
     const styles = getComputedStyle(canvas);
     const surface = styles.getPropertyValue('--trace-surface').trim() || '#0d1117';
     const line = styles.getPropertyValue('--trace-line').trim() || '#58a6ff';
     const grid = styles.getPropertyValue('--trace-grid').trim() || 'rgba(255,255,255,0.14)';
     const text = styles.getPropertyValue('--trace-text').trim() || '#9aa7b4';
     const windowUs = windowSeconds * 1e6;
-    let request = 0;
     let lastStatsAt = 0;
 
     const inWindow = (time: number, latestUs: number) => time >= latestUs - windowUs;
 
     const draw = (now: number) => {
-      request = requestAnimationFrame(draw);
       const bounds = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.round(bounds.width));
       const height = Math.max(1, Math.round(bounds.height));
@@ -61,11 +62,17 @@ export function TracePanel() {
 
       const plotLeft = PADDING.left;
       const plotTop = PADDING.top;
-      const plotWidth = Math.max(1, width - PADDING.left - PADDING.right);
+      const plotWidth = Math.max(2, width - PADDING.left - PADDING.right);
       const plotHeight = Math.max(1, height - PADDING.top - PADDING.bottom);
 
+      // Reallocate draw buffers only when the plot width changes; the buffers
+      // are sized to the pixel width, with a two-point floor.
+      if (times === null || values === null || times.length !== plotWidth) {
+        times = new Float64Array(plotWidth);
+        values = new Float32Array(plotWidth);
+      }
       const latestUs = history.latestTimeUs();
-      const count = history.fill(activeChannel, MAX_POINTS, times, values);
+      const count = history.fill(activeChannel, plotWidth, times, values, latestUs - windowUs);
       let plotted = 0;
       let min = Number.POSITIVE_INFINITY;
       let max = Number.NEGATIVE_INFINITY;
@@ -173,8 +180,7 @@ export function TracePanel() {
       }
     };
 
-    request = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(request);
+    return startVisibleCanvasLoop(canvas, draw);
   }, [activeChannel, windowSeconds]);
 
   const empty = channelNames.length === 0;
@@ -196,7 +202,7 @@ export function TracePanel() {
             {empty ? <option value="">No channels</option> : null}
             {channelNames.map((name) => (
               <option key={name} value={name}>
-                {name}
+                {channelLabel(name)}
               </option>
             ))}
           </select>
@@ -232,4 +238,6 @@ export function TracePanel() {
       </figure>
     </section>
   );
-}
+};
+
+export const TracePanel = memo(TracePanelComponent);

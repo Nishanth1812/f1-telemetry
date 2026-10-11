@@ -44,12 +44,12 @@ drive a real dashboard, every later phase is built on sand.
 | P0-T10 | Synthetic frame generator — emits fake frames at correct per-channel rates from `channels.yaml` | Proves the rate contract. Deliberately reads only `channels.yaml`, never hardcodes a rate |
 | P0-T11 | Dashboard skeleton: tile grid + one trace panel + connection indicator | Tiles render from synthetic data at 30 Hz |
 
-**Exit gate**
-- [ ] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
-- [ ] `just codegen` is idempotent; CI proves committed generated code is current
-- [ ] All 8 invariant tests run and pass
-- [ ] Changing a rate in `channels.yaml` changes it in the dashboard with no other edit
-- [ ] `ruff`, `basedpyright`, `pytest`, web build all green in CI
+**Exit gate** — passed in CI run 37623217508 at `d4f4c92`; evidence in [`docs/phase0-decisions.md` §9](docs/phase0-decisions.md#9-p0-exit-gate-evidence).
+- [x] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
+- [x] `just codegen` is idempotent; CI proves committed generated code is current
+- [x] All 8 invariant tests run and pass
+- [x] Changing a rate in `channels.yaml` changes it in the dashboard with no other edit
+- [x] `ruff`, `basedpyright`, `pytest`, web build all green in CI
 
 **Tag:** `v0.1-contracts` · **Demo:** synthetic telemetry dashboard.
 
@@ -81,11 +81,13 @@ drive a real dashboard, every later phase is built on sand.
 - [ ] Invariants 1 (no NaN), 3 (load sum), 6 (energy), 7 (gearbox) pass on real runs
 - [x] Two identical kernel runs with the same state and caller-owned inputs produce byte-identical output
 
-The P1 exit gate remains open. The reproduced engine-state baseline reports 6.6598 s to 100 km/h
-(reference 2.32 s), a 338.4295 km/h transient maximum during the configured 20 s MGU-K request, and
-a 307.6027 km/h ICE-only tail. The brake probe reports 1.265 g for caller-supplied wheel torque; it
-is not a brake-capacity result. Longitudinal load transfer and calibration remain open acceleration
-work; see `docs/calibration.md` for the baseline and model limitations.
+The P1 exit gate remains open. GitHub Actions run 37639816872 at `527d109` measured 4.0919 s to
+100 km/h with driver upshifts requested at the configured RPM shift point, still 1.7719 s above the
+coarse 2.32 s reference. The earlier 6.6598 s result used fixed-time shifts and is superseded for
+the current scenario. The 338.4295 km/h transient maximum during the configured 20 s MGU-K request
+and 307.6027 km/h ICE-only tail remain the recorded high-speed results. The brake probe reports
+1.265 g for caller-supplied wheel torque; it is not a brake-capacity result. Longitudinal load
+transfer and source-matched calibration remain open; see `docs/calibration.md` for limitations.
 - [ ] `fastest-lap` comparison recorded — agree within a few percent, or the discrepancy is explained
 
 **Tag:** `v0.2-straight-line` · **Demo:** 0–100 run with real traces, or a target miss with a written
@@ -100,12 +102,13 @@ Two straight-line reference points are now recorded in `PLAN.md` §11.1 and `doc
 fixed before any parameter edit, so the gate has something to measure against. Both are deliberately
 coarse and neither validates configuration-matched performance: a ~3.7 Hz telemetry-derived 0–100
 median, and a single-event FIA speed-table figure used as a reachability floor rather than a terminal
-speed. The P1 exit gate remains open. The engine-state scenario suite reproduces a 6.6598 s
-0–100 km/h time and a 338.4295 km/h transient maximum against the 2.32 s reference and 325.8 km/h
-reachability floor. The last pinned pair predates the launch wiring and is stale. The 0–100 result
-misses; the transient floor passes. Longitudinal load transfer, plausible power-curve review and
-calibration remain open. Synthetic aero, tyres, brakes and powertrain assumptions remain; this work
-does not establish full F1-car fidelity or regulatory compliance.
+speed. The P1 exit gate remains open. GitHub Actions run 37639816872 at `527d109` reports a 4.0919 s
+0–100 km/h crossing with the configured RPM shift policy; it remains 1.7719 s above the coarse
+2.32 s reference, which carries no acceptance tolerance. The earlier 6.6598 s result used
+fixed-time shifts. The 338.4295 km/h transient maximum passes the 325.8 km/h reachability floor.
+The older pinned pair predates the launch wiring. Longitudinal load transfer, plausible power-curve
+review and source-matched calibration remain open. Synthetic aero, tyres, brakes and powertrain
+assumptions remain; this work does not establish full F1-car fidelity or regulatory compliance.
 
 ---
 
@@ -157,6 +160,9 @@ Measured P2 scenario outputs: [`docs/phase2-demo.md`](./docs/phase2-demo.md).
 
 ## P3 — Thermal (lumped) {#p3}
 
+The implementation and VM verification record is in [`docs/phase3-5-demo.md`](docs/phase3-5-demo.md).
+The checkboxes below reflect evidenced criteria; phase tags remain open until every exit criterion passes.
+
 **Goal:** tyre, brake, engine and gearbox temperatures that respond to what the car is doing.
 **Depends on:** P1 (needs wheel ω and force). **Parallel with:** P2. **Effort:** ~1 week.
 
@@ -174,9 +180,9 @@ Cheap, and it unblocks the entire tyre-temperature half of the analytics story. 
 
 **Exit gate**
 - [ ] Equilibrium temperatures land in plausible windows per compound
-- [ ] Pressure responds to temperature and to an injected leak
-- [ ] A test proves slip-velocity (not road-speed) drives tyre heating
-- [ ] Thermal state survives a long headless run without NaN
+- [x] Pressure responds to temperature and to an injected leak
+- [x] A test proves slip-velocity (not road-speed) drives tyre heating
+- [x] Thermal state survives a long headless run without NaN
 
 **Tag:** `v0.4-thermal` · **Demo:** brake duty cycle with a visible temperature ramp and cooldown.
 
@@ -204,10 +210,10 @@ not let it drift right.
 | P4-T10 | Lap-time plausibility check vs published circuit records | Loose band — the model is not validated yet, but a wild miss means a bug |
 
 **Exit gate**
-- [ ] Racing line uses available track width sensibly and is smooth
-- [ ] Speed profile contains no physically impossible corner
+- [x] Racing line uses available track width sensibly and is smooth
+- [x] Speed profile contains no physically impossible corner
 - [ ] Reference driver completes valid laps; lap and sector times are stable run-to-run
-- [ ] Lap validity correctly rejects a lap with a deliberate track-limits excursion
+- [x] Lap validity correctly rejects a lap with a deliberate track-limits excursion
 - [ ] Line visibly resembles a real racing line on a real circuit
 
 **Tag:** `v0.5-track` · **Demo:** reference driver doing a clean flying lap with live sector deltas.
@@ -235,11 +241,11 @@ durable storage, and a replay that is bit-exact.
 | P5-T11 | **Determinism invariant in CI** (byte-identical Parquet across two runs) | The gate for the entire project's credibility |
 
 **Exit gate**
-- [ ] Bus load <70% at full sensor rate; a 200 Hz IMU message does not starve the 10 Hz engine message
-- [ ] All 10 fault types reproduce deterministically from a seed
-- [ ] Anti-aliasing verified: decimate a known high-frequency signal, confirm no alias
-- [ ] Parquet round-trips; a channel added in P0 flows through with no other edit
-- [ ] Two identical runs produce byte-identical Parquet
+- [x] Bus load <70% at full sensor rate; a 200 Hz IMU message does not starve the 10 Hz engine message
+- [x] All 10 fault types reproduce deterministically from a seed
+- [x] Anti-aliasing verified: decimate a known high-frequency signal, confirm no alias
+- [x] Parquet round-trips; a channel added in P0 flows through with no other edit
+- [x] Two identical runs produce byte-identical Parquet
 - [ ] Replay is indistinguishable from live to the dashboard
 
 **Tag:** `v0.6-telemetry` · **Demo:** the dashboard now showing *simulated* car telemetry, and a fault

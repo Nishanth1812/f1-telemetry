@@ -1,0 +1,21 @@
+version: 1
+name: technical_ring
+description: Synthetic fictional circuit fixture with a narrow chicane; geometry is illustrative and not surveyed or licensed.
+centerline:
+  - {x_m: 0.0, y_m: 0.0}
+  - {x_m: 300.0, y_m: 0.0}
+  - {x_m: 470.0, y_m: 40.0}
+  - {x_m: 520.0, y_m: 150.0}
+  - {x_m: 660.0, y_m: 150.0}
+  - {x_m: 720.0, y_m: 35.0}
+  - {x_m: 1000.0, y_m: 0.0}
+  - {x_m: 1170.0, y_m: 220.0}
+  - {x_m: 1080.0, y_m: 500.0}
+  - {x_m: 800.0, y_m: 610.0}
+  - {x_m: 500.0, y_m: 500.0}
+  - {x_m: 210.0, y_m: 590.0}
+  - {x_m: 0.0, y_m: 380.0}
+widths_m: [12.0, 11.0, 9.0, 7.5, 7.5, 9.0, 12.0, 11.0, 10.0, 10.0, 10.0, 11.0, 12.0]
+sectors:
+  - {s_m: 700.0}
+  - {s_m: 1500.0}

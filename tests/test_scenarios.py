@@ -39,6 +39,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -65,7 +66,7 @@ if TYPE_CHECKING:
     from f1telemetry.contracts.car_spec import CarSpec, KernelConfig
     from f1telemetry.testing.scenarios import Scenario, ScenarioRun
 
-pytestmark = [pytest.mark.kernel, pytest.mark.invariant]
+pytestmark = [pytest.mark.kernel, pytest.mark.invariant, pytest.mark.slow]
 
 # The two straight-line references in `PLAN.md` §11.1 and `docs/calibration.md` §6. The 0–100
 # median is reported without a pass/fail band because its ±0.30 s is feed quantisation; 325.8 km/h
@@ -246,6 +247,42 @@ def _clutch_transmitted_power(run: ScenarioRun, window: slice) -> np.ndarray:
     return transmitted_w
 
 
+def _launch_diagnostics(run: ScenarioRun, seconds: float = 3.0, every_s: float = 0.25) -> str:
+    """A report-only table of the first ``seconds`` of a run, one row per ``every_s``.
+
+    Every column is what the recorded step starting at that time carries, so a CI log shows the
+    gear, engine speed, clutch, pedal, driveline torque, rear slip and speed the launch actually
+    had instead of only the 100 km/h crossing time. Nothing here is asserted.
+    """
+    stride = round(every_s / run.record_dt_s)
+    stop = min(round(seconds / run.record_dt_s), len(run.record) - 1)
+    rear = CORNERS.index("RR")
+    lines = ["  t_s  gear   rpm  clutch  thr  drive_Nm  kappa_RR  km/h"]
+    for index in range(0, stop + 1, stride):
+        step = run.record.ground_truth[index]
+        lines.append(
+            f"{index * run.record_dt_s:5.2f}  {int(run.drivetrain.gear[index]):4d}  "
+            f"{float(run.drivetrain.ice_rpm[index]):5.0f}  "
+            f"{float(run.drivetrain.clutch[index]):6.2f}  "
+            f"{float(run.drivetrain.throttle[index]):3.2f}  "
+            f"{float(run.drivetrain.drive_torque_nm[index]):8.1f}  "
+            f"{step.wheels[rear].kappa:8.4f}  {step.vx_m_s * 3.6:5.1f}"
+        )
+    changes = np.flatnonzero(np.diff(run.drivetrain.gear) != 0) + 1
+    lines.append(
+        "gear changes: "
+        + (
+            ", ".join(
+                f"{int(run.drivetrain.gear[index - 1])}->{int(run.drivetrain.gear[index])} at "
+                f"{index * run.record_dt_s:.2f} s ({float(run.drivetrain.ice_rpm[index]):.0f} rpm)"
+                for index in changes
+            )
+            or "none"
+        )
+    )
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------ behaviour: launch
 
 
@@ -260,6 +297,67 @@ def test_a_standing_launch_starts_from_rest_in_first_gear(runs: Mapping[str, Sce
         "the ICE delivers shaft power from the declared launch speed"
     )
     assert float(run.drivetrain.accel_m_s2.max()) > 0.0
+
+
+def test_thermal_scenarios_publish_finite_temperature_and_pressure_channels(
+    runs: Mapping[str, ScenarioRun],
+) -> None:
+    for name in ("thermal_soak", "brake_duty_cycle"):
+        frames = runs[name].record.frames
+        assert frames
+        for frame in frames:
+            assert np.isfinite(
+                [
+                    frame.values["tyre_temp_fl"],
+                    frame.values["tyre_pressure_fl"],
+                    frame.values["brake_temp_fl"],
+                    frame.values["engine_temp"],
+                    frame.values["gearbox_temp"],
+                ]
+            ).all()
+    brake = runs["brake_duty_cycle"].record.series("brake_temp_fl")
+    assert max(brake) > brake[0]
+
+
+def test_control_law_receives_scenario_pose_and_controls_interval(config: KernelConfig) -> None:
+    states: list[scenarios.ControlState] = []
+    plan = scenarios.Scenario(
+        name="control_law_pose",
+        initial_speed_m_s=10.0,
+        initial_x_m=4.0,
+        initial_y_m=7.0,
+        initial_heading_rad=0.2,
+        description="control-law boundary",
+        segments=(scenarios.ScenarioSegment(duration_s=0.02),),
+    )
+
+    def law(state: scenarios.ControlState) -> scenarios.DriverRequest:
+        states.append(state)
+        return scenarios.DriverRequest(0.0, 0.25, 0.0, 20.0)
+
+    run = scenarios.run_scenario(config, plan, control_steps=100, control_law=law)
+    assert len(states) == 2
+    assert (states[0].x_m, states[0].y_m) == (4.0, 7.0)
+    assert states[0].heading_rad == 0.2
+    assert run.drivetrain.throttle[0] == 0.25
+
+
+def test_control_law_brake_maps_to_signed_wheel_torque(config: KernelConfig) -> None:
+    plan = scenarios.Scenario(
+        name="control_law_brake",
+        initial_speed_m_s=20.0,
+        description="normalized brake boundary",
+        segments=(scenarios.ScenarioSegment(duration_s=0.01),),
+    )
+    request = scenarios.DriverRequest(0.0, 0.0, 0.5, 0.0)
+    run = scenarios.run_scenario(
+        config,
+        plan,
+        control_steps=100,
+        control_law=lambda _: request,
+        max_brake_torque_nm=100.0,
+    )
+    assert np.all(run.brake_torque_nm == -50.0)
 
 
 def test_each_segment_applies_its_caller_supplied_clutch_state(
@@ -339,6 +437,16 @@ def test_the_built_launch_scenarios_seed_the_start_telemetry_engine_speed(
     assert config.idle_rpm < scenarios.LAUNCH_ICE_RPM <= config.rev_limit_rpm, (
         "the declared launch speed has to be a speed this car's engine is configured to reach"
     )
+    acceleration = suite["accelerate_to_speed"]
+    assert acceleration.upshift_at_shift_point, (
+        "the launch measurement should use the driver's configured RPM shift policy"
+    )
+    assert sum(segment.duration_s for segment in acceleration.segments) == pytest.approx(7.0), (
+        "replacing timed shifts must preserve the seven-second trace window"
+    )
+    assert all(segment.request is gearbox.GearRequest.HOLD for segment in acceleration.segments), (
+        "the scenario leaves gear changes to its opt-in driver policy, not fixed-time requests"
+    )
     for name in ("standing_launch", "accelerate_to_speed"):
         run = runs[name]
         scenario = suite[name]
@@ -365,6 +473,87 @@ def test_the_built_launch_scenarios_seed_the_start_telemetry_engine_speed(
             assert published[window.start] == scenarios.LAUNCH_ICE_RPM
 
 
+def test_the_rpm_shift_policy_requests_only_at_the_configured_shift_point(
+    config: KernelConfig,
+) -> None:
+    """The opt-in driver policy asks at the wheel-coupled RPM threshold, never on a timer."""
+    first_gear_ratio = config.gear_ratios[0] * config.final_drive
+    threshold_wheel_angular_speed = config.shift_up_rpm * math.tau / 60.0
+    threshold_speed = threshold_wheel_angular_speed * config.rolling_radius_m / first_gear_ratio
+    run_at_threshold = scenarios.run_scenario(
+        config,
+        scenarios.Scenario(
+            name="shift_at_rpm",
+            initial_speed_m_s=threshold_speed * 1.001,
+            segments=(scenarios.ScenarioSegment(0.01, throttle=1.0),),
+            description="One driver interval at the configured shift point.",
+            upshift_at_shift_point=True,
+        ),
+        control_steps=1,
+    )
+    assert run_at_threshold.drivetrain.gear[0] == 2, (
+        "the driver should request one upshift at the configured RPM; "
+        f"sample={run_at_threshold.drivetrain.ice_rpm[0]:.1f} rpm, "
+        f"gear={run_at_threshold.drivetrain.gear[0]}"
+    )
+
+    run_below_threshold = scenarios.run_scenario(
+        config,
+        scenarios.Scenario(
+            name="hold_below_rpm",
+            initial_speed_m_s=threshold_speed * 0.9,
+            segments=(scenarios.ScenarioSegment(0.01, throttle=1.0),),
+            description="One driver interval below the configured shift point.",
+            upshift_at_shift_point=True,
+        ),
+        control_steps=1,
+    )
+    assert run_below_threshold.drivetrain.gear[0] == 1, (
+        "no request is due below shift RPM; "
+        f"sample={run_below_threshold.drivetrain.ice_rpm[0]:.1f} rpm, "
+        f"gear={run_below_threshold.drivetrain.gear[0]}"
+    )
+
+
+def test_accelerate_to_speed_shifts_only_at_or_above_the_configured_shift_rpm(
+    runs: Mapping[str, ScenarioRun], suite: Mapping[str, Scenario], config: KernelConfig
+) -> None:
+    """Every gear change in the built launch run is a request made at the shift point.
+
+    The gearbox changes gear on the step that carries the request, so a change at recorded step
+    ``k`` was requested from the engine speed sampled at ``k``. The converse is checked too: while
+    the clutch is locked and no shift cut is running, a recorded step below the top gear that
+    held its gear sampled less than ``shift_up_rpm``, because otherwise the driver would have asked.
+    The launch segment, with its 75 % clutch, must not shift at all.
+    """
+    run = runs["accelerate_to_speed"]
+    launch_end = round(suite["accelerate_to_speed"].segments[0].duration_s / run.record_dt_s)
+    gears = run.drivetrain.gear
+    rpm = run.drivetrain.ice_rpm
+    changes = np.flatnonzero(np.diff(gears) != 0) + 1
+    detail = _launch_diagnostics(run)
+
+    assert changes.size, f"the run never upshifts, so the 0-100 time is a first-gear one\n{detail}"
+    assert changes[0] >= launch_end, f"a shift during the slipping launch segment\n{detail}"
+    for index in changes:
+        assert gears[index] == gears[index - 1] + 1, f"one request moves one gear\n{detail}"
+        assert rpm[index] >= config.shift_up_rpm, (
+            f"shift at {index * run.record_dt_s:.2f} s from {rpm[index]:.0f} rpm, below the "
+            f"configured {config.shift_up_rpm:.0f} rpm\n{detail}"
+        )
+    top = int(config.gear_ratios.size)
+    cut_records = math.ceil(config.shift_time_s / run.record_dt_s) + 1
+    for index in range(1, len(gears)):
+        in_cut = any(0 <= index - int(change) <= cut_records for change in changes)
+        locked = run.drivetrain.clutch[index] == 1.0
+        if locked and not in_cut and gears[index] < top:
+            assert rpm[index] < config.shift_up_rpm, (
+                f"no upshift requested at {index * run.record_dt_s:.2f} s although the engine "
+                f"sampled {rpm[index]:.0f} rpm, at or above the configured "
+                f"{config.shift_up_rpm:.0f} rpm\n{detail}"
+            )
+
+
 def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_reference(
     runs: Mapping[str, ScenarioRun],
 ) -> None:
@@ -387,6 +576,7 @@ def test_the_zero_to_one_hundred_time_is_measured_against_the_cited_coarse_refer
         f"{ZERO_TO_HUNDRED_REFERENCE_S} s reference (PLAN.md section 11.1): "
         f"{gap_s:+.4f} s. Reported, not asserted - the reference carries no tolerance."
     )
+    print("accelerate_to_speed first 3 s (report only):\n" + _launch_diagnostics(run))
 
 
 def test_full_throttle_reaches_top_gear_and_ends_in_an_ice_only_tail(
@@ -1281,3 +1471,260 @@ def test_a_bias_vector_of_the_wrong_length_is_refused(config: KernelConfig) -> N
 def test_an_unknown_scenario_name_is_refused(config: KernelConfig) -> None:
     with pytest.raises(KeyError):
         scenarios.scenario(config, "reverse_on_a_straight")
+
+
+def test_scenario_init_loader_resolves_parameters_and_keeps_defaults(tmp_path: Path) -> None:
+    source = tmp_path / "rolling.yaml"
+    source.write_text(
+        """ParameterValueDeclarations:
+  - name: start_speed
+    value: 12.0
+  - name: start_gear
+    value: 1
+Init:
+  name: rolling_start
+  description: Rolling start
+  initial_speed_m_s: "$start_speed"
+  initial_gear: "$start_gear"
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial == scenarios.ScenarioInit(
+        name="rolling_start",
+        description="Rolling start",
+        initial_speed_m_s=12.0,
+        initial_gear=1,
+    )
+
+
+def test_scenario_init_loader_accepts_literals_and_null_soc(tmp_path: Path) -> None:
+    source = tmp_path / "literal.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: literal_start
+  description: Literal start
+  initial_speed_m_s: 0
+  soc_mj: null
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial.initial_speed_m_s == 0.0
+    assert initial.soc_mj is None
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        """ParameterValueDeclarations: []
+Init:
+  <<: &defaults
+    name: merged_start
+    description: Merged defaults
+    initial_speed_m_s: 10
+""",
+        """ParameterValueDeclarations:
+  - <<: {name: speed}
+    value: 10
+Init: {name: merged_start, description: Merged defaults, initial_speed_m_s: "$speed"}
+""",
+    ],
+)
+def test_scenario_init_loader_rejects_yaml_merge_keys(tmp_path: Path, document: str) -> None:
+    source = tmp_path / "merge.yaml"
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"(?s)merge.yaml.*merge keys are not supported"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_resolves_brake_bias_references(tmp_path: Path) -> None:
+    source = tmp_path / "bias-parameters.yaml"
+    source.write_text(
+        """ParameterValueDeclarations:
+  - {name: fl, value: 0.2}
+  - {name: fr, value: 0.2}
+  - {name: rl, value: 0.3}
+  - {name: rr, value: 0.3}
+Init:
+  name: parameterized_bias
+  description: Brake bias from scalar parameters
+  initial_speed_m_s: 0
+  brake_bias: ["$fl", "$fr", "$rl", "$rr"]
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert initial.brake_bias == (0.2, 0.2, 0.3, 0.3)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("soc_mj", 12.5),
+        ("tyre_leak_rate_kg_s", 0.125),
+        ("initial_x_m", 4.0),
+        ("initial_y_m", 5.0),
+        ("initial_heading_rad", 0.75),
+    ],
+)
+def test_scenario_init_loader_resolves_optional_numeric_references(
+    tmp_path: Path, field: str, expected: float
+) -> None:
+    source = tmp_path / "optional-parameter.yaml"
+    source.write_text(
+        f"""ParameterValueDeclarations:
+  - name: value
+    value: {expected}
+Init:
+  name: parameterized
+  description: Optional numeric parameter
+  initial_speed_m_s: 0
+  {field}: "$value"
+""",
+        encoding="utf-8",
+    )
+
+    initial = scenarios.load_scenario_init(source)
+
+    assert getattr(initial, field) == expected
+
+
+def test_scenario_init_loader_wraps_invalid_utf8_with_source_path(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-encoding.yaml"
+    source.write_bytes(b"\x80")
+
+    with pytest.raises(ValueError, match=r"invalid-encoding.yaml.*document"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_rejects_duplicate_and_unknown_references(tmp_path: Path) -> None:
+    duplicate = tmp_path / "duplicate.yaml"
+    duplicate.write_text(
+        """ParameterValueDeclarations:
+  - name: speed
+    value: 10
+  - name: speed
+    value: 20
+Init:
+  name: duplicate
+  description: Duplicate declaration
+  initial_speed_m_s: "$speed"
+""",
+        encoding="utf-8",
+    )
+    unknown = tmp_path / "unknown.yaml"
+    unknown.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: unknown
+  description: Unknown reference
+  initial_speed_m_s: "$missing"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"duplicate.yaml.*speed.*duplicate"):
+        scenarios.load_scenario_init(duplicate)
+    with pytest.raises(ValueError, match=r"unknown.yaml.*initial_speed_m_s.*missing"):
+        scenarios.load_scenario_init(unknown)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1}
+Extra: true
+""",
+        """? [unhashable]
+: value
+ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: 1, extra: true}
+""",
+        """ParameterValueDeclarations: []
+Init:
+  name: bad
+  description: Bad
+  initial_speed_m_s: 1
+  initial_speed_m_s: 2
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: true}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: .inf}
+""",
+        """ParameterValueDeclarations: []
+Init: {name: bad, description: Bad, initial_speed_m_s: .nan}
+""",
+    ],
+)
+def test_scenario_init_loader_rejects_schema_and_nonfinite_values(
+    tmp_path: Path, document: str
+) -> None:
+    source = tmp_path / "invalid.yaml"
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"invalid.yaml"):
+        scenarios.load_scenario_init(source)
+
+
+def test_scenario_init_loader_rejects_integer_that_overflows_float(tmp_path: Path) -> None:
+    source = tmp_path / "overflow.yaml"
+    huge = "9" * 400
+    document = (
+        "ParameterValueDeclarations: []\n"
+        f"Init: {{name: bad, description: Bad, initial_speed_m_s: {huge}}}\n"
+    )
+    source.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"overflow.yaml.*finite"):
+        scenarios.load_scenario_init(source)
+
+
+def test_loaded_scenario_init_uses_run_scenario_config_validation(
+    tmp_path: Path, config: KernelConfig
+) -> None:
+    source = tmp_path / "out-of-range-gear.yaml"
+    source.write_text(
+        """ParameterValueDeclarations: []
+Init:
+  name: invalid_gear
+  description: Gear checked by the scenario runner
+  initial_speed_m_s: 0
+  initial_gear: 99
+""",
+        encoding="utf-8",
+    )
+    initial = scenarios.load_scenario_init(source)
+    plan = scenarios.Scenario(
+        name=initial.name,
+        initial_speed_m_s=initial.initial_speed_m_s,
+        segments=(scenarios.ScenarioSegment(duration_s=0.1),),
+        description=initial.description,
+        initial_gear=initial.initial_gear,
+        soc_mj=initial.soc_mj,
+        brake_bias=initial.brake_bias,
+        tyre_leak_rate_kg_s=initial.tyre_leak_rate_kg_s,
+        initial_x_m=initial.initial_x_m,
+        initial_y_m=initial.initial_y_m,
+        initial_heading_rad=initial.initial_heading_rad,
+    )
+
+    with pytest.raises(ValueError, match=r"initial_gear must be a whole gear"):
+        scenarios.run_scenario(config, plan)

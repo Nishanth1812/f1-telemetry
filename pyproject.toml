@@ -11,12 +11,14 @@ dependencies = [
   "pyyaml>=6.0.2,<7",
   "pyarrow>=19,<26",
   "websockets>=14,<16",
+  "scikit-learn>=1.9,<2",
 ]
 
 [project.scripts]
 f1-codegen = "f1telemetry.codegen.__main__:main"
 f1-check-contract = "f1telemetry.codegen.__main__:main_check"
 f1-serve = "f1telemetry.server:main"
+f1-sweep = "f1telemetry.testing.sweep:main"
 
 [dependency-groups]
 dev = [
@@ -105,6 +107,7 @@ markers = [
   "contract: channels.yaml / car_spec.yaml schema, validation and provenance",
   "toolchain: environment and dependency toolchain probes",
   "kernel: P1 physics kernel - fixed step, state layout, caller-owned buffers, determinism",
+  "slow: closed-loop laps, scenario, golden and sweep suites; CI skips them (-m \"not slow\") and full.yml runs them nightly",
   "forces: P1 aero and longitudinal tyre force model - Cl/Cd(v), dynamic pressure, slip ratio, Pacejka, grip limit",
   "powertrain: P1 ICE torque curve and turbo-lag multiplier (P1-T4)",
   "gearbox: P1 gearbox step - gear progression, shift timer, clutch engagement (P1-T5)",

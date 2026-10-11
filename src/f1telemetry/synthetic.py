@@ -25,7 +25,10 @@ Two iterators, deliberately:
   on a ``max_hz`` grid (30 Hz by default, matching PLAN.md section 8.4 and
   ``web/src/telemetry/types.ts``), each frame carrying the most recent value of every
   channel. Aggregation only changes delivery, never sampling, so a 200 Hz channel is
-  still drawn from the RNG 200 times a second and simply appears 30 times.
+  still drawn from the RNG 200 times a second and simply appears 30 times. Each
+  delivery frame also carries those very draws in its optional ``samples`` batch, so
+  the full-rate instants are still countable on the wire instead of being summed away
+  by the newest-value snapshot.
 
 Two invariants the rest of the project depends on:
 
@@ -64,6 +67,7 @@ from f1telemetry.contracts.channels import (
 __all__ = [
     "BROADCAST_HZ",
     "Frame",
+    "FrameEvent",
     "SampleFn",
     "SyntheticError",
     "SyntheticSource",
@@ -98,23 +102,81 @@ injection. The hook is handed the channel so it can read ``range``, ``noise_mode
 
 
 @dataclass(frozen=True, slots=True)
+class FrameEvent:
+    """One occurrence attached to a frame, serialised under the optional ``events`` key.
+
+    The ``channels`` mapping carries *values*; events carry *occurrences*. Today the
+    only producer is the replay path, which surfaces a saved run's injected-fault
+    annotations as ``kind == "fault"`` events; the session event channels
+    (``lap_index`` and friends) stay ordinary channels on the wire and need no kind
+    of their own. Every field after ``time_us`` is optional and is omitted from the
+    payload when ``None``, so an event costs exactly the keys it needs and a frame
+    with no events serialises exactly as it always has.
+    """
+
+    kind: str
+    time_us: int
+    fault_type: str | None = None
+    channel: str | None = None
+    severity: float | None = None
+    duration_samples: int | None = None
+    label: bool | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        """JSON-ready event; ``None`` fields are omitted, ``False`` and ``0`` kept."""
+        payload: dict[str, object] = {"kind": self.kind, "time_us": int(self.time_us)}
+        if self.fault_type is not None:
+            payload["fault_type"] = self.fault_type
+        if self.channel is not None:
+            payload["channel"] = self.channel
+        if self.severity is not None:
+            payload["severity"] = float(self.severity)
+        if self.duration_samples is not None:
+            payload["duration_samples"] = int(self.duration_samples)
+        if self.label is not None:
+            payload["label"] = bool(self.label)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class Frame:
     """One batch of samples, and exactly the WebSocket payload shape.
 
     ``time_us`` is an integer count of simulated microseconds from ``t = 0``;
     ``channels`` maps channel name to a finite float. Event channels ride in the same
     mapping when something publishes them, but the generator never schedules them.
+    ``events`` carries discrete occurrences - saved fault annotations on the replay
+    path - and is serialised only when non-empty, so a frame without events is
+    byte-identical to the pre-event contract and live and replay frames keep one
+    shape.
+
+    ``samples`` carries the full-rate draws a delivery frame aggregated away, in the
+    same shape a frame itself has: each entry holds the channels actually sampled at
+    that instant. It is optional on the wire and omitted when empty, so a frame with
+    no batch - every replay frame, every snapshot-only producer - serialises exactly
+    as before. It comes after ``events`` so the existing positional third argument
+    keeps meaning what it meant.
     """
 
     time_us: int
     channels: dict[str, float]
+    events: tuple[FrameEvent, ...] = ()
+    samples: tuple[Frame, ...] = ()
 
-    def to_wire(self) -> dict[str, object]:
-        """JSON-ready payload, matching ``TelemetryFrame`` in the web client."""
-        return {
+    def to_wire(self, *, include_samples: bool = True) -> dict[str, object]:
+        """JSON-ready payload, optionally omitting full-rate samples for snapshot clients."""
+        payload: dict[str, object] = {
             "time_us": int(self.time_us),
             "channels": {name: float(value) for name, value in self.channels.items()},
         }
+        if self.events:
+            payload["events"] = [event.to_wire() for event in self.events]
+        if include_samples:
+            if self.samples:
+                payload["samples"] = [sample.to_wire() for sample in self.samples]
+        else:
+            payload["snapshot_only"] = True
+        return payload
 
     def value(self, name: str) -> float:
         return self.channels[name]
@@ -309,6 +371,10 @@ class SyntheticSource:
         skips one - which is what a transport that pulls fixed-size chunks needs. As
         in :meth:`iter_samples` the window is half-open, so one second of simulated
         time at 30 Hz is exactly 30 frames.
+
+        Each frame also carries the draws it aggregated, in ``Frame.samples``, so the
+        declared rates stay countable downstream while ``channels`` stays the
+        newest-value snapshot the tiles read.
         """
         rate = float(max_hz)
         if not math.isfinite(rate) or rate <= 0.0:
@@ -319,20 +385,39 @@ class SyntheticSource:
         target = -(-anchor // tick_us) * tick_us  # first grid tick at or after anchor
         while target < end:
             if target != self._emitted_us:
-                self._advance_to(target)
+                samples = self._advance_to(target)
                 self._emitted_us = target
-                yield Frame(target, _publishable(self._latest))
+                yield Frame(target, _publishable(self._latest), samples=samples)
             target += tick_us
 
-    def _advance_to(self, limit_us: int) -> None:
-        """Sample every channel whose next due instant has arrived, then set time."""
+    def _advance_to(self, limit_us: int) -> tuple[Frame, ...]:
+        """Sample every channel whose next due instant has arrived, then set time.
+
+        Returns those very draws grouped by scheduled instant and ordered by
+        timestamp, which is what lets the feed publish full-rate evidence without
+        changing anything about how or in what order it is sampled: the batch is
+        collected from the same draws that fill the snapshot, never re-sampled.
+        Instants at which every value failed the finite-value guard are left out
+        entirely, so a batch entry always carries at least one channel.
+        """
+        draws: dict[int, dict[str, object]] = {}
         for index, slot in enumerate(self._slots):
             due = self._next_due[index]
             while due <= limit_us:
-                self._latest[slot.channel.name] = self._sample_fn(slot.channel, self._rng)
+                value = self._sample_fn(slot.channel, self._rng)
+                self._latest[slot.channel.name] = value
+                draws.setdefault(round(due), {})[slot.channel.name] = value
                 due = due + slot.period
             self._next_due[index] = due
         self._now_us = limit_us
+        # sorted() on the keys alone would do; sorting items sorts by that same unique
+        # key first, which is the timestamp, so the batch leaves in stream order.
+        batch = [
+            (time_us, publishable)
+            for time_us, values in sorted(draws.items())
+            if (publishable := _publishable(values))
+        ]
+        return tuple(Frame(time_us, channels) for time_us, channels in batch)
 
 
 def load_source(

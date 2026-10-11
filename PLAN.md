@@ -331,16 +331,18 @@ channel class. Without it every detector scores trivially and the project is the
 
 29-bit IDs, DLC, per-message cycle times matching the rate table, rolling counter + checksum, and
 arbitration priority. Then measure bus load and prove a 200 Hz IMU frame does not starve the 10 Hz
-engine-temperature message.
+engine-temperature message. The initial sketch below cannot encode a 29-bit ID in two bytes; the
+implemented wire format uses a 32-bit little-endian ID field and CRC-32/ISO-HDLC after the payload.
 
 ```text
 offset  size  field
-0       2     id          (29-bit, little-endian)
-2       1     dlc
-3       1     flags       (error / extended / rtr)
-4       4     counter     (rolling)
-8       8     t_us        (simulated, not wall clock)
-16      N     payload     (columnar: N/channels_per_frame × float32)
+0       4     id          (29-bit, little-endian uint32)
+4       1     dlc         (standard CAN-FD DLC-to-byte-count mapping)
+5       1     flags       (error / extended / rtr)
+6       4     counter     (rolling uint32)
+10      8     t_us        (simulated, not wall clock, uint64)
+18      N     payload     (float32 values; byte count is selected from the DLC mapping)
+18+N    4     crc         (CRC-32/ISO-HDLC over header and payload)
 ```
 
 This is cheap to emulate (~300 lines) and it is the fidelity detail that makes the project read as
@@ -732,6 +734,21 @@ if not, add ~40% to phases 1–2.
 Ordering rationale: emulation and storage land *before* analytics, so analytics is built against real
 Parquet rather than an in-memory array. Phase 4 (track) lands before the DoE because the DoE is
 worthless without it — this is the dependency v1 missed entirely.
+
+### Phases 3–5 implementation checkpoint
+
+The current slice wires lumped thermal outputs into scenario records, adds two synthetic track
+fixtures with geometry queries, bounded lateral offsets, speed profiles, pure-pursuit requests,
+lap/sector projection and validity, deterministic sensor filtering/fault primitives, CAN-FD framing
+and a periodic bus scheduler, a fixed-capacity live buffer, Parquet frame reading, and finite
+WebSocket replay. These are implementation foundations; phases 3–5 are not marked complete.
+
+Remaining exit work includes calibration against matched thermal and noise data; spline and surface
+track parameters; optimized-line curvature feeding the speed profile, powertrain/tyre limits and
+reference lap deltas; wiring sensor samples through CAN-FD into scenario storage and live transport;
+proving full-rate bus load below 70% and IMU non-starvation; byte-identical replay and invariant 8;
+and tests for the new contracts. Until those are implemented and evidenced, gates for phases 3–5 stay
+open. The thermal checkpoint in `docs/calibration.md` records the synthetic coefficient limits.
 
 ---
 
