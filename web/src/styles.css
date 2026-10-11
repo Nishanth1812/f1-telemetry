@@ -471,7 +471,7 @@ a:focus-visible { outline-offset: 3px; }
 
 .scenario-result__charts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
   gap: 12px;
 }
 
@@ -492,8 +492,20 @@ a:focus-visible { outline-offset: 3px; }
 .scenario-chart svg {
   display: block;
   width: 100%;
-  height: 150px;
+  height: 160px;
   overflow: visible;
+}
+
+/* SVG text sizes are in viewBox units; at the narrowest chart width (~520px) this stays >= 11px. */
+.scenario-chart__axis {
+  fill: var(--text-muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scenario-chart__axis--title {
+  fill: var(--text);
+  font-weight: 600;
 }
 
 .scenario-chart__grid {
@@ -540,6 +552,28 @@ a:focus-visible { outline-offset: 3px; }
 
 .scenario-result__note {
   margin: 0;
+}
+
+.scenario-result__short {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.scenario-warning {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-left: 4px solid var(--warn);
+  border-radius: 7px;
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .advanced-telemetry {
@@ -1549,4 +1583,11 @@ a:focus-visible { outline-offset: 3px; }
   .anomaly__breakdown {
     font-size: 0.68rem;
   }
+}
+
+/* Plain-language note added with the Advanced panel wording. */
+.advanced-telemetry__note {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }

@@ -8,7 +8,8 @@ export function TileGrid() {
   if (channelNames.length === 0) {
     return (
       <p className="placeholder" role="note">
-        Waiting for telemetry frames on the display stream. Tiles refresh at {TILE_REFRESH_HZ} Hz.
+        No live data yet. Once the simulator is connected, every sensor appears here and refreshes{' '}
+        {TILE_REFRESH_HZ} times a second.
       </p>
     );
   }

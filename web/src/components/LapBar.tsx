@@ -5,7 +5,6 @@ import {
   DELTA_RANGE,
   LAPS_RETAINED,
   SECTOR_LABELS,
-  VERDICT_TEXT,
   inDeclaredRange,
   lapStateFromEvents,
   reduceLapState,
@@ -15,18 +14,22 @@ import {
   sectorTime,
   type LapRecord,
   type LapState,
+  type LapVerdict,
 } from '../telemetry/laps';
 
 /**
- * Lap and sector bar with delta, plus the validity indicator (PLAN.md section
- * 8.4; PHASES.md P8-T8).
+ * Lap and sector bar with gap to the reference lap, plus the check indicator
+ * (PLAN.md section 8.4; PHASES.md P8-T8).
  *
- * Every time and delta on this panel comes from the store's session event
+ * Every time and gap on this panel comes from the store's session event
  * stream, and the folding, verdicts and comparisons live in `telemetry/laps.ts`
  * so they can be reasoned about without React. See that module for the ordering
- * rules and, importantly, for exactly what the validity indicator does and does
- * not claim: track limits, DNF and the invalid flag are not on this stream, so a
- * `consistent` lap is internally reconciled, not a certified valid lap.
+ * rules and, importantly, for exactly what the check does and does not claim:
+ * track limits, DNF and the invalid flag are not on this stream, so a
+ * "checks out" lap is internally reconciled, not an officially valid lap.
+ *
+ * On screen the labels are plain English; the raw names (`delta`, `ΣS − lap`,
+ * `sector_index`, `ref`) are kept in `title` tooltips for engineers.
  *
  * The bar is canvas because it is a chart, and it redraws only when the lap table
  * changes - a dozen bars never needs an animation frame.
@@ -35,11 +38,24 @@ import {
 const SECTOR_FALLBACK_COLOURS = ['#58a6ff', '#d2a8ff', '#3fb950'] as const;
 const ROW_HEIGHT = 26;
 const BAR_HEIGHT = 14;
-const LABEL_PX = 34;
+/** Wide enough for the row label "Reference" at the canvas font. */
+const LABEL_PX = 72;
 const VALUE_PX = 58;
-/** Three rows: the latest lap, the reference lap, and the sector delta. */
+/** Three rows: the latest lap, the reference lap, and the sector gap. */
 const PADDING = { top: 8, bottom: 18 };
 const FONT = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+/** Plain-English check results, one per verdict. */
+const CHECK_TEXT: Readonly<Record<LapVerdict, string>> = {
+  consistent: 'Adds up',
+  unreconciled: "Sectors don't add up to the lap time",
+  unmeasured: 'No lap time reported',
+  'out-of-range': 'Outside the expected range',
+};
+
+function sectorName(index: number): string {
+  return `Sector ${index + 1}`;
+}
 
 function lapLabel(lap: LapRecord): string {
   return lap.lapIndex === null ? '—' : `${lap.lapIndex}`;
@@ -62,8 +78,8 @@ function secondsText(value: number | null, digits = 3): string {
 }
 
 /**
- * Delta against the reference lap, signed so a slower lap reads as slower. `null`
- * when no delta has been published, and an explicit note when the published
+ * Gap against the reference lap, signed so a slower lap reads as slower. `null`
+ * when no gap has been published, and an explicit note when the published
  * value is outside the contract's declared range - not a silently rendered
  * number.
  */
@@ -72,7 +88,7 @@ function deltaText(delta: number | null): string {
     return '—';
   }
   if (!inDeclaredRange(delta, DELTA_RANGE)) {
-    return `off range (${formatValue(delta)} s)`;
+    return `outside expected range (${formatValue(delta)} s)`;
   }
   return `${secondsText(delta)} s`;
 }
@@ -159,7 +175,7 @@ export function LapBar() {
       if (barRows.length === 0) {
         context.fillStyle = textColour;
         context.textAlign = 'center';
-        context.fillText('No reconciled lap to plot yet', plotLeft + plotWidth / 2, height / 2);
+        context.fillText('No matched lap to compare yet', plotLeft + plotWidth / 2, height / 2);
         return;
       }
 
@@ -185,22 +201,24 @@ export function LapBar() {
           const share = total > 0 && time !== null ? (time / total) * usable : usable / SECTOR_LABELS.length;
           context.fillStyle = sectorColours[index] ?? textColour;
           context.fillRect(x, top, Math.max(1, share), BAR_HEIGHT);
-          if (share > 26) {
+          // Name the sector when there is room, otherwise just its number.
+          const inside = share > 70 ? sectorName(index) : share > 14 ? `${index + 1}` : '';
+          if (inside !== '') {
             context.fillStyle = '#0b0f14';
             context.textAlign = 'center';
-            context.fillText(SECTOR_LABELS[index] ?? '', x + share / 2, top + BAR_HEIGHT / 2);
+            context.fillText(inside, x + share / 2, top + BAR_HEIGHT / 2);
           }
           x += share;
         });
         context.fillStyle = textColour;
         context.textAlign = 'right';
-        context.fillText(lap === reference ? 'ref' : `L${lapLabel(lap)}`, plotLeft - 6, top + BAR_HEIGHT / 2);
+        context.fillText(lap === reference ? 'Reference' : `Lap ${lapLabel(lap)}`, plotLeft - 6, top + BAR_HEIGHT / 2);
         context.textAlign = 'left';
         context.fillText(`${total.toFixed(3)} s`, plotLeft + plotWidth + 6, top + BAR_HEIGHT / 2);
       });
 
-      // Row 3: per-sector delta against the reference, centred on zero so the
-      // sign is the geometry. Scaled to the largest sector delta present.
+      // Row 3: per-sector gap against the reference, centred on zero so the
+      // sign is the geometry. Scaled to the largest sector gap present.
       const deltaTop = PADDING.top + 2 * ROW_HEIGHT;
       const centre = plotLeft + plotWidth / 2;
       context.strokeStyle = gridColour;
@@ -210,7 +228,7 @@ export function LapBar() {
       context.stroke();
       context.fillStyle = textColour;
       context.textAlign = 'right';
-      context.fillText('Δ', plotLeft - 6, deltaTop + BAR_HEIGHT / 2);
+      context.fillText('Gap', plotLeft - 6, deltaTop + BAR_HEIGHT / 2);
       const cellWidth = plotWidth / SECTOR_LABELS.length;
       deltas.forEach((delta, index) => {
         if (delta === null) {
@@ -223,7 +241,7 @@ export function LapBar() {
       });
       context.textAlign = 'left';
       context.fillText(
-        largestDelta > 0 ? `±${largestDelta.toFixed(3)} s` : 'no sector delta',
+        largestDelta > 0 ? `±${largestDelta.toFixed(3)} s` : 'no sector gap',
         plotLeft + plotWidth + 6,
         deltaTop + BAR_HEIGHT / 2,
       );
@@ -241,34 +259,34 @@ export function LapBar() {
         <h2 className="lap__heading" id={headingId}>
           Laps
         </h2>
-        <span className="lap__note">lap and sector times, delta, consistency indicator</span>
+        <span className="lap__note">lap and sector times, gap to the reference lap, check result</span>
       </div>
 
       <dl className="lap__readouts">
         <div className="lap__readout">
-          <dt className="lap__key">lap</dt>
+          <dt className="lap__key" title="Current lap">Current lap</dt>
           <dd className="lap__value">{lapLabel(open)}</dd>
         </div>
         <div className="lap__readout">
-          <dt className="lap__key">last lap</dt>
+          <dt className="lap__key">Last lap</dt>
           <dd className="lap__value">{closed[0] === undefined ? '—' : lapTimeText(closed[0])}</dd>
         </div>
         <div className="lap__readout">
-          <dt className="lap__key">delta</dt>
+          <dt className="lap__key" title="delta">Gap to reference</dt>
           <dd className={`lap__value ${deltaTone(latestDelta)}`}>{deltaText(latestDelta)}</dd>
         </div>
         <div className="lap__readout">
-          <dt className="lap__key">reference</dt>
+          <dt className="lap__key" title="ref">Reference lap</dt>
           <dd className="lap__value">
-            {reference === null ? 'none yet' : `L${lapLabel(reference)} ${lapTimeText(reference)}`}
+            {reference === null ? 'none yet' : `Lap ${lapLabel(reference)} ${lapTimeText(reference)}`}
           </dd>
         </div>
       </dl>
 
       {!hasData ? (
         <p className="placeholder" role="note">
-          No lap events yet. The contract&apos;s session channels are event-driven, so they appear only
-          when a producer publishes them; the synthetic noise stream does not schedule them.
+          No lap times yet. Lap and sector times appear here once the simulator reports a finished
+          lap.
         </p>
       ) : null}
 
@@ -279,23 +297,23 @@ export function LapBar() {
           role="img"
           aria-label={
             reference === null
-              ? 'Sector bar: no reconciled lap to plot yet'
-              : `Sector bar: lap ${lapLabel(closed[0] ?? reference)} against reference lap ${lapLabel(
+              ? 'Sector bar chart: no matched lap to compare yet'
+              : `Sector bar chart: lap ${lapLabel(closed[0] ?? reference)} against reference lap ${lapLabel(
                   reference,
-                )}, with per-sector delta`
+                )}, with the gap in each sector`
           }
         />
         <figcaption className="lap__caption">
           <span className="lap__legend">
-            {SECTOR_LABELS.map((label, index) => (
-              <span key={label} className="lap__legend-item">
+            {SECTOR_LABELS.map((_label, index) => (
+              <span key={sectorName(index)} className="lap__legend-item">
                 <span className={`lap__swatch lap__swatch--${index + 1}`} />
-                {label}
+                {sectorName(index)}
               </span>
             ))}
             <span className="lap__legend-item">
               <span className="lap__swatch lap__swatch--delta" />
-              Δ vs reference
+              Gap vs reference
             </span>
           </span>
         </figcaption>
@@ -303,37 +321,37 @@ export function LapBar() {
 
       {hasData ? (
         <div className="lap__current">
-          <span className="lap__current-label">current lap {lapLabel(open)}</span>
-          {SECTOR_LABELS.map((label, index) => (
-            <span key={label} className="lap__current-sector">
-              <span className="lap__key">{label}</span>
+          <span className="lap__current-label">Current lap {lapLabel(open)}</span>
+          {SECTOR_LABELS.map((_label, index) => (
+            <span key={sectorName(index)} className="lap__current-sector">
+              <span className="lap__key">{sectorName(index)}</span>
               {sectorText(open, index)}
             </span>
           ))}
           <span className="lap__current-sector">
-            <span className="lap__key">sector idx</span>
+            <span className="lap__key" title="sector_index">Current sector</span>
             {currentSector === null ? '—' : currentSector}
           </span>
-          <span className="lap__verdict lap__verdict--open">in progress</span>
+          <span className="lap__verdict lap__verdict--open">In progress</span>
         </div>
       ) : null}
 
       {closed.length > 0 ? (
         <table className="lap__table">
-          <caption>recent laps, newest first</caption>
+          <caption>Recent laps, newest first</caption>
           <thead>
             <tr>
-              <th scope="col">lap</th>
-              {SECTOR_LABELS.map((label) => (
-                <th key={label} scope="col">
-                  {label}
+              <th scope="col">Lap</th>
+              {SECTOR_LABELS.map((_label, index) => (
+                <th key={sectorName(index)} scope="col">
+                  {sectorName(index)}
                 </th>
               ))}
-              <th scope="col">lap time</th>
-              <th scope="col">Δ lap</th>
-              <th scope="col">Δ per sector</th>
-              <th scope="col">ΣS − lap</th>
-              <th scope="col">indicator</th>
+              <th scope="col">Lap time</th>
+              <th scope="col" title="Δ lap">Gap to reference</th>
+              <th scope="col" title="Δ per sector">Gap per sector</th>
+              <th scope="col" title="ΣS − lap">Sector sum minus lap time</th>
+              <th scope="col" title="indicator">Check</th>
             </tr>
           </thead>
           <tbody>
@@ -351,7 +369,7 @@ export function LapBar() {
                     {deltas.map((delta) => (delta === null ? '—' : secondsText(delta))).join(' / ')}
                   </td>
                   <td>{secondsText(lap.reconciliation, 4)}</td>
-                  <td className={`lap__indicator lap__indicator--${lap.verdict}`}>{VERDICT_TEXT[lap.verdict]}</td>
+                  <td className={`lap__indicator lap__indicator--${lap.verdict}`}>{CHECK_TEXT[lap.verdict]}</td>
                 </tr>
               );
             })}
@@ -361,11 +379,11 @@ export function LapBar() {
 
       <p className="lap__footnote">
         {deltaSeen
-          ? 'Delta is the contract’s own reference-lap comparison at the current track position.'
-          : 'No delta has been published on this stream, so no lap comparison is available.'}{' '}
-        The indicator reports only what this stream can prove: three sector times reconciling with the
-        reported lap time, inside the contract&apos;s declared range. Track limits, DNF and the invalid
-        flag are not published here, so a consistent lap is not a certified valid lap.
+          ? "The gap is the simulator's own comparison with the reference lap at the current track position."
+          : 'The simulator has not sent any gap figures on this stream, so no lap comparison is available.'}{' '}
+        The check only confirms that the three sector times add up to the reported lap time, within
+        the expected range. Track limits, did-not-finish status and the official invalid-lap flag are
+        not sent on this stream, so a lap that adds up is not an officially valid lap.
       </p>
     </section>
   );

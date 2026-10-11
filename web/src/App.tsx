@@ -10,21 +10,9 @@ import { TracePanel } from './components/TracePanel';
 import { RunComparison } from './components/RunComparison';
 import { Scrubber } from './components/Scrubber';
 import { TyreBlock } from './components/TyreBlock';
-import { useTelemetryStore } from './store/telemetryStore';
 import { useTelemetrySocket } from './hooks/useTelemetrySocket';
 import { ScenarioLab } from './components/ScenarioLab';
 import { setDetailedTelemetry } from './telemetry/socket';
-
-function ConnectionStatusText() {
-  const status = useTelemetryStore((state) => state.status);
-  if (status === 'open') {
-    return <p className="connection-status connection-status--open">Connected to the simulator</p>;
-  }
-  if (status === 'connecting' || status === 'reconnecting') {
-    return <p className="connection-status connection-status--connecting">Connecting to the simulator…</p>;
-  }
-  return <p className="connection-status connection-status--disconnected">Not connected - start the server</p>;
-}
 
 export function App() {
   useTelemetrySocket();
@@ -35,10 +23,8 @@ export function App() {
         <div>
           <h1 className="app__title">F1 Telemetry</h1>
           <p className="app__subtitle">
-            A simulated racing-car dashboard: run a quick experiment, change one setting,
-            and see how speed and grip respond. Not calibrated to a real car.
+            Try a simulated race car: pick a run, change one setting, see what happens.
           </p>
-          <ConnectionStatusText />
         </div>
         <ConnectionIndicator />
       </header>
@@ -52,7 +38,11 @@ export function App() {
             setDetailedTelemetry(open);
           }}
         >
-          <summary>Advanced telemetry · raw channels and analysis</summary>
+          <summary>Advanced: live car data (for engineers)</summary>
+          <p className="advanced-telemetry__note">
+            These panels stream every sensor the simulator produces, about 30 times a second. You
+            don&apos;t need them for the Scenario Lab above.
+          </p>
           {advancedOpen ? (
             <div className="advanced-telemetry__content">
               <section className="app__tiles" aria-labelledby="tiles-heading">

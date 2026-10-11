@@ -1,17 +1,30 @@
+import type { ReactNode } from 'react';
 import { useNow } from '../hooks/useNow';
 import { useTelemetryStore } from '../store/telemetryStore';
 
 const STALE_AFTER_MS = 500;
 const TICK_MS = 250;
 
-const LABELS = {
-  idle: 'Idle',
-  connecting: 'Connecting…',
-  open: 'Live',
-  reconnecting: 'Reconnecting',
-  closed: 'Disconnected',
-  error: 'Error',
-} as const;
+/**
+ * The one connection status on the page. The header used to show two competing
+ * texts (a paragraph and this pill); this component is now the only one.
+ */
+function headline(status: string, stalled: boolean): ReactNode {
+  if (status === 'open') {
+    // A stalled socket is still connected, but no frames are arriving. This is
+    // kept as its own wording so the page never claims "connected" while the
+    // data has stopped.
+    return stalled ? 'Connected, but no data arriving right now' : 'Connected to the simulator';
+  }
+  if (status === 'connecting' || status === 'reconnecting') {
+    return 'Connecting…';
+  }
+  return (
+    <>
+      Not connected — run <code>uv run f1-serve</code>
+    </>
+  );
+}
 
 export function ConnectionIndicator() {
   const status = useTelemetryStore((state) => state.status);
@@ -28,44 +41,41 @@ export function ConnectionIndicator() {
   const stalled = status === 'open' && ageMs !== null && ageMs > STALE_AFTER_MS;
   const countdown = retryAt === null ? null : Math.max(0, retryAt - now);
 
-  let label: string = LABELS[status];
-  if (status === 'reconnecting' && countdown !== null) {
-    label = `Reconnecting in ${(countdown / 1_000).toFixed(1)} s (attempt ${attempt})`;
-  } else if (stalled) {
-    label = 'No data';
-  } else if (status === 'open' && attempt > 0) {
-    label = 'Reconnected';
-  }
+  const retryLine =
+    status === 'reconnecting' && countdown !== null
+      ? `Reconnecting in ${(countdown / 1_000).toFixed(1)} s (attempt ${attempt})`
+      : null;
 
   return (
     <div className={`connection connection--${stalled ? 'stalled' : status}`}>
       <p className="connection__state">
         <span className="connection__dot" aria-hidden="true" />
         <span className="connection__label" role="status" aria-live="polite">
-          {label}
+          {headline(status, stalled)}
         </span>
       </p>
       <dl className="connection__stats">
         <div className="connection__stat">
-          <dt>Frame rate</dt>
-          <dd>{framesPerSecond === 0 ? '—' : `${framesPerSecond.toFixed(1)} Hz`}</dd>
+          <dt>Updates per second</dt>
+          <dd>{framesPerSecond === 0 ? '—' : framesPerSecond.toFixed(1)}</dd>
         </div>
         <div className="connection__stat">
-          <dt>Frames</dt>
+          <dt>Updates received</dt>
           <dd>{frameCount}</dd>
         </div>
         <div className="connection__stat">
-          <dt>Last frame</dt>
+          <dt>Time since last update</dt>
           <dd>{ageMs === null ? '—' : `${(ageMs / 1_000).toFixed(2)} s`}</dd>
         </div>
         {malformedCount > 0 ? (
           <div className="connection__stat">
-            <dt>Malformed</dt>
+            <dt>Bad messages ignored</dt>
             <dd>{malformedCount}</dd>
           </div>
         ) : null}
       </dl>
-      {detail !== null ? <p className="connection__detail">{detail}</p> : null}
+      {retryLine !== null ? <p className="connection__detail">{retryLine}</p> : null}
+      {retryLine === null && detail !== null ? <p className="connection__detail">{detail}</p> : null}
     </div>
   );
 }

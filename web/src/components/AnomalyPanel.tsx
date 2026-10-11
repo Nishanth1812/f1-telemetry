@@ -9,6 +9,7 @@ import {
   type DetectorSnapshot,
 } from '../telemetry/anomaly';
 import { formatDurationMs, formatValue } from '../telemetry/format';
+import { channelLabel, faultLabel } from './Tile';
 
 /**
  * Anomaly panel (PLAN.md section 9 layer 5; PHASES.md P8-T7).
@@ -33,10 +34,19 @@ import { formatDurationMs, formatValue } from '../telemetry/format';
  * Every 200 Hz sample is read inside the detector, straight from the store's
  * ring buffer. React only ever sees a 4 Hz snapshot of already-summarised
  * numbers, so nothing in the render path touches sample data.
+ *
+ * On screen the statistics carry plain names; the technical symbol is kept in
+ * the `title` tooltip so engineers can still find it.
  */
 
 const PUBLISH_MS = 250;
 const BREAKDOWN_ROWS = 6;
+
+const STATISTIC_NAMES: Readonly<Record<AnomalyAlarm['statistic'], string>> = {
+  both: 'both scores',
+  T2: 'unusualness score',
+  Q: 'off-pattern score',
+};
 
 function stat(value: number | null, digits = 2): string {
   return value === null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
@@ -50,8 +60,11 @@ function latency(fault: AnomalyAlarm['fault']): string {
   if (fault === null) {
     return '—';
   }
-  const where = fault.channel === null ? fault.faultType : `${fault.faultType} on ${fault.channel}`;
-  const labelled = fault.labelled === false ? ' (not ground truth)' : '';
+  const where =
+    fault.channel === null
+      ? faultLabel(fault.faultType)
+      : `${faultLabel(fault.faultType)} on ${channelLabel(fault.channel)}`;
+  const labelled = fault.labelled === false ? ' (not confirmed as injected)' : '';
   return `${formatDurationMs(fault.latencyMs)} after ${where}${labelled}`;
 }
 
@@ -110,13 +123,13 @@ export function AnomalyPanel() {
           Anomalies
         </h2>
         <span className="anomaly__note">
-          layer 2 T² and Q · k-of-n persistence · no confidence score
+          Flags unusual combinations of sensor readings. It gives no confidence score.
         </span>
       </div>
 
       {snapshot === null ? (
         <p className="placeholder" role="note">
-          Waiting for ingested samples.
+          Waiting for sensor data. Warnings appear here once the simulator is sending readings.
         </p>
       ) : snapshot.problem !== null ? (
         <p className="placeholder" role="note">
@@ -126,41 +139,41 @@ export function AnomalyPanel() {
         <>
           <dl className="anomaly__stats">
             <div className="anomaly__stat">
-              <dt>severity T²</dt>
+              <dt title="Hotelling T² (severity)">Unusualness score</dt>
               <dd>
                 {stat(snapshot.t2)}
                 <span className="anomaly__limit"> / {stat(snapshot.t2Threshold)}</span>
               </dd>
             </div>
             <div className="anomaly__stat">
-              <dt>Q (out-of-manifold)</dt>
+              <dt title="Q statistic (out-of-manifold)">Off-pattern score</dt>
               <dd>
                 {stat(snapshot.q)}
                 <span className="anomaly__limit"> / {stat(snapshot.qThreshold)}</span>
               </dd>
             </div>
             <div className="anomaly__stat">
-              <dt>windows scored</dt>
+              <dt>Checks made</dt>
               <dd>
                 {snapshot.windows}
                 <span className="anomaly__limit"> · {snapshot.skipped} skipped</span>
               </dd>
             </div>
             <div className="anomaly__stat">
-              <dt>alarms</dt>
+              <dt>Warnings raised</dt>
               <dd>{snapshot.alarms}</dd>
             </div>
             <div className="anomaly__stat anomaly__stat--wide">
-              <dt>{calibrating ? 'calibrating' : 'calibration'}</dt>
+              <dt>{calibrating ? 'Learning what normal looks like' : 'Setup'}</dt>
               <dd>
                 {calibration === null
                   ? '—'
-                  : `${calibration.windows}/${calibration.required} windows`}
+                  : `${calibration.windows} of ${calibration.required} setup checks`}
                 <span className="anomaly__limit">
                   {calibration?.eigenvalue === null || calibration?.eigenvalue === undefined
                     ? ''
-                    : ` · λ₁ ${formatValue(calibration.eigenvalue)}`}
-                  {calibration?.contaminated === true ? ' · fault event in span' : ''}
+                    : ` · main pattern strength ${formatValue(calibration.eigenvalue)}`}
+                  {calibration?.contaminated === true ? ' · a fault happened during setup' : ''}
                 </span>
               </dd>
             </div>
@@ -168,17 +181,17 @@ export function AnomalyPanel() {
 
           <p className="anomaly__state" role="note">
             {calibrating
-              ? `Calibrating the manifold on the first ${calibration?.required ?? 0} windows of this connection, ${snapshot.windowUs / 1000} ms each. No alarm can be raised before it is frozen.`
+              ? `Learning what normal looks like from the first ${calibration?.required ?? 0} checks of this connection, ${snapshot.windowUs / 1000} ms each. No warning can be raised until this is finished.`
               : armed
                 ? snapshot.calibration.contaminated
-                  ? `Armed on ${snapshot.calibration.windows} windows. A fault event fell inside the calibration span, so PLAN.md section 9.1 clean-run calibration is not satisfied on this connection.`
-                  : `Armed on ${snapshot.calibration.windows} windows, ${snapshot.windowUs / 1000} ms each. Both thresholds are the empirical ${(snapshot.level * 100).toFixed(1)}% quantile of those windows.`
-                : 'Idle.'}
+                  ? `Ready, but a fault happened during setup, so this setup may not reflect a normal run.`
+                  : `Ready. Checks run every ${snapshot.windowUs / 1000} ms. Thresholds are set to the top ${(snapshot.level * 100).toFixed(1)}% of readings seen during setup.`
+                : 'Not started yet.'}
           </p>
 
           <ol
             className={`anomaly__windows anomaly__windows--${snapshot.hits >= PERSISTENCE_K ? 'tripped' : 'quiet'}`}
-            aria-label={`Persistence: ${snapshot.hits} of the last ${snapshot.n} statistic windows exceeded a threshold, ${PERSISTENCE_K} required`}
+            aria-label={`Checks in a row: ${snapshot.hits} of the last ${snapshot.n} checks looked unusual, ${PERSISTENCE_K} needed to raise a warning`}
           >
             {Array.from({ length: snapshot.n }, (_empty, index) => {
               const hit = snapshot.flags[index] ?? false;
@@ -195,45 +208,46 @@ export function AnomalyPanel() {
           <div className="anomaly__alarm">
             <div className="anomaly__alarm-head">
               <span className={`anomaly__badge anomaly__badge--${open ? 'open' : 'closed'}`}>
-                {open ? 'alarm open' : alarm === null ? 'no alarm yet' : 'alarm released'}
+                {open ? 'Warning active' : alarm === null ? 'No warnings yet' : 'Warning ended'}
               </span>
               {alarm !== null ? (
                 <span className="anomaly__alarm-stat">
-                  T² {stat(alarm.peakT2)} peak · Q {stat(alarm.peakQ)} peak · {alarm.statistic}
+                  Peak unusualness {stat(alarm.peakT2)} · peak off-pattern {stat(alarm.peakQ)} ·{' '}
+                  {STATISTIC_NAMES[alarm.statistic]}
                 </span>
               ) : null}
             </div>
             {alarm === null ? (
               <p className="anomaly__hint">
                 {armed
-                  ? `Silent so far: no window met the persistence rule. This is the state a clean run should stay in.`
-                  : 'No statistic yet.'}
+                  ? 'No warnings so far — everything looks normal.'
+                  : 'Not enough data yet to make a judgement.'}
               </p>
             ) : (
               <dl className="anomaly__facts">
                 <div className="anomaly__fact">
-                  <dt>onset</dt>
+                  <dt>First unusual moment</dt>
                   <dd>
-                    {duration(alarm.onsetTimeUs)} · T² {stat(alarm.onsetT2)}
+                    {duration(alarm.onsetTimeUs)} · unusualness {stat(alarm.onsetT2)}
                   </dd>
                 </div>
                 <div className="anomaly__fact">
-                  <dt>persistence</dt>
+                  <dt>Checks in a row</dt>
                   <dd>
-                    {alarm.hits} of {alarm.n} windows ({alarm.k} required)
+                    {alarm.hits} of {alarm.n} checks looked unusual ({alarm.k} needed)
                   </dd>
                 </div>
                 <div className="anomaly__fact">
-                  <dt>detection latency</dt>
+                  <dt>Time from fault to warning</dt>
                   <dd>
                     {latency(alarm.fault)}
                     {alarm.fault === null
-                      ? ` · no fault event within ${FAULT_LINK_US / 1e6} s of the onset`
+                      ? ` · no logged fault within ${FAULT_LINK_US / 1e6} s of the first unusual moment`
                       : ''}
                   </dd>
                 </div>
                 <div className="anomaly__fact">
-                  <dt>{open ? 'open for' : 'duration'}</dt>
+                  <dt>{open ? 'Active for' : 'Lasted'}</dt>
                   <dd>
                     {open || alarm.durationMs === null
                       ? duration(alarm.peakTimeUs - alarm.onsetTimeUs)
@@ -246,23 +260,25 @@ export function AnomalyPanel() {
 
           <table className="anomaly__breakdown">
             <caption>
-              signed per-channel contribution to T² at the alarm&apos;s peak window, ranked by
-              magnitude. The terms sum to that T² exactly; a negative term is a channel pressing against
-              the dominant component&apos;s direction.
+              How much each sensor contributed to the unusualness score at the strongest moment,
+              biggest first. The contributions add up to the total score. A negative value means
+              that sensor pulled against the main pattern.
             </caption>
             <thead>
               <tr>
-                <th scope="col">channel</th>
-                <th scope="col">value</th>
-                <th scope="col">residual</th>
-                <th scope="col">z</th>
-                <th scope="col">share of T²</th>
+                <th scope="col">Sensor</th>
+                <th scope="col">Reading</th>
+                <th scope="col">Gap from normal</th>
+                <th scope="col" title="z-score">Deviation</th>
+                <th scope="col">Share of score</th>
               </tr>
             </thead>
             <tbody>
               {breakdownRows(alarm).map((row, index) => (
                 <tr key={row?.channel ?? index} className={row === null ? 'anomaly__row--empty' : ''}>
-                  <th scope="row">{row?.channel ?? '—'}</th>
+                  <th scope="row" title={row?.channel}>
+                    {row === null ? '—' : channelLabel(row.channel)}
+                  </th>
                   <td>{row === null ? '—' : `${formatValue(row.value)} ${row.unit}`}</td>
                   <td>{row === null ? '—' : `${formatValue(row.residual)} ${row.unit}`}</td>
                   <td>{row === null ? '—' : formatValue(row.z)}</td>
@@ -275,13 +291,16 @@ export function AnomalyPanel() {
           </table>
 
           {snapshot.recent.length > 0 ? (
-            <ul className="anomaly__recent" aria-label="Alarms raised earlier in this connection">
+            <ul className="anomaly__recent" aria-label="Warnings raised earlier in this connection">
               {snapshot.recent.map((entry) => (
                 <li key={entry.id} className="anomaly__recent-item">
                   <span className="anomaly__recent-time">{duration(entry.onsetTimeUs)}</span>
                   <span className="anomaly__recent-text">
-                    T² {stat(entry.peakT2)} · {entry.statistic} · {entry.hits}/{entry.n} windows ·{' '}
-                    {entry.fault === null ? 'latency —' : `latency ${formatDurationMs(entry.fault.latencyMs)}`}
+                    Unusualness {stat(entry.peakT2)} · {STATISTIC_NAMES[entry.statistic]} ·{' '}
+                    {entry.hits} of {entry.n} checks ·{' '}
+                    {entry.fault === null
+                      ? 'no fault timing'
+                      : `warned ${formatDurationMs(entry.fault.latencyMs)} after the fault`}
                   </span>
                 </li>
               ))}
@@ -289,9 +308,9 @@ export function AnomalyPanel() {
           ) : null}
 
           <p className="anomaly__footnote">
-            Statistics computed in the browser from {snapshot.channels} contract channels at{' '}
-            {snapshot.windowUs / 1000} ms per window. Published latency and false-alarm rates come from
-            the offline detection sweep, not from this view.
+            Scores are computed in your browser from {snapshot.channels} sensors, checked every{' '}
+            {snapshot.windowUs / 1000} ms. The detection-speed and false-alarm figures published
+            elsewhere come from the offline test sweep, not from this view.
           </p>
         </>
       )}
