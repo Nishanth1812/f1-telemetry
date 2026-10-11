@@ -1,0 +1,130 @@
+/* Live car data cockpit strip. Colours come from the dark theme in styles.css. */
+
+.instruments {
+  display: grid;
+  gap: var(--space-3, 0.75rem);
+  padding: var(--space-4, 1rem);
+  background: var(--surface-card, #111820);
+  border: 1px solid var(--border, #2a3542);
+  border-radius: 8px;
+}
+
+.instruments__header {
+  display: grid;
+  gap: var(--space-1, 0.25rem);
+}
+
+.instruments__title {
+  margin: 0;
+  font-size: var(--text-lg, 1.125rem);
+  font-weight: 600;
+  color: var(--text, #e8edf2);
+}
+
+.instruments__caption {
+  margin: 0;
+  font-size: var(--text-sm, 0.8125rem);
+  color: var(--text-muted, #8b9ab0);
+}
+
+.instruments__strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: var(--space-2, 0.5rem);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.instrument {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1, 0.25rem);
+  min-width: 0;
+  padding: var(--space-3, 0.75rem);
+  background: var(--surface-raised, #131a22);
+  border: 1px solid var(--border, #2a3542);
+  border-radius: 6px;
+}
+
+.instrument__label {
+  font-size: var(--text-xs, 0.6875rem);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint, #6a7a8a);
+}
+
+.instrument__readout {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1, 0.25rem);
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e8edf2);
+  white-space: nowrap;
+}
+
+.instrument__value {
+  font-size: var(--text-2xl, 1.75rem);
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.instrument__value--missing {
+  color: var(--text-faint, #6a7a8a);
+}
+
+.instrument__unit {
+  font-size: var(--text-xs, 0.6875rem);
+  color: var(--text-muted, #8b9ab0);
+}
+
+/* The gear is the biggest readout on the strip. */
+.instrument--gear .instrument__value {
+  font-size: 2.75rem;
+  color: var(--accent, #58a6ff);
+}
+
+.instrument__bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  background: var(--border, #2a3542);
+  border-radius: 2px;
+}
+
+.instrument__bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent, #58a6ff);
+  border-radius: 2px;
+  transition: width var(--transition-fast, 80ms) linear;
+}
+
+.instrument__caption {
+  font-size: var(--text-xs, 0.6875rem);
+  color: var(--text-faint, #6a7a8a);
+}
+
+@media (max-width: 600px) {
+  .instruments__strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .instrument__value {
+    font-size: var(--text-xl, 1.25rem);
+  }
+
+  .instrument--gear .instrument__value {
+    font-size: 2.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .instrument__bar-fill {
+    transition: none;
+  }
+}
