@@ -174,10 +174,17 @@ def test_from_dict_refuses_a_non_mapping_document() -> None:
             RunManifest.from_dict(document)
 
 
-def test_from_json_refuses_deep_nesting() -> None:
+def test_from_json_refuses_deep_nesting(monkeypatch: pytest.MonkeyPatch) -> None:
     """A too-deep payload is unreadable, not an escape from the ValueError contract."""
+
+    # Whether a real 5000-deep payload overflows depends on the interpreter's recursion limit,
+    # so raise the parser's RecursionError directly.
+    def too_deep(_payload: str) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr("json.loads", too_deep)
     with pytest.raises(ValueError, match="nested too deeply"):
-        RunManifest.from_json("[" * 5000 + "]" * 5000)
+        RunManifest.from_json("[]")
 
 
 def test_metadata_is_one_namespaced_key_and_round_trips() -> None:
