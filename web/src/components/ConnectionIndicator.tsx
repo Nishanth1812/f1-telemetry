@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useNow } from '../hooks/useNow';
 import { useTelemetryStore } from '../store/telemetryStore';
+import { TELEMETRY_WS_URL } from '../telemetry/config';
 
 const STALE_AFTER_MS = 500;
 const TICK_MS = 250;
@@ -17,7 +18,7 @@ function headline(status: string, stalled: boolean): ReactNode {
     return stalled ? 'Connected, but no data arriving right now' : 'Connected to the simulator';
   }
   if (status === 'connecting' || status === 'reconnecting') {
-    return 'Connecting…';
+    return `Connecting to ${TELEMETRY_WS_URL}…`;
   }
   return (
     <>
@@ -43,7 +44,9 @@ export function ConnectionIndicator() {
 
   const retryLine =
     status === 'reconnecting' && countdown !== null
-      ? `Reconnecting in ${(countdown / 1_000).toFixed(1)} s (attempt ${attempt})`
+      ? `Reconnecting in ${(countdown / 1_000).toFixed(1)} s (attempt ${attempt})${
+          detail === null ? '' : `: ${detail}`
+        }`
       : null;
 
   return (
@@ -75,7 +78,7 @@ export function ConnectionIndicator() {
         ) : null}
       </dl>
       {retryLine !== null ? <p className="connection__detail">{retryLine}</p> : null}
-      {retryLine === null && detail !== null ? <p className="connection__detail">{detail}</p> : null}
+      {retryLine === null && detail !== null && status !== 'reconnecting' ? <p className="connection__detail">{detail}</p> : null}
     </div>
   );
 }
