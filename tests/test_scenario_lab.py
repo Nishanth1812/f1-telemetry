@@ -72,7 +72,7 @@ def test_runs_only_the_selected_bounded_adjustment(
         "load_car_spec",
         lambda: SimpleNamespace(kernel_config=lambda: object()),
     )
-    monkeypatch.setattr(scenario_lab, "build_scenarios", lambda _config: plans)
+    monkeypatch.setattr(scenario_lab, "build_scenarios", lambda _config: plans)  # pyright: ignore[reportUnknownLambdaType]
     captured: dict[str, scenarios.Scenario] = {}
 
     def fake_run(_config: object, plan: scenarios.Scenario) -> object:

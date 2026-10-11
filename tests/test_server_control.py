@@ -6,7 +6,10 @@ from typing import cast
 import pytest
 from websockets.asyncio.server import ServerConnection
 
-from f1telemetry.server import TelemetryServer, _loopback_origin
+from f1telemetry.server import (
+    TelemetryServer,
+    _loopback_origin,  # pyright: ignore[reportPrivateUsage]
+)
 from f1telemetry.synthetic import Frame
 
 
