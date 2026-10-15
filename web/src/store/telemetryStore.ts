@@ -80,7 +80,7 @@ function resetRawCounters(): void {
 }
 
 function ingestCounters(timeUs: number, channels: Record<string, number>): void {
-  for (const name of Object.keys(channels)) {
+  for (const name in channels) {
     const entry = channelCounters.get(name);
     if (entry === undefined) {
       channelCounters.set(name, { count: 1, firstUs: timeUs, lastUs: timeUs });
@@ -100,9 +100,19 @@ function declaredRateHz(name: string): number | null {
     : null;
 }
 
-function buildDiagnostics(): TelemetryDiagnostics {
+function buildDiagnostics(previous: TelemetryDiagnostics | null): TelemetryDiagnostics {
   const channels: Record<string, ChannelDiagnostics> = {};
+  const previousChannels = previous?.channels ?? {};
   for (const [name, entry] of channelCounters) {
+    const previousEntry = previousChannels[name];
+    // Reuse the previous diagnostic object for a channel whose sample count has
+    // not changed since the last build. With no new samples its first/last
+    // timestamps and observed rate are unchanged too, so the value is still
+    // accurate; sharing the reference keeps per-channel tile selectors stable.
+    if (previousEntry !== undefined && previousEntry.count === entry.count) {
+      channels[name] = previousEntry;
+      continue;
+    }
     const spanS = (entry.lastUs - entry.firstUs) / 1e6;
     channels[name] = {
       declaredHz: declaredRateHz(name),
@@ -126,8 +136,14 @@ function collectEventEntries(frame: TelemetryFrame): EventLogEntry[] {
       nextEventId += 1;
     }
   }
-  for (const [name, value] of Object.entries(frame.channels)) {
+  for (const name in frame.channels) {
     if (!EVENT_CHANNEL_NAMES.has(name)) {
+      continue;
+    }
+    const value = frame.channels[name];
+    if (value === undefined) {
+      // A wire channel always carries a finite number; the guard keeps the
+      // indexer honest under noUncheckedIndexedAccess and cannot trigger here.
       continue;
     }
     const previous = lastEventChannelValues.get(name);
@@ -202,10 +218,14 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
       // snapshot itself is the legacy fallback only. Never both, or the
       // snapshot would be counted twice.
       if (frame.snapshot_only !== true) {
-        const units = frame.samples !== undefined ? frame.samples : [frame];
-        for (const unit of units) {
-          state.history.push(unit);
-          ingestCounters(unit.time_us, unit.channels);
+        if (frame.samples !== undefined) {
+          for (const unit of frame.samples) {
+            state.history.push(unit);
+            ingestCounters(unit.time_us, unit.channels);
+          }
+        } else {
+          state.history.push(frame);
+          ingestCounters(frame.time_us, frame.channels);
         }
       }
       lastSampleFrameTimeUs = frame.time_us;
@@ -215,11 +235,10 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
       // stale tile value.
       const entries = collectEventEntries(frame);
       const events = entries.length > 0 ? appendEventEntries(state.events, entries) : state.events;
-      const names = Object.keys(frame.channels);
       const stale = state.frame === null || now - lastTileRefreshAt >= TILE_REFRESH_MS;
       const diagnostics =
         lastDiagnosticsAt === 0 || now - lastDiagnosticsAt >= DIAGNOSTICS_INTERVAL_MS
-          ? buildDiagnostics()
+          ? buildDiagnostics(state.diagnostics)
           : state.diagnostics;
       if (diagnostics !== state.diagnostics) {
         lastDiagnosticsAt = now;
@@ -230,6 +249,7 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
           : { frameCount, events, diagnostics };
       }
       lastTileRefreshAt = now;
+      const names = Object.keys(frame.channels);
       let channelNames = state.channelNames;
       if (names.length !== channelNames.length || names[0] !== channelNames[0]) {
         const known = new Set(channelNames);

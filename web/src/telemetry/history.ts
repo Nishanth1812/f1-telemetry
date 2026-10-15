@@ -50,8 +50,17 @@ export class TraceHistory {
   }
 
   push(sample: TelemetrySample): void {
-    const entries = Object.entries(sample.channels);
-    if (entries.length === 0) {
+    const channels = sample.channels;
+    // Allocation-free equivalent of the original "no channels → nothing to
+    // store" early return (Object.entries would allocate an array on every
+    // push). firstChannel is only used to detect emptiness, mirroring the
+    // original behaviour where an empty sample does not advance lastTimeUs.
+    let firstChannel: string | undefined;
+    for (const name in channels) {
+      firstChannel = name;
+      break;
+    }
+    if (firstChannel === undefined) {
       return;
     }
     if (this.lastTimeUs !== null && sample.time_us < this.lastTimeUs) {
@@ -59,7 +68,13 @@ export class TraceHistory {
       this.clear();
     }
     this.lastTimeUs = sample.time_us;
-    for (const [name, value] of entries) {
+    for (const name in channels) {
+      const value = channels[name];
+      if (value === undefined) {
+        // A wire channel always carries a finite number; the guard keeps the
+        // indexer honest under noUncheckedIndexedAccess and cannot trigger here.
+        continue;
+      }
       let ring = this.rings.get(name);
       if (ring === undefined) {
         if (this.rings.size >= MAX_TRACKED_CHANNELS) {

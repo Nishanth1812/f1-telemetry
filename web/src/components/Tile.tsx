@@ -92,8 +92,13 @@ export const Tile = memo(function Tile({ name, hint }: { name: string; hint?: st
   );
   const spec = (CHANNELS as Record<string, ChannelSpec | undefined>)[name];
   const sampleRate = spec?.rateHz;
-  const diagnostics = useTelemetryStore((state) => state.diagnostics);
-  const channelDiagnostics = diagnostics === null ? undefined : diagnostics.channels[name];
+  // Select only this tile's channel diagnostics (not the whole diagnostics
+  // object), and the store shares unchanged channel diagnostic references, so a
+  // tile re-renders for its own value/counter changes, not every diagnostics build.
+  const channelDiagnostics = useTelemetryStore((state) => {
+    const diagnostics = state.diagnostics;
+    return diagnostics === null ? undefined : diagnostics.channels[name];
+  });
   return (
     <li
       className="tile"
