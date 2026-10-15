@@ -81,7 +81,9 @@ function decodeChannels(payload: unknown): Record<string, number> | null {
     return null;
   }
   const channels: Record<string, number> = {};
-  for (const [name, value] of Object.entries(payload as Record<string, unknown>)) {
+  const source = payload as Record<string, unknown>;
+  for (const name in source) {
+    const value = source[name];
     if (typeof value === 'number' && Number.isFinite(value)) {
       channels[name] = value;
     }

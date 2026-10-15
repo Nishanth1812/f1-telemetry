@@ -123,16 +123,25 @@ function buildDiagnostics(previous: TelemetryDiagnostics | null): TelemetryDiagn
   return { totalCount: totalSampleCount, channels };
 }
 
-function collectEventEntries(frame: TelemetryFrame): EventLogEntry[] {
+function collectEventEntries(frame: TelemetryFrame): EventLogEntry[] | undefined {
   if (lastEventTimeUs !== null && frame.time_us < lastEventTimeUs) {
     // A replay rewind starts a new event baseline, even when the socket stays open.
     lastEventChannelValues.clear();
   }
   lastEventTimeUs = frame.time_us;
-  const entries: EventLogEntry[] = [];
+  // Allocate the entries array lazily: events are sparse (fault injections and
+  // event-channel changes), so most frames contribute nothing and should not
+  // pay for a throwaway array on every ingest. Returns undefined when empty.
+  let entries: EventLogEntry[] | undefined;
+  const record = (entry: EventLogEntry): void => {
+    if (entries === undefined) {
+      entries = [];
+    }
+    entries.push(entry);
+  };
   if (frame.events !== undefined) {
     for (const event of frame.events) {
-      entries.push(wireEventToEntry(nextEventId, event));
+      record(wireEventToEntry(nextEventId, event));
       nextEventId += 1;
     }
   }
@@ -151,7 +160,7 @@ function collectEventEntries(frame: TelemetryFrame): EventLogEntry[] {
     if (previous === undefined || previous === value) {
       continue;
     }
-    entries.push(channelEventEntry(nextEventId, name, value, frame.time_us));
+    record(channelEventEntry(nextEventId, name, value, frame.time_us));
     nextEventId += 1;
   }
   return entries;
@@ -234,7 +243,7 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
       // a dropped occurrence is a lost fault annotation or lap boundary, not a
       // stale tile value.
       const entries = collectEventEntries(frame);
-      const events = entries.length > 0 ? appendEventEntries(state.events, entries) : state.events;
+      const events = entries !== undefined ? appendEventEntries(state.events, entries) : state.events;
       const stale = state.frame === null || now - lastTileRefreshAt >= TILE_REFRESH_MS;
       const diagnostics =
         lastDiagnosticsAt === 0 || now - lastDiagnosticsAt >= DIAGNOSTICS_INTERVAL_MS
@@ -249,11 +258,26 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
           : { frameCount, events, diagnostics };
       }
       lastTileRefreshAt = now;
-      const names = Object.keys(frame.channels);
+      // Gather channel names without allocating an array on every 30 Hz refresh.
+      // for...in visits keys in insertion order, matching Object.keys, so the
+      // first name and count are a cheap change-detection proxy for the set.
+      let nameCount = 0;
+      let firstName = '';
+      for (const name in frame.channels) {
+        if (nameCount === 0) {
+          firstName = name;
+        }
+        nameCount += 1;
+      }
       let channelNames = state.channelNames;
-      if (names.length !== channelNames.length || names[0] !== channelNames[0]) {
+      if (nameCount !== channelNames.length || firstName !== channelNames[0]) {
         const known = new Set(channelNames);
-        const added = names.filter((name) => !known.has(name));
+        const added: string[] = [];
+        for (const name in frame.channels) {
+          if (!known.has(name)) {
+            added.push(name);
+          }
+        }
         if (added.length > 0) {
           channelNames = [...channelNames, ...added];
         }
