@@ -186,12 +186,9 @@ const TracePanelComponent = () => {
   const empty = channelNames.length === 0;
 
   return (
-    <section className="trace" aria-labelledby="trace-heading">
+    <div className="trace">
       <div className="trace__header">
-        <h2 className="trace__heading" id="trace-heading">
-          Trace
-        </h2>
-        <div className="trace__controls">
+        <div className="trace__controls" role="group" aria-label="Trace options">
           <label htmlFor={channelId}>Channel</label>
           <select
             id={channelId}
@@ -236,7 +233,7 @@ const TracePanelComponent = () => {
           </span>
         </figcaption>
       </figure>
-    </section>
+    </div>
   );
 };
 

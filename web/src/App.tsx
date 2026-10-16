@@ -33,8 +33,12 @@ export function App() {
 
   return (
     <div className="app">
+      <a className="skip-link" href="#dashboard">
+        Skip to the dashboard
+      </a>
       <header className="app__header">
-        <div>
+        <div className="app__brand">
+          <p className="app__eyebrow">Simulated Formula car · live telemetry</p>
           <h1 className="app__title">F1 Telemetry Lab</h1>
           <p className="app__subtitle">
             A simulated Formula car and its sensors. Run a virtual test and watch the car's
@@ -43,19 +47,29 @@ export function App() {
         </div>
         <ConnectionIndicator />
       </header>
-      <main className="app__main">
+      <main className="app__main" id="dashboard">
         <TestControls />
         <Instruments />
         <section className="app__section" aria-labelledby="trace-heading">
-          <h2 className="app__section-title" id="trace-heading">
-            Live trace
-          </h2>
+          <div className="app__section-head">
+            <h2 className="app__section-title" id="trace-heading">
+              Live trace
+            </h2>
+            <p className="app__section-hint">
+              One channel at a time, drawn from the full-rate stream.
+            </p>
+          </div>
           <TracePanel />
         </section>
         <section className="app__section" aria-labelledby="corners-heading">
-          <h2 className="app__section-title" id="corners-heading">
-            Tyres, brakes and aero
-          </h2>
+          <div className="app__section-head">
+            <h2 className="app__section-title" id="corners-heading">
+              Tyres, brakes and aero
+            </h2>
+            <p className="app__section-hint">
+              Every corner on its own, with thirty seconds of history behind the live number.
+            </p>
+          </div>
           <div className="app__blocks">
             <TyreBlock />
             <BrakeBlock />
@@ -63,9 +77,15 @@ export function App() {
           </div>
         </section>
         <section className="app__section" aria-labelledby="analysis-heading">
-          <h2 className="app__section-title" id="analysis-heading">
-            Car health
-          </h2>
+          <div className="app__section-head">
+            <h2 className="app__section-title" id="analysis-heading">
+              Car health
+            </h2>
+            <p className="app__section-hint">
+              Each row is one rule applied to the live readings. A tripped rule stays flagged until
+              the next test.
+            </p>
+          </div>
           <HealthPanel />
         </section>
         <TestResult />
@@ -73,7 +93,10 @@ export function App() {
           className="advanced-telemetry"
           onToggle={(event) => setRawOpen(event.currentTarget.open)}
         >
-          <summary>Advanced: every sensor, laps and events (for engineers)</summary>
+          <summary>
+            Advanced: every sensor, laps and events{' '}
+            <span className="advanced-telemetry__summary-note">(for engineers)</span>
+          </summary>
           {rawOpen ? (
             <div className="advanced-telemetry__content">
               <p className="advanced-telemetry__note">

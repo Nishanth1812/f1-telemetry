@@ -313,7 +313,7 @@ const AeroBlockComponent = () => {
   const mode = modeOf(aeroMode);
 
   return (
-    <section className="block" aria-labelledby={headingId}>
+    <section className="block block--aero" aria-labelledby={headingId}>
       <div className="block__header">
         <h2 className="block__heading" id={headingId}>
           Aero

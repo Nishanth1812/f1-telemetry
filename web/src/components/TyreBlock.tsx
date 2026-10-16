@@ -407,7 +407,7 @@ export function TyreBlock() {
   ];
 
   return (
-    <section className="block" aria-labelledby={headingId}>
+    <section className="block block--tyres" aria-labelledby={headingId}>
       <div className="block__header">
         <h2 className="block__heading" id={headingId}>
           Tyres
@@ -451,14 +451,22 @@ export function TyreBlock() {
         />
         <figcaption className="block__caption">
           <span className="block__legend">
-            <span className="corners__swatch corners__cell--fl" />
-            FL
-            <span className="corners__swatch corners__cell--fr" />
-            FR
-            <span className="corners__swatch corners__cell--rl" />
-            RL
-            <span className="corners__swatch corners__cell--rr" />
-            RR
+            <span className="block__legend-item">
+              <span className="corners__swatch corners__cell--fl" />
+              FL
+            </span>
+            <span className="block__legend-item">
+              <span className="corners__swatch corners__cell--fr" />
+              FR
+            </span>
+            <span className="block__legend-item">
+              <span className="corners__swatch corners__cell--rl" />
+              RL
+            </span>
+            <span className="block__legend-item">
+              <span className="corners__swatch corners__cell--rr" />
+              RR
+            </span>
           </span>
           <span ref={summaryRef}>—</span>
         </figcaption>

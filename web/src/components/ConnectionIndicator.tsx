@@ -50,7 +50,10 @@ export function ConnectionIndicator() {
       : null;
 
   return (
-    <div className={`connection connection--${stalled ? 'stalled' : status}`}>
+    <div
+      className={`connection connection--${stalled ? 'stalled' : status}`}
+      data-state={stalled ? 'stalled' : status}
+    >
       <p className="connection__state">
         <span className="connection__dot" aria-hidden="true" />
         <span className="connection__label" role="status" aria-live="polite">

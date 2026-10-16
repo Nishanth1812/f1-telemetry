@@ -114,6 +114,7 @@ const SpeedCell = memo(function SpeedCell() {
       text={value === undefined ? '—' : formatValue(value)}
       missing={value === undefined}
       unit={unitOf('speed', 'km/h')}
+      modifier="instrument--hero"
     />
   );
 });

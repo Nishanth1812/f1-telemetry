@@ -60,6 +60,7 @@ export function TestControls() {
   const driving = startedAtMs !== null && elapsedS < durationS;
   const busy = running || driving;
   const connected = status === 'open';
+  const progressPct = durationS <= 0 ? 0 : Math.min(100, (elapsedS / durationS) * 100);
 
   let chip: string;
   let chipTone: string;
@@ -83,7 +84,10 @@ export function TestControls() {
   return (
     <section className="testlab" aria-labelledby="testlab-title">
       <div className="testlab__head">
-        <h2 id="testlab-title">Virtual test</h2>
+        <div className="testlab__heading">
+          <h2 id="testlab-title">Virtual test</h2>
+          <p className="testlab__detail">{scenario.detail}</p>
+        </div>
         <span className={`testlab__chip testlab__chip--${chipTone}`} role="status" aria-live="polite">
           {chip}
         </span>
@@ -129,6 +133,12 @@ export function TestControls() {
           {running ? 'Running…' : 'Run test'}
         </button>
       </div>
+
+      {driving ? (
+        <div className="testlab__progress" aria-hidden="true">
+          <span className="testlab__progress-fill" style={{ width: `${progressPct}%` }} />
+        </div>
+      ) : null}
 
       {!connected ? (
         <p className="testlab__hint">

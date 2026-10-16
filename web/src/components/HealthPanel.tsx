@@ -149,8 +149,22 @@ function HealthRow({ check, worst }: { check: HealthCheck; worst: HealthCheck | 
 
 export function HealthPanel() {
   const view = usePanelView();
+  const total = view.checks.length;
+  const flagged = view.checks.filter((check) => check.status !== 'nodata' && check.severity > 0);
+  const tone: 'ok' | 'warn' | 'strong' = flagged.some((check) => check.severity >= 2)
+    ? 'strong'
+    : flagged.length > 0
+      ? 'warn'
+      : 'ok';
+  const summary =
+    total === 0
+      ? 'Waiting for the first readings'
+      : flagged.length === 0
+        ? `All ${total} checks clear`
+        : `${flagged.length} of ${total} checks need attention`;
   return (
     <div className="health">
+      <p className={`health__summary health__summary--${tone}`}>{summary}</p>
       <p className="health__intro">
         Simple rule checks on the live data. Machine-learning models are planned; thresholds here
         are placeholders.

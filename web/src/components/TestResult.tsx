@@ -161,7 +161,7 @@ export function TestResult() {
             <h3>{resultScenario.title} result</h3>
             <p>{resultScenario.story}</p>
           </div>
-          <span>{result.duration_s.toFixed(1)} s simulated</span>
+          <span className="scenario-result__duration">{result.duration_s.toFixed(1)} s simulated</span>
         </div>
         <p className="scenario-result__short">
           <strong>In short:</strong> {headline(result.scenario_id, result)}
@@ -174,28 +174,28 @@ export function TestResult() {
           </p>
         ) : null}
         <dl className="scenario-result__metrics">
-          <div>
+          <div className="scenario-metric">
             <dt>Top speed</dt>
-            <dd>{result.peak_speed_kmh.toFixed(1)} km/h</dd>
+            <dd className="scenario-metric__value">{result.peak_speed_kmh.toFixed(1)} km/h</dd>
             <dd className="scenario-metric__note">The fastest the car went during the run.</dd>
           </div>
-          <div>
+          <div className="scenario-metric">
             <dt>Hardest push forward/back</dt>
-            <dd>{result.peak_longitudinal_g.toFixed(2)} g</dd>
+            <dd className="scenario-metric__value">{result.peak_longitudinal_g.toFixed(2)} g</dd>
             <dd className="scenario-metric__note">
               Forward when speeding up, backward when braking. 1 g is your own body weight.
             </dd>
           </div>
-          <div>
+          <div className="scenario-metric">
             <dt>Hardest push sideways</dt>
-            <dd>{result.peak_lateral_g.toFixed(2)} g</dd>
+            <dd className="scenario-metric__value">{result.peak_lateral_g.toFixed(2)} g</dd>
             <dd className="scenario-metric__note">
               Push out to the side. Only above about 0.3 g does the car count as turning or sliding.
             </dd>
           </div>
-          <div>
+          <div className="scenario-metric">
             <dt>{resultScenario.setting}</dt>
-            <dd>{formatSetting(resultScenario, result.setting)}</dd>
+            <dd className="scenario-metric__value">{formatSetting(resultScenario, result.setting)}</dd>
             <dd className="scenario-metric__note">The control you changed for this run.</dd>
           </div>
         </dl>
