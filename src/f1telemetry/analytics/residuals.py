@@ -102,7 +102,7 @@ def residual_z_scores(
     samples: list[ResidualSample] = []
     for index, frame in enumerate(frames):
         predictions = _kinematic_predictions(frame.values)
-        predictions.update(_hold_predictions(frames, index, hold_window))
+        _add_hold_predictions(predictions, frames, index, hold_window)
         for channel, predicted in predictions.items():
             spec = known.get(channel)
             observed = frame.values.get(channel)
@@ -146,10 +146,17 @@ def _kinematic_predictions(values: Mapping[str, float]) -> dict[str, float]:
     return predictions
 
 
-def _hold_predictions(frames: Sequence[SensorFrame], index: int, window: int) -> dict[str, float]:
-    predictions: dict[str, float] = {}
+def _add_hold_predictions(
+    predictions: dict[str, float], frames: Sequence[SensorFrame], index: int, window: int
+) -> None:
+    """Add the hold-baseline tyre-temperature predictions to ``predictions`` in place.
+
+    Filling the caller's mapping rather than returning a second one keeps the per-frame
+    work to the one dict the residual loop already reads, instead of allocating a dict
+    and then copying it in with ``update`` for every frame of the record.
+    """
     if index < window:
-        return predictions
+        return
     for channel in _TYRE_TEMP:
         history: list[float] = []
         for past in range(index - window, index):
@@ -159,4 +166,3 @@ def _hold_predictions(frames: Sequence[SensorFrame], index: int, window: int) ->
             history.append(value)
         else:
             predictions[channel] = statistics.median(history)
-    return predictions

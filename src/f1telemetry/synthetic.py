@@ -257,12 +257,17 @@ def _publishable(values: Mapping[str, object]) -> dict[str, float]:
     """
     keep: dict[str, float] = {}
     for name, value in values.items():
-        # numbers.Real covers int, float and every NumPy scalar, and excludes str,
-        # None, complex and Decimal-by-str. bool is a Real, so it is excluded by hand.
-        if isinstance(value, Real) and not isinstance(value, bool):
+        # The overwhelmingly common case needs no widening: a plain float is already the
+        # wire type. numbers.Real then covers int and every NumPy scalar, and excludes
+        # str, None, complex and Decimal-by-str. bool is a Real, so it is excluded by hand.
+        if type(value) is float:
+            number: float = value
+        elif isinstance(value, Real) and not isinstance(value, bool):
             number = float(value)
-            if math.isfinite(number):
-                keep[name] = number
+        else:
+            continue
+        if math.isfinite(number):
+            keep[name] = number
     return keep
 
 
@@ -346,7 +351,8 @@ class SyntheticSource:
             batch: dict[str, object] = {}
             for index, slot in enumerate(self._slots):
                 if self._next_due[index] == due:
-                    batch[slot.channel.name] = self._sample_fn(slot.channel, self._rng)
+                    channel = slot.channel
+                    batch[channel.name] = self._sample_fn(channel, self._rng)
                     self._next_due[index] = due + slot.period
             yield Frame(self._now_us, _publishable(batch))
 
@@ -402,12 +408,15 @@ class SyntheticSource:
         """
         draws: dict[int, dict[str, object]] = {}
         for index, slot in enumerate(self._slots):
+            channel = slot.channel
+            name = channel.name
+            period = slot.period
             due = self._next_due[index]
             while due <= limit_us:
-                value = self._sample_fn(slot.channel, self._rng)
-                self._latest[slot.channel.name] = value
-                draws.setdefault(round(due), {})[slot.channel.name] = value
-                due = due + slot.period
+                value = self._sample_fn(channel, self._rng)
+                self._latest[name] = value
+                draws.setdefault(round(due), {})[name] = value
+                due += period
             self._next_due[index] = due
         self._now_us = limit_us
         # sorted() on the keys alone would do; sorting items sorts by that same unique

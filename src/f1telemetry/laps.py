@@ -36,7 +36,11 @@ right-continuous convention :meth:`~f1telemetry.tracks.Track.frame_at`
 uses - so a sample exactly on the centreline projects
 deterministically. The search is linear in the sample count,
 which a track keeps small, so no spatial index exists to drift
-out of sync with the polyline it indexes.
+out of sync with the polyline it indexes. The dense polyline
+itself is derived once per track and reused, because a lap times
+and a closed-loop driver steers by projecting once per sample and
+rebuilding it on every one of those calls dominated the work
+(:func:`_projection_polyline`).
 
 **Events.** :func:`crossing_events` turns a stream of timed samples
 into :class:`TrackEvent` records. Per-sample progress is unwrapped
@@ -81,9 +85,13 @@ left, right-handed, so each wheel's lateral offset rides the
 heading's left normal ``(-sin(heading), cos(heading))``.
 
 **Determinism.** Every function is a pure function of its
-arguments: no clock, no randomness, no state, nothing read from
+arguments: no clock, no randomness, nothing read from
 configuration, so the same inputs give the same bits and a repeated
-run is byte-identical. This is a boundary module, not a compiled
+run is byte-identical. The one piece of module state is the
+transparent polyline cache described above: it is keyed on the
+immutable track it derives from, so it can only return the geometry
+that track would have produced anyway, and it can never change a
+result. This is a boundary module, not a compiled
 kernel, so bad arguments - a nonfinite coordinate, a non-positive
 wheel base, a decreasing simulation time - raise :class:`ValueError`
 here, at the boundary, instead of surfacing later as a NaN inside a
@@ -143,6 +151,16 @@ _FAILURE_DNF: Final[str] = "dnf"
 _FAILURE_INVALID: Final[str] = "invalid"
 _FAILURE_INCOMPLETE_LAP: Final[str] = "incomplete_lap"
 _FAILURE_OFF_TRACK: Final[str] = "off_track"
+
+# The dense centreline polyline :func:`project_position` searches is a pure function of the
+# immutable track, but rebuilding it is not: it evaluates every spline segment at
+# ``_POLYLINE_SUBDIVISIONS`` points and allocates three arrays. A lap times, and a closed-loop
+# driver steers, by calling that projection once per sample, so the memo below keeps the
+# polyline for the few tracks a process actually works with. It is keyed by identity and holds
+# the track object itself, so a recycled ``id`` can never hand back another track's geometry.
+_POLYLINE_SUBDIVISIONS: Final[int] = 32
+_POLYLINE_CACHE_MAX: Final[int] = 4
+_POLYLINE_MEMO: dict[int, tuple[Track, int, np.ndarray, np.ndarray, np.ndarray]] = {}
 
 
 class TrackEventKind(enum.Enum):
@@ -345,6 +363,30 @@ def reference_lap_delta(reference: ReferenceLap, *, s_m: float, lap_time_s: floa
     return _check("lap_time_s", lap_time_s) - reference.time_at(s_m)
 
 
+def _projection_polyline(
+    track: Track, subdivisions: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The track's dense centreline polyline, reused across projections.
+
+    ``project_position`` is called once per recorded sample and, in a closed lap, once
+    per control step, and rebuilding the whole dense polyline on each of those calls
+    dominated the projection. ``Track`` is immutable and its arrays are read-only, so
+    the polyline is a pure function of the track and can be kept. The memo is keyed by
+    identity and stores the track object itself, so a recycled ``id`` cannot return
+    another track's geometry, and it is bounded to the handful of tracks a process
+    holds at once rather than growing with every fixture a test builds.
+    """
+    key = id(track)
+    cached = _POLYLINE_MEMO.get(key)
+    if cached is not None and cached[0] is track and cached[1] == subdivisions:
+        return cached[2], cached[3], cached[4]
+    x_m, y_m, s_m = track.centerline_polyline(subdivisions=subdivisions)
+    if len(_POLYLINE_MEMO) >= _POLYLINE_CACHE_MAX:
+        _POLYLINE_MEMO.clear()
+    _POLYLINE_MEMO[key] = (track, subdivisions, x_m, y_m, s_m)
+    return x_m, y_m, s_m
+
+
 def project_position(track: Track, x_m: float, y_m: float) -> TrackProjection:
     """The nearest point of the dense centreline polyline to one position.
 
@@ -373,7 +415,7 @@ def project_position(track: Track, x_m: float, y_m: float) -> TrackProjection:
     """
     x = _check("x_m", x_m)
     y = _check("y_m", y_m)
-    start_x, start_y, knot_s = track.centerline_polyline(subdivisions=32)
+    start_x, start_y, knot_s = _projection_polyline(track, _POLYLINE_SUBDIVISIONS)
     delta_x = np.roll(start_x, -1) - start_x
     delta_y = np.roll(start_y, -1) - start_y
     chords = np.hypot(delta_x, delta_y)

@@ -61,13 +61,20 @@ class DrivenCarSource:
 
     def _advance_to(self, limit_us: int) -> tuple[Frame, ...]:
         """Take every recorded frame due by ``limit_us``; idle ticks repeat the held values."""
+        run = self._run
+        cursor = self._cursor
+        count = len(run)
+        latest = self._latest
+        origin = self._origin_us
+        relative_limit = limit_us - origin
         due: list[Frame] = []
-        relative_limit = limit_us - self._origin_us
-        while self._cursor < len(self._run) and self._run[self._cursor].time_us <= relative_limit:
-            frame = self._run[self._cursor]
-            self._latest.update(frame.channels)
-            due.append(Frame(self._origin_us + frame.time_us, dict(frame.channels)))
-            self._cursor += 1
+        while cursor < count and run[cursor].time_us <= relative_limit:
+            frame = run[cursor]
+            channels = frame.channels
+            latest.update(channels)
+            due.append(Frame(origin + frame.time_us, dict(channels)))
+            cursor += 1
+        self._cursor = cursor
         if due:
             return tuple(due)
-        return (Frame(limit_us, dict(self._latest)),)
+        return (Frame(limit_us, dict(latest)),)

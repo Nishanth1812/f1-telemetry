@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -79,7 +80,7 @@ def _read_request(value: object) -> tuple[str, str, float]:
     return request_id, scenario_id, float(setting)
 
 
-def _tuned_plan(scenarios: dict[str, Scenario], scenario_id: str, setting: float) -> Scenario:
+def _tuned_plan(scenarios: Mapping[str, Scenario], scenario_id: str, setting: float) -> Scenario:
     name, _, _, _, _ = _SCENARIOS[scenario_id]
     plan = scenarios[name]
     segments = list(plan.segments)
@@ -129,7 +130,7 @@ def run_lab(value: object) -> LabRun:
     request_id, scenario_id, setting = _read_request(value)
     config = load_car_spec().kernel_config()
     _, label, setting_name, _, _ = _SCENARIOS[scenario_id]
-    plan = _tuned_plan(dict(build_scenarios(config)), scenario_id, setting)
+    plan = _tuned_plan(build_scenarios(config), scenario_id, setting)
     run = run_headless(config, plan)
     points = _result_points(run)
     if not points:

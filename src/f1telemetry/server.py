@@ -193,33 +193,47 @@ class TelemetryServer:
         return self._stop is not None and self._stop.is_set()
 
     async def _broadcast(self, frame: Frame) -> None:
-        """Send one frame to every client, dropping any whose socket has failed."""
-        if not self._clients:
+        """Send one frame to every client, dropping any whose socket has failed.
+
+        The fan-out is driven by which payloads somebody will actually receive: the
+        detailed snapshot is encoded only when a detailed client is connected, and the
+        snapshot-only payload only when a summary client is - so the 30 Hz pump pays for
+        at most one encode per distinct shape per frame instead of always serialising the
+        snapshot. The client set is read once into a frozen pass, so a connection that
+        arrives or drops while the sends are in flight cannot change who this frame went
+        to; a send that fails removes that one connection for the next frame.
+        """
+        targets = tuple(self._clients)
+        if not targets:
             return
+        detailed = self._detailed_clients
+        deliveries: list[tuple[ServerConnection, str]] = []
         # allow_nan=False is a third guard: json would happily emit the invalid token
         # NaN, which the browser's JSON.parse rejects and the store counts as
         # malformed. Fail here instead of shipping a frame nobody can decode.
-        detailed_payload = (
-            json.dumps(frame.to_wire(), separators=(",", ":"), allow_nan=False)
-            if self._detailed_clients
-            else None
-        )
-        snapshot_payload = json.dumps(
-            frame.to_wire(include_samples=False), separators=(",", ":"), allow_nan=False
-        )
-        targets = tuple(self._clients)
+        detailed_targets = tuple(connection for connection in targets if connection in detailed)
+        if detailed_targets:
+            detailed_payload = _encode(frame.to_wire())
+            deliveries.extend((connection, detailed_payload) for connection in detailed_targets)
+        summary_targets = tuple(connection for connection in targets if connection not in detailed)
+        if summary_targets:
+            snapshot_payload = _encode(frame.to_wire(include_samples=False))
+            deliveries.extend((connection, snapshot_payload) for connection in summary_targets)
+        if len(deliveries) == 1:
+            # The common single-dashboard case: no gather task, no result tuple.
+            connection, payload = deliveries[0]
+            try:
+                await connection.send(payload)
+            except Exception:
+                # A failed socket is dropped for the next frame, exactly as the
+                # multi-client gather below does with a returned exception.
+                self._clients.discard(connection)
+            return
         results = await asyncio.gather(
-            *(
-                connection.send(
-                    detailed_payload
-                    if connection in self._detailed_clients and detailed_payload is not None
-                    else snapshot_payload
-                )
-                for connection in targets
-            ),
+            *(connection.send(payload) for connection, payload in deliveries),
             return_exceptions=True,
         )
-        for connection, result in zip(targets, results, strict=True):
+        for (connection, _payload), result in zip(deliveries, results, strict=True):
             if isinstance(result, BaseException):
                 self._clients.discard(connection)
 
@@ -285,9 +299,7 @@ class TelemetryServer:
         else:
             if isinstance(self._source, DrivenCarSource):
                 self._source.start_run(lab_run.frames)
-            await connection.send(
-                json.dumps(lab_run.result, separators=(",", ":"), allow_nan=False)
-            )
+            await connection.send(_encode(lab_run.result))
 
     @staticmethod
     async def _send_scenario_error(
@@ -295,10 +307,7 @@ class TelemetryServer:
     ) -> None:
         safe_id = request_id if isinstance(request_id, str) else None
         await connection.send(
-            json.dumps(
-                {"type": "scenario_error", "request_id": safe_id, "error": detail},
-                separators=(",", ":"),
-            )
+            _encode({"type": "scenario_error", "request_id": safe_id, "error": detail})
         )
 
     async def _close_clients(self) -> None:
@@ -313,6 +322,16 @@ class TelemetryServer:
             ),
             return_exceptions=True,
         )
+
+
+def _encode(payload: dict[str, object]) -> str:
+    """Compact wire JSON, with the NaN token refused rather than emitted.
+
+    ``json`` happily writes the invalid token ``NaN``, which the browser's
+    ``JSON.parse`` rejects and the store counts as a malformed frame, so the one
+    encoder the transport uses never allows it.
+    """
+    return json.dumps(payload, separators=(",", ":"), allow_nan=False)
 
 
 def _bound_port(server: Server, fallback: int) -> int:
