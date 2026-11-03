@@ -1,0 +1,33 @@
+{
+  "revision": "4125095d4b13d6ab8d7c6e1380fb1ad1103017e6",
+  "python": "3.12.11",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+  "clock": "shared-process perf_counter_ns",
+  "latency_boundary": "before JSON encode to client recv, before JSON decode; loopback only",
+  "workload": "seeded contract noise, no physics; includes Python allocation tracing",
+  "memory_scope": "peak traced Python allocations during load; server and clients, not RSS",
+  "duration_s": 10.006988800130785,
+  "clients": 1,
+  "detailed": true,
+  "slow_delay_s": 0.0,
+  "target_hz": 30.0,
+  "cpu_s": 4.609375,
+  "peak_traced_python_bytes": 193899,
+  "receivers": [
+    {
+      "client": 0,
+      "slow_reader": false,
+      "frames": 297,
+      "rate_hz": 30.027162510290292,
+      "bytes": 3058966,
+      "latency_ms": {
+        "p50": 19.3352,
+        "p95": 63.70883999999997,
+        "p99": 117.91564400000007
+      },
+      "close_code": null,
+      "bytes_per_second": 305682.964285922
+    }
+  ]
+}

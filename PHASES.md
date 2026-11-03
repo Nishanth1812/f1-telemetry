@@ -44,7 +44,9 @@ drive a real dashboard, every later phase is built on sand.
 | P0-T10 | Synthetic frame generator — emits fake frames at correct per-channel rates from `channels.yaml` | Proves the rate contract. Deliberately reads only `channels.yaml`, never hardcodes a rate |
 | P0-T11 | Dashboard skeleton: tile grid + one trace panel + connection indicator | Tiles render from synthetic data at 30 Hz |
 
-**Exit gate** — passed in CI run 37623217508 at `d4f4c92`; evidence in [`docs/phase0-decisions.md` §9](docs/phase0-decisions.md#9-p0-exit-gate-evidence).
+**Exit gate** — historically reported as passed in CI run 37623217508 at `d4f4c92`.
+The original phase-0 decisions file is absent from this checkout; current software
+verification is recorded in [the release checklist](docs/release-checklist.md).
 - [x] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
 - [x] `just codegen` is idempotent; CI proves committed generated code is current
 - [x] All 8 invariant tests run and pass
@@ -154,13 +156,16 @@ P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four
 corners, and a steering-sensitivity curve.
-Measured P2 scenario outputs: [`docs/phase2-demo.md`](./docs/phase2-demo.md).
+The original phase-2 demo file is absent. The measurements above remain historical
+reports; [calibration notes](docs/calibration.md) state the current evidence limits.
 
 ---
 
 ## P3 — Thermal (lumped) {#p3}
 
-The implementation and VM verification record is in [`docs/phase3-5-demo.md`](docs/phase3-5-demo.md).
+The original phases-3–5 VM demo record is absent from this checkout. See the
+[current architecture](docs/architecture.md) and [release checks](docs/release-checklist.md)
+for current software evidence, rather than reconstructed historical measurements.
 The checkboxes below reflect evidenced criteria; phase tags remain open until every exit criterion passes.
 
 **Goal:** tyre, brake, engine and gearbox temperatures that respond to what the car is doing.

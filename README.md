@@ -1,78 +1,110 @@
-# F1 Virtual Telemetry Emulator
+# F1 Telemetry Lab
 
-A simulation-based Formula-car telemetry and diagnostics platform. A physics model is the virtual
-car; a virtual sensor layer turns its state into the channels a real car's electronics would
-publish; analytics look for anomalies and faults in those channels; and a dashboard lets an
-engineer inspect the car and run controlled virtual tests, with no hardware involved.
+A Python/TypeScript telemetry platform using a simulated Formula car. Run an
+experiment, inspect its traces, save the complete run to Parquet, restart the
+server, and replay or compare recorded results.
 
-```text
-SIMULATE THE CAR  ->  EMULATE ITS SENSORS  ->  UNDERSTAND THE CAR
-```
+The car is **synthetic and uncalibrated**. This project demonstrates telemetry
+contracts, asynchronous delivery, reproducible recording/replay and diagnostics.
+It does not predict a real F1 car's performance.
 
-What you see in the dashboard:
+![Telemetry dashboard](docs/assets/dashboard.png)
 
-- **Virtual test** bar: pick a test (standing launch, braking run, constant-radius corner), change
-  its one setting and run it. The car drives the test in real time.
-- **Live car data**: speed, engine RPM, gear, throttle, steering and the lateral, longitudinal and
-  yaw dynamics, straight from the simulated car's sensors.
-- **Charts, tyres and brakes**: speed / RPM / throttle traces and per-corner tyre and brake
-  readouts, all updating live while the test runs.
-- **Model analysis**: warnings when a channel leaves its expected behaviour.
-- **Last test result**: peak speed, forward and sideways g, and a plain-language comparison with
-  your previous run of the same test.
-
-The car spec is explicitly provisional until it is calibrated in Phase 1, so every number is
-"plausible", not "validated". The longer pitch is in `F1_Virtual_Telemetry_Emulator_Idea.md`, the
-engineering plan in `PLAN.md`, and the phase breakdown in `PHASES.md`.
+[Short demo](docs/assets/demo.webm) · [Architecture](docs/architecture.md) ·
+[Measured performance](docs/performance.md) · [Case study](docs/case-study.md)
 
 ## Run it
 
-Prerequisites: Python 3.12 with `uv`, and Node.js 22.12 or newer with npm. From the repository
-root, install the locked dependencies:
+Requires Python 3.12 with uv, and Node.js 22.12 or newer with npm.
+From a checkout, install the locked dependencies and build the dashboard:
 
 ```powershell
 uv sync --frozen
 npm ci --prefix web
+npm run build --prefix web
+uv run f1-serve --web-root web/dist
 ```
 
-Start the WebSocket server and Vite dashboard in separate terminals. The server starts with the
-car at rest; pressing **Run test** in the dashboard makes it drive that test live. (Add `--noise`
-to `f1-serve` to stream the old uniform random contract data instead, which only proves the
-channel rates.)
+Open <http://localhost:8765>. Choose a standing launch, braking run or
+constant-radius corner, adjust its setting, then press **Run test**. The server
+computes and saves the scenario before playing its samples at wall-clock pace.
+Completed recordings appear under **Saved tests**. They remain available after
+a page refresh or server restart. Replay a selected test, or choose two runs of
+the same scenario and compare their results.
+
+For the included read-only looping recording, run `uv run f1-demo` instead.
+With just installed, `just lab` or `just demo` builds and starts the corresponding
+mode. `docker compose up --build` launches the read-only container on localhost.
+See [the demo guide](docs/demo.md) for deployment, recording and browser checks.
+
+## Engineering
+
+- **One channel contract:** channels.yaml generates Python registries, Arrow schema
+  definitions and TypeScript metadata. CI checks drift, idempotence and a rate edit
+  all the way to Chrome.
+- **Deterministic simulation:** fixed-step NumPy/Numba physics, bounded scenarios,
+  numerical invariants and golden regression traces.
+- **Bounded streaming:** original timestamped samples are batched behind a lower-rate
+  snapshot. Each viewer has bounded output; stalled viewers are disconnected rather
+  than allowed to block healthy viewers or silently lose samples/events.
+- **Durable runs:** immutable Parquet files include summaries, configuration
+  snapshots/hashes, settings and available code provenance. Replay reads recorded
+  samples rather than rerunning physics.
+- **Diagnostics:** validity checks, reduced-order residuals, multivariate scoring
+  and persistence. [Synthetic evaluation](docs/detection.md) discloses failures.
+- **Sensor/bus pipeline:** contract-driven quantisation, seeded noise, fault
+  injection, CAN-FD scheduling/framing and annotation-aware replay.
+
+Physics integration, retained scenario samples, sensor sampling, network delivery
+and UI refresh use different rates. The lab retains 100 Hz scenario frames and
+normally delivers batches at up to 30 Hz. The noise-source demonstration separately
+exercises per-channel contract rates. See [clock boundaries](docs/architecture.md#rates-and-clocks).
+
+## Operating it
+
+Recordings default to the ignored runs/ directory; use `--runs-dir PATH` to choose
+another server-owned directory. Back it up if needed. A corrupt recording produces
+an explicit error naming the run; it is never silently ignored. One server has
+one shared car, so attempts to replace active computation/playback are rejected.
+
+`/healthz` reports readiness, source state, connected viewers, delivery counters,
+send failures and slow-viewer disconnections. Local binding and browser-origin
+checks remain the default. Public demonstration mode requires explicit read-only
+configuration and allowed origins; see the [deployment guide](docs/demo.md).
+
+For development, run `uv run f1-serve` and `npm --prefix web run dev` in separate
+terminals. `--noise` selects contract-rate test data; `--replay-parquet PATH`
+serves a finite recording. VITE_TELEMETRY_WS_URL overrides the socket URL; a built
+dashboard otherwise uses its own origin.
+
+## Verification
 
 ```powershell
-uv run f1-serve
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run basedpyright
+uv run f1-check-contract
+uv run pytest
+node --test web/tests/telemetry.test.mjs
+npm run build --prefix web
 ```
 
-```powershell
-npm --prefix web run dev
-```
+`just check` runs the Python checks and web build.
+[Release evidence](docs/release-checklist.md) records checks actually performed.
+[The demo guide](docs/demo.md) contains the browser workflow command.
 
-Open <http://localhost:5173>. If `just` is installed, use `just serve` and `just dev` for the two
-commands above.
+## Limits
 
-Run the project checks with `just check`, or run `uv run ruff check src tests`,
-`uv run basedpyright`, `uv run pytest`, `uv run f1-check-contract`, and
-`npm run build --prefix web` individually.
+[Calibration notes](docs/calibration.md) account for coefficient provenance and
+open physical-validation gates. Aero, tyre, thermal and powertrain parameters
+remain synthetic; brake torque is caller supplied rather than constrained by a
+validated brake-capacity model. Short synthetic detection records do not establish
+a real-world false-alarm rate. The dashboard streams precomputed scenarios and
+is not an interactive driving simulator.
 
-## What is simplified
+PLAN.md and PHASES.md preserve the longer research roadmap and historical reports.
+They do not mean that every research phase is complete. This release has its own
+[scope](docs/superpowers/specs/2026-11-03-portfolio-release-design.md).
 
-This is a physics-core telemetry emulator, not a car. To stay buildable and honest about
-what it claims, several layers are deliberately simplified:
-
-- **Aero, tyres, brakes and powertrain are synthetic.** The Pacejka coefficients, aero
-  curves, gear ratios and torque curve are seeded from published parameter sets and then
-  labelled as synthetic in `docs/calibration.md`. They are plausible, not validated
-  against a real car.
-- **The power curve is uncalibrated.** `torque_curve(rpm)` is synthesised from published
-  peak figures plus a turbo-lag multiplier because no public F1 torque curve exists.
-- **There is no brake-capacity model.** Caller brake torque is a number, not a limit a
-  brake system enforces; braking performance is therefore not an acceptance target.
-- **The racing line is QP, not NLP.** The line is a minimum-curvature QP solution with a
-  forward-backward speed profile. An NLP "polish" (expected to be worth a few percent of
-  lap time) is optional stretch work, not a correctness requirement.
-- **Residual analytics are not built yet.** The §9 residual-first detection stack is the
-  plan; what exists today is validity checks, the energy invariant, CAN-FD framing, sensor
-  fault injection primitives and Parquet round-trip — not the published detection tables.
-
-Nothing above is a performance claim; see `docs/latency.md` for measured latency budgets.
+Original project code is [Apache-2.0](LICENSE). Track data retains its original
+license and attribution; see [third-party notices](THIRD_PARTY_NOTICES.md).

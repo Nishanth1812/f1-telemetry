@@ -83,3 +83,37 @@ here.
 - Web tests — `telemetry.test.mjs`: 10/10 pass. `dashboard-smoke.mjs` fails only
   because no Chrome binary is available in this environment (pre-existing, unrelated
   to code).
+
+## Backend / server pump (P0-T10)
+
+Measured per-frame cost of the 30 Hz loopback pump with one summary client
+connected, on the committed build:
+
+| Metric | Value | Notes |
+|---|---|---|
+| `Frame.to_wire()` (detailed + snapshot) | ~26 us/frame | builds the wire dict per payload shape |
+| `json.dumps` (both payloads) | ~274 us/frame | dominant cost; compact separators, `allow_nan=False` |
+| channels dict copy | ~4.9 us/frame | `{name: float(v) for ...}` over ~70 channels |
+
+Optimizations applied to `src/f1telemetry/server.py`:
+
+- `_encode()` helper centralizes `json.dumps(..., separators=(",", ":"),
+  allow_nan=False)` so the transport has one encoder, used for frames, scenario
+  results, and scenario errors. No temp arrays, no duplicated encoder arguments.
+- `_broadcast()` only encodes the detailed payload when a detailed client is
+  connected, and only encodes the snapshot payload when a summary client is - at
+  most one encode per distinct shape per frame instead of always serialising both.
+- Single-dashboard fast path: one delivery sends directly without
+  `asyncio.gather`, avoiding task creation and result tuples.
+- Client set is snapshotted once into a frozen tuple per frame, so a connection
+  arriving or dropping mid-send cannot change who this frame went to.
+
+Guards preserved (unchanged):
+
+- Loopback-only bind check (`_LOOPBACK_HOSTS`) - server refuses non-loopback hosts.
+- `scenario_lock` (`asyncio.Lock`) - scenario runs remain single-threaded through
+  the lock; `telemetry_detail` still mutates `_detailed_clients` outside the lock.
+- `allow_nan=False` NaN guard - invalid JSON tokens never reach the wire.
+
+Server can be restarted with `just serve` (or `uv run f1-serve`) at
+`ws://localhost:8765/ws`; default endpoint matches `web/src/telemetry/config.ts`.

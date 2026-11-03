@@ -1,0 +1,89 @@
+{
+  "revision": "4991f1b83503c7f171ef4f14da103aa85b5f2a26",
+  "python": "3.12.11",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+  "clock": "shared-process perf_counter_ns",
+  "latency_boundary": "before JSON encode to client recv, before JSON decode; loopback only",
+  "workload": "seeded contract noise, no physics; includes Python allocation tracing",
+  "memory_scope": "peak traced Python allocations during load; server and clients, not RSS",
+  "duration_s": 15.014585400000215,
+  "clients": 5,
+  "detailed": true,
+  "slow_delay_s": 0.5,
+  "target_hz": 30.0,
+  "cpu_s": 5.4375,
+  "peak_traced_python_bytes": 1075455,
+  "receivers": [
+    {
+      "client": 0,
+      "slow_reader": true,
+      "frames": 29,
+      "rate_hz": 1.9205742011950475,
+      "bytes": 297022,
+      "latency_ms": {
+        "p50": 6755.7975,
+        "p95": 12986.220360000001,
+        "p99": 13525.505936
+      },
+      "close_code": null,
+      "bytes_per_second": 19782.23121632088
+    },
+    {
+      "client": 1,
+      "slow_reader": false,
+      "frames": 449,
+      "rate_hz": 30.018455587961604,
+      "bytes": 4624689,
+      "latency_ms": {
+        "p50": 18.3455,
+        "p95": 136.85852000000003,
+        "p99": 202.47256799999985
+      },
+      "close_code": null,
+      "bytes_per_second": 308013.1003817084
+    },
+    {
+      "client": 2,
+      "slow_reader": false,
+      "frames": 449,
+      "rate_hz": 30.017472648223485,
+      "bytes": 4624689,
+      "latency_ms": {
+        "p50": 19.1427,
+        "p95": 143.14396000000005,
+        "p99": 214.36307999999985
+      },
+      "close_code": null,
+      "bytes_per_second": 308013.1003817084
+    },
+    {
+      "client": 3,
+      "slow_reader": false,
+      "frames": 449,
+      "rate_hz": 30.016866061712555,
+      "bytes": 4624689,
+      "latency_ms": {
+        "p50": 19.7926,
+        "p95": 146.01561999999998,
+        "p99": 224.17781999999994
+      },
+      "close_code": null,
+      "bytes_per_second": 308013.1003817084
+    },
+    {
+      "client": 4,
+      "slow_reader": false,
+      "frames": 449,
+      "rate_hz": 30.01640852296428,
+      "bytes": 4624689,
+      "latency_ms": {
+        "p50": 20.7905,
+        "p95": 148.67632,
+        "p99": 230.72289199999975
+      },
+      "close_code": null,
+      "bytes_per_second": 308013.1003817084
+    }
+  ]
+}
