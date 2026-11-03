@@ -27,5 +27,8 @@ def test_benchmark_measures_real_socket_delivery() -> None:
     for receiver in measured:
         assert receiver["frames"] >= 2
         assert receiver["bytes"] > 0
+        assert receiver["bytes_per_second"] == pytest.approx(
+            receiver["bytes"] / report["duration_s"]
+        )
         assert receiver["latency_ms"]["p95"] >= 0
     assert report["cpu_s"] > 0

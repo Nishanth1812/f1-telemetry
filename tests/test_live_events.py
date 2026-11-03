@@ -11,3 +11,5 @@ def test_saved_events_follow_the_shifted_live_timeline() -> None:
     assert len(events) == 1
     assert events[0].time_us == 1
     assert events[0].fault_type == "spike"
+    for delivery in deliveries:
+        assert all(not sample.events for sample in delivery.samples)

@@ -58,6 +58,8 @@ class DrivenCarSource:
                 self._emitted_us = target
                 self._now_us = target
                 events = tuple(event for sample in samples for event in sample.events)
+                if events:
+                    samples = tuple(replace(sample, events=()) for sample in samples)
                 yield Frame(target, dict(self._latest), events=events, samples=samples)
             target += tick_us
 

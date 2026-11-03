@@ -141,7 +141,6 @@ async def run_benchmark(
                         "frames": len(arrivals),
                         "rate_hz": (len(arrivals) - 1) / span if span > 0 else 0.0,
                         "bytes": total_bytes,
-                        "bytes_per_second": total_bytes / duration_s,
                         "latency_ms": {f"p{p}": percentile(latencies, p) for p in (50, 95, 99)},
                         "close_code": close_code,
                     }
@@ -150,6 +149,8 @@ async def run_benchmark(
             await asyncio.gather(*(receive(index) for index in range(clients)))
             cpu_s = time.process_time() - cpu_started
             elapsed_s = time.perf_counter() - started
+            for receiver in receivers:
+                receiver["bytes_per_second"] = receiver["bytes"] / elapsed_s
             _current, peak = tracemalloc.get_traced_memory()
     finally:
         if own_trace and tracemalloc.is_tracing():
