@@ -60,6 +60,77 @@ const { decodeFrame } = await loadTs('telemetry/types.ts');
 const { TraceHistory } = await loadTs('telemetry/history.ts');
 const { CHANNELS } = await loadTs('generated/channels.ts');
 const { useTelemetryStore } = await loadTs('store/telemetryStore.ts');
+const { TelemetrySocket } = await loadTs('telemetry/socket.ts');
+const { useLabStore } = await loadTs('store/labStore.ts');
+
+test('saved results compare only matching scenarios without rerunning physics', () => {
+  const first = { run_id: 'a'.repeat(32), scenario_id: 'launch', setting: 80 };
+  const second = { run_id: 'b'.repeat(32), scenario_id: 'launch', setting: 100 };
+  const other = { run_id: 'c'.repeat(32), scenario_id: 'braking', setting: 50 };
+  useLabStore.setState({ savedRuns: [first, second, other] });
+  useLabStore.getState().compareSaved(first.run_id, second.run_id);
+  assert.equal(useLabStore.getState().result, first);
+  assert.equal(useLabStore.getState().prevResult, second);
+  assert.equal(useLabStore.getState().scenarioId, 'launch');
+  useLabStore.getState().compareSaved(first.run_id, other.run_id);
+  assert.match(useLabStore.getState().error, /same test/);
+  assert.equal(useLabStore.getState().result, first);
+});
+
+test('recovered playback restores the result and preserves saved order', () => {
+  const old = { run_id: 'a'.repeat(32), scenario_id: 'launch', setting: 80, request_id: 'old' };
+  const recent = { ...old, run_id: 'b'.repeat(32), request_id: 'recent' };
+  useLabStore.setState({ savedRuns: [recent, old], result: null, lastRuns: {}, error: 'Connection lost' });
+  useLabStore.getState().receiveResult({ ...old, request_id: 'restored', playback_elapsed_s: 3 });
+  assert.equal(useLabStore.getState().result.request_id, 'restored');
+  assert.equal(useLabStore.getState().error, null);
+  assert.deepEqual(useLabStore.getState().savedRuns, [recent, old]);
+  assert.ok(performance.now() - useLabStore.getState().startedAtMs >= 3000);
+});
+
+test('saved-run requests correlate replies and reject pending work on disconnect', async () => {
+  const original = globalThis.WebSocket;
+  class FakeSocket {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    readyState = 1;
+    sent = [];
+    constructor() { FakeSocket.latest = this; }
+    send(message) { this.sent.push(JSON.parse(message)); }
+    close() {}
+    reply(payload) { this.onmessage({ data: JSON.stringify(payload) }); }
+  }
+  globalThis.WebSocket = FakeSocket;
+  const malformed = [];
+  const modes = [];
+  const client = new TelemetrySocket('ws://localhost/ws', {
+    onConnecting() {}, onOpen() {}, onFrame() {}, onMalformed(n) { malformed.push(n); }, onRetry() {},
+    onReadOnly(mode) { modes.push(mode); },
+  });
+  try {
+    client.start();
+    FakeSocket.latest.onopen();
+    FakeSocket.latest.reply({ type: 'server_info', read_only: true, result: null });
+    assert.deepEqual(modes, [true]);
+    const listing = client.listSavedRuns();
+    const request = FakeSocket.latest.sent.at(-1);
+    assert.equal(request.type, 'runs_list');
+    FakeSocket.latest.reply({ type: 'runs_list_result', request_id: 'unrelated', runs: [] });
+    FakeSocket.latest.reply({ type: 'runs_list_result', request_id: request.request_id, runs: [] });
+    assert.deepEqual(await listing, []);
+    assert.deepEqual(malformed, []);
+    const invalid = client.listSavedRuns();
+    const invalidRequest = FakeSocket.latest.sent.at(-1);
+    FakeSocket.latest.reply({ type: 'runs_list_result', request_id: invalidRequest.request_id, runs: [{}] });
+    await assert.rejects(invalid, /invalid response/);
+    const replay = client.replaySavedRun('a'.repeat(32));
+    client.stop();
+    await assert.rejects(replay, /Connection closed/);
+  } finally {
+    client.stop();
+    globalThis.WebSocket = original;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 1. decodeFrame preserves the optional sample batch, and legacy frames

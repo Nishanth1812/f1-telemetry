@@ -40,6 +40,7 @@ function useDriveClock(startedAtMs: number | null, durationS: number): number {
 
 export function TestControls() {
   const status = useTelemetryStore((state) => state.status);
+  const readOnly = useLabStore((state) => state.readOnly);
   const scenarioId = useLabStore((state) => state.scenarioId);
   const setting = useLabStore((state) => state.setting);
   const running = useLabStore((state) => state.running);
@@ -58,7 +59,7 @@ export function TestControls() {
   const elapsedS =
     startedAtMs === null ? 0 : Math.min(Math.max((nowMs - startedAtMs) / 1000, 0), durationS);
   const driving = startedAtMs !== null && elapsedS < durationS;
-  const busy = running || driving;
+  const busy = running || driving || readOnly;
   const connected = status === 'open';
   const progressPct = durationS <= 0 ? 0 : Math.min(100, (elapsedS / durationS) * 100);
 
@@ -67,6 +68,9 @@ export function TestControls() {
   if (!connected) {
     chip = 'Not connected';
     chipTone = 'offline';
+  } else if (readOnly) {
+    chip = 'Recorded demo · read-only';
+    chipTone = 'ready';
   } else if (running && startedAtMs === null) {
     chip = 'Simulating the run…';
     chipTone = 'busy';
@@ -92,6 +96,8 @@ export function TestControls() {
           {chip}
         </span>
       </div>
+
+      {readOnly ? <p className="testlab__hint">This demo loops a saved launch. Run the project locally to record and compare your own tests.</p> : null}
 
       <div className="testlab__bar">
         <div className="testlab__scenarios" role="group" aria-label="Choose a test">

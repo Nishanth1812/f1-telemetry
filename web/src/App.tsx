@@ -16,6 +16,7 @@ import { HealthPanel } from './components/HealthPanel';
 import { Instruments } from './components/Instruments';
 import { TestControls } from './components/TestControls';
 import { TestResult } from './components/TestResult';
+import { SavedRuns } from './components/SavedRuns';
 import { setDetailedTelemetry } from './telemetry/socket';
 
 export function App() {
@@ -49,6 +50,7 @@ export function App() {
       </header>
       <main className="app__main" id="dashboard">
         <TestControls />
+        <SavedRuns />
         <Instruments />
         <section className="app__section" aria-labelledby="trace-heading">
           <div className="app__section-head">

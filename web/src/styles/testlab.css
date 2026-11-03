@@ -176,3 +176,30 @@
   font-weight: 600;
   color: var(--text);
 }
+.saved-runs__controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.saved-runs label {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 100%;
+}
+
+.saved-runs select {
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.5rem;
+  background: var(--bg-panel, #171b22);
+  color: inherit;
+  border: 1px solid var(--border, #414753);
+  border-radius: 0.25rem;
+}
+
+.saved-runs button {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+}

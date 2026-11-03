@@ -11,12 +11,16 @@ export interface TelemetrySocketCallbacks {
   onFrame: (frame: TelemetryFrame) => void;
   onMalformed: (count: number) => void;
   onRetry: (attempt: number, delayMs: number, reason: string | null) => void;
+  onResult?: (result: ScenarioResult) => void;
+  onReadOnly?: (readOnly: boolean) => void;
 }
 
 export type LabScenarioId = 'launch' | 'braking' | 'cornering';
 
 export interface ScenarioResult {
   type: 'scenario_result';
+  run_id?: string;
+  playback_elapsed_s?: number;
   request_id: string;
   scenario_id: LabScenarioId;
   title: string;
@@ -42,10 +46,17 @@ interface ScenarioErrorResponse {
   error?: string;
 }
 
-type ScenarioResponse = ScenarioResult | ScenarioErrorResponse;
+interface SavedRunsResponse {
+  type: 'runs_list_result';
+  request_id: string;
+  runs: ScenarioResult[];
+}
+
+type CommandSuccess = ScenarioResult | SavedRunsResponse;
+type ScenarioResponse = CommandSuccess | ScenarioErrorResponse;
 
 interface PendingScenario {
-  resolve: (result: ScenarioResult) => void;
+  resolve: (result: CommandSuccess) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -66,6 +77,20 @@ export function requestScenarioRun(
 
 export function setDetailedTelemetry(enabled: boolean): void {
   activeSocket?.setDetailedTelemetry(enabled);
+}
+
+export function requestSavedRuns(): Promise<ScenarioResult[]> {
+  if (activeSocket === null) {
+    return Promise.reject(new Error('Connect to the telemetry server to load saved tests.'));
+  }
+  return activeSocket.listSavedRuns();
+}
+
+export function requestSavedReplay(runId: string): Promise<ScenarioResult> {
+  if (activeSocket === null) {
+    return Promise.reject(new Error('Connect to the telemetry server to replay a test.'));
+  }
+  return activeSocket.replaySavedRun(runId);
 }
 
 export function backoffDelayMs(attempt: number, random: () => number = Math.random): number {
@@ -127,6 +152,25 @@ export class TelemetrySocket {
   }
 
   runScenario(scenarioId: LabScenarioId, setting: number): Promise<ScenarioResult> {
+    return this.request<ScenarioResult>(
+      { type: 'scenario_run', scenario_id: scenarioId, setting }, 'scenario_result',
+    );
+  }
+
+  listSavedRuns(): Promise<ScenarioResult[]> {
+    return this.request<SavedRunsResponse>({ type: 'runs_list' }, 'runs_list_result')
+      .then((response) => response.runs);
+  }
+
+  replaySavedRun(runId: string): Promise<ScenarioResult> {
+    return this.request<ScenarioResult>(
+      { type: 'run_replay', run_id: runId }, 'scenario_result',
+    );
+  }
+
+  private request<T extends CommandSuccess>(
+    body: Record<string, unknown>, expectedType: T['type'],
+  ): Promise<T> {
     const socket = this.socket;
     if (socket === null || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('Connect to the telemetry server before running a scenario.'));
@@ -137,14 +181,22 @@ export class TelemetrySocket {
         this.pendingScenarios.delete(requestId);
         reject(new Error('The run took too long. Check that the server is still running.'));
       }, SCENARIO_TIMEOUT_MS);
-      this.pendingScenarios.set(requestId, { resolve, reject, timer });
+      this.pendingScenarios.set(requestId, {
+        resolve: (response) => {
+          if (response.type !== expectedType) {
+            reject(new Error('The server returned an unexpected response.'));
+          } else {
+            resolve(response as T);
+          }
+        },
+        reject,
+        timer,
+      });
       try {
         socket.send(
           JSON.stringify({
-            type: 'scenario_run',
+            ...body,
             request_id: requestId,
-            scenario_id: scenarioId,
-            setting,
           }),
         );
       } catch (error) {
@@ -196,9 +248,31 @@ export class TelemetrySocket {
         return;
       }
       const payload = parsePayload(event.data);
+      if (payload !== null && typeof payload === 'object' && 'type' in payload && payload.type === 'server_info') {
+        const info = payload as Record<string, unknown>;
+        if (typeof info.read_only === 'boolean' &&
+            (info.result === null || (isScenarioResponse(info.result) && info.result.type === 'scenario_result'))) {
+          this.callbacks.onReadOnly?.(info.read_only);
+          if (info.result !== null) this.callbacks.onResult?.(info.result as ScenarioResult);
+        } else {
+          this.callbacks.onMalformed(1);
+        }
+        return;
+      }
       if (isScenarioResponse(payload)) {
         this.resolveScenario(payload);
+        if (payload.type === 'scenario_result') this.callbacks.onResult?.(payload);
         return;
+      }
+      if (payload !== null && typeof payload === 'object') {
+        const badReply = payload as Record<string, unknown>;
+        if (typeof badReply.request_id === 'string' && this.pendingScenarios.has(badReply.request_id)) {
+          const pending = this.pendingScenarios.get(badReply.request_id)!;
+          clearTimeout(pending.timer);
+          this.pendingScenarios.delete(badReply.request_id);
+          pending.reject(new Error('The server returned an invalid response.'));
+          return;
+        }
       }
       const frame = decodeFrame(payload);
       if (frame === null) {
@@ -266,6 +340,13 @@ function isScenarioResponse(value: unknown): value is ScenarioResponse {
     return false;
   }
   const response = value as Record<string, unknown>;
+  if (response.type === 'runs_list_result') {
+    return typeof response.request_id === 'string' && Array.isArray(response.runs) &&
+      response.runs.every((run: unknown) => {
+        if (!isScenarioResponse(run) || run.type !== 'scenario_result') return false;
+        return typeof run.run_id === 'string' && /^[a-f0-9]{32}$/.test(run.run_id);
+      });
+  }
   if (response.type === 'scenario_error') {
     return (
       (typeof response.request_id === 'string' || response.request_id === null) &&
@@ -274,6 +355,10 @@ function isScenarioResponse(value: unknown): value is ScenarioResponse {
   }
   if (
     response.type !== 'scenario_result' ||
+    (response.playback_elapsed_s !== undefined &&
+      (!isFiniteNumber(response.playback_elapsed_s) || response.playback_elapsed_s < 0)) ||
+    (response.run_id !== undefined &&
+      (typeof response.run_id !== 'string' || !/^[a-f0-9]{32}$/.test(response.run_id))) ||
     typeof response.request_id !== 'string' ||
     !['launch', 'braking', 'cornering'].includes(String(response.scenario_id)) ||
     typeof response.title !== 'string' ||

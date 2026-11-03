@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { TELEMETRY_WS_URL, isWebSocketUrl } from '../telemetry/config';
 import { TelemetrySocket } from '../telemetry/socket';
 import { useTelemetryStore } from '../store/telemetryStore';
+import { useLabStore } from '../store/labStore';
 import type { TelemetryFrame } from '../telemetry/types';
 
 export function useTelemetrySocket(): void {
@@ -17,6 +18,13 @@ export function useTelemetrySocket(): void {
     const socket = new TelemetrySocket(TELEMETRY_WS_URL, {
       onConnecting: () => useTelemetryStore.getState().markConnecting(),
       onOpen: () => useTelemetryStore.getState().markOpen(),
+      onReadOnly: (readOnly) => useLabStore.setState({ readOnly }),
+      onResult: (result) => {
+        framesQueue.length = 0;
+        if (frameId !== null) cancelAnimationFrame(frameId);
+        frameId = null;
+        useLabStore.getState().receiveResult(result);
+      },
       onFrame: (frame) => {
         framesQueue.push(frame);
         if (frameId === null) {

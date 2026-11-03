@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { requestScenarioRun, type LabScenarioId, type ScenarioResult } from '../telemetry/socket';
+import {
+  requestScenarioRun, requestSavedRuns, requestSavedReplay,
+  type LabScenarioId, type ScenarioResult,
+} from '../telemetry/socket';
 import { useTelemetryStore } from './telemetryStore';
 import { DEFAULT_SETTING } from './labScenarios';
 
@@ -19,6 +22,26 @@ export interface LabState {
   chooseScenario: (next: LabScenarioId) => void;
   setSetting: (value: number) => void;
   run: () => Promise<void>;
+  savedRuns: ScenarioResult[];
+  loadingSaved: boolean;
+  refreshSaved: () => Promise<void>;
+  replaySaved: (runId: string) => Promise<void>;
+  compareSaved: (runId: string, baselineId: string) => void;
+  receiveResult: (result: ScenarioResult) => void;
+  readOnly: boolean;
+}
+
+async function playRun(request: () => Promise<ScenarioResult>): Promise<void> {
+  if (useLabStore.getState().running) return;
+  useLabStore.setState({ running: true, error: null, startedAtMs: null });
+  try {
+    const result = await request();
+    useLabStore.getState().receiveResult(result);
+  } catch (reason) {
+    useLabStore.setState({ error: reason instanceof Error ? reason.message : 'The run could not finish.' });
+  } finally {
+    useLabStore.setState({ running: false });
+  }
 }
 
 export const useLabStore = create<LabState>((set, get) => ({
@@ -30,6 +53,22 @@ export const useLabStore = create<LabState>((set, get) => ({
   lastRuns: {},
   error: null,
   startedAtMs: null,
+  savedRuns: [],
+  loadingSaved: false,
+  readOnly: false,
+  receiveResult: (result) => {
+    if (get().result?.request_id === result.request_id && get().result?.run_id === result.run_id) return;
+    useTelemetryStore.getState().resetForRun();
+    set((state) => ({
+      prevResult: state.lastRuns[result.scenario_id]?.run_id === result.run_id
+        ? state.prevResult : state.lastRuns[result.scenario_id] ?? null,
+      lastRuns: { ...state.lastRuns, [result.scenario_id]: result },
+      result, scenarioId: result.scenario_id, setting: result.setting, error: null,
+      startedAtMs: performance.now() - (result.playback_elapsed_s ?? 0) * 1000,
+      savedRuns: result.run_id === undefined || state.savedRuns.some((run) => run.run_id === result.run_id)
+        ? state.savedRuns : [result, ...state.savedRuns],
+    }));
+  },
   chooseScenario: (next) => {
     set({
       scenarioId: next,
@@ -42,27 +81,29 @@ export const useLabStore = create<LabState>((set, get) => ({
     // Changing the setting keeps the shown result until the next run replaces it.
     set({ setting: value });
   },
-  run: async () => {
-    if (get().running) {
+  run: () => {
+    const { scenarioId, setting } = get();
+    return playRun(() => requestScenarioRun(scenarioId, setting));
+  },
+  replaySaved: (runId) => playRun(() => requestSavedReplay(runId)),
+  refreshSaved: async () => {
+    if (get().loadingSaved) return;
+    set({ loadingSaved: true, error: null });
+    try {
+      set({ savedRuns: await requestSavedRuns() });
+    } catch (reason) {
+      set({ error: reason instanceof Error ? reason.message : 'Saved tests could not be loaded.' });
+    } finally {
+      set({ loadingSaved: false });
+    }
+  },
+  compareSaved: (runId, baselineId) => {
+    const result = get().savedRuns.find((run) => run.run_id === runId);
+    const baseline = get().savedRuns.find((run) => run.run_id === baselineId);
+    if (!result || !baseline || result.scenario_id !== baseline.scenario_id || runId === baselineId) {
+      set({ error: 'Choose two different saved runs of the same test.' });
       return;
     }
-    const { scenarioId, setting } = get();
-    set({ running: true, error: null, startedAtMs: null });
-    try {
-      const newResult = await requestScenarioRun(scenarioId, setting);
-      // The server queues the run before it replies, so the car's first frames follow this
-      // reply. Clearing now drops the held values from before the test, not the new run.
-      useTelemetryStore.getState().resetForRun();
-      set((state) => ({
-        prevResult: state.lastRuns[scenarioId] ?? null,
-        lastRuns: { ...state.lastRuns, [scenarioId]: newResult },
-        result: newResult,
-        startedAtMs: performance.now(),
-      }));
-    } catch (reason) {
-      set({ error: reason instanceof Error ? reason.message : 'The run could not finish.' });
-    } finally {
-      set({ running: false });
-    }
+    set({ result, prevResult: baseline, scenarioId: result.scenario_id, setting: result.setting, error: null });
   },
 }));
