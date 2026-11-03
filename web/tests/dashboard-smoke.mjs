@@ -20,6 +20,12 @@ const CHROME_START_ATTEMPTS = 3;
 const READY_TIMEOUT_MS = 30_000;
 const WINDOW_MS = 20_000;
 const TOLERANCE = 0.05;
+const workflowModule = process.env.SMOKE_WORKFLOW === '1' ? await import('./dashboard-workflow.mjs') : null;
+const workflowServer = workflowModule ? await workflowModule.startWorkflowServer() : null;
+const recordVideo = process.env.SMOKE_VIDEO === '1';
+const videoFrames = [];
+const videoDirectory = resolvePath(ARTIFACT_DIR, 'video-frames');
+if (recordVideo) mkdirSync(videoDirectory, { recursive: true });
 
 // Generated schema via the build's own TS transform; channels.ts has no
 // runtime imports, so one transform + import is enough.
@@ -67,6 +73,12 @@ function cdpWire(ws) {
   cdpWs = ws;
   ws.addEventListener('message', (event) => {
     const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
+    if (msg.method === 'Page.screencastFrame' && recordVideo) {
+      const path = resolvePath(videoDirectory, `frame-${String(videoFrames.length).padStart(6, '0')}.jpg`);
+      writeFileSync(path, Buffer.from(msg.params.data, 'base64'));
+      videoFrames.push({ path, timestamp: msg.params.metadata.timestamp });
+      void cdpCall('Page.screencastFrameAck', { sessionId: msg.params.sessionId }).catch(() => {});
+    }
     if (msg.id !== undefined && cdpState.pending.has(msg.id)) {
       const { resolve, reject, timer } = cdpState.pending.get(msg.id);
       cdpState.pending.delete(msg.id);
@@ -177,6 +189,34 @@ try {
   assert.ok(status.t > 0, 'no channel tiles within readiness window');
   assert.equal(status.m, false, 'UI reports malformed frames before measurement');
 
+  let rates = {};
+  let elapsed = 0;
+  let workflow = null;
+  if (workflowModule) {
+    if (recordVideo) await cdpCall('Page.startScreencast', { format: 'jpeg', quality: 75, maxWidth: 1440, maxHeight: 1080, everyNthFrame: 3 });
+    workflow = await workflowModule.runWorkflow({ cdpCall, evalJson, server: workflowServer });
+    if (recordVideo) {
+      await cdpCall('Runtime.evaluate', { expression: "document.querySelector('.testlab-result')?.scrollIntoView({block:'start'})" });
+      await sleep(1000);
+      await cdpCall('Page.stopScreencast');
+      const concatPath = resolvePath(videoDirectory, 'frames.txt');
+      const entries = videoFrames.map((frame, index) => {
+        const next = videoFrames[index + 1];
+        const seconds = next ? Math.max(0.01, next.timestamp - frame.timestamp) : 0.1;
+        return `file '${frame.path.replaceAll('\\', '/')}'\nduration ${seconds}`;
+      });
+      assert.ok(entries.length > 2, 'video captured too few frames');
+      writeFileSync(concatPath, `${entries.join('\n')}\n`);
+      const output = resolvePath(ARTIFACT_DIR, 'demo.webm');
+      const encoder = spawn(process.env.FFMPEG_BIN ?? 'ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c:v', 'libvpx-vp9', '-b:v', '700k', '-an', output], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let errorOutput = '';
+      encoder.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-4000); });
+      await new Promise((done, fail) => {
+        encoder.once('error', fail);
+        encoder.once('exit', (code) => code === 0 ? done() : fail(new Error(errorOutput)));
+      });
+    }
+  } else {
   const READ_TILES = `JSON.stringify(Array.from(document.querySelectorAll('ul.tile-grid li.tile[data-channel]')).map((li) => [li.getAttribute('data-channel'), li.getAttribute('data-declared-hz'), li.getAttribute('data-sample-count')]))`;
   let dom;
   // Tiles appear before the first throttled diagnostics snapshot contains
@@ -205,10 +245,9 @@ try {
   const r1 = await evalJson(READ);
   await sleep(WINDOW_MS);
   const r2 = await evalJson(READ);
-  const elapsed = (r2.perf - r1.perf) / 1000;
+  elapsed = (r2.perf - r1.perf) / 1000;
   assert.ok(elapsed > 0 && Math.abs(elapsed - WINDOW_MS / 1000) < 5, `implausible window ${elapsed} s`);
 
-  const rates = {};
   for (const [name, hz] of expected) {
     if (!(name in r1.counts)) {
       assert.equal(hz, null, `periodic channel "${name}" missing from counters`);
@@ -232,6 +271,7 @@ try {
     }
   }
 
+  }
   const end = await evalJson(STATUS);
   assert.equal(end.m, false, 'UI reports malformed frames during measurement');
   assert.deepEqual(cdpState.exceptions, [], `page exceptions: ${cdpState.exceptions.join(' | ')}`);
@@ -247,10 +287,12 @@ try {
   writeFileSync(resolvePath(ARTIFACT_DIR, 'dashboard-smoke.json'), `${JSON.stringify({
     revision, url: DASHBOARD_URL, measuredAt: new Date().toISOString(),
     elapsedSeconds: +elapsed.toFixed(3), toleranceRelative: TOLERANCE,
-    expectedRateChange: edited, channels: rates,
+    expectedRateChange: edited, channels: rates, workflow,
     malformedUiCount: end.m ? 1 : 0, runtimeExceptions: cdpState.exceptions, pass: true,
   }, null, 2)}\n`);
-  console.log(`dashboard smoke: PASS (${Object.keys(rates).length} channels, ${elapsed.toFixed(1)} s, ${revision})`);
+  console.log(workflow
+    ? `dashboard workflow: PASS (scenario, saved restart/replay, comparison, ${revision})`
+    : `dashboard smoke: PASS (${Object.keys(rates).length} channels, ${elapsed.toFixed(1)} s, ${revision})`);
 } catch (err) {
   // Retain failure evidence while Chrome is still alive.
   if (cdpWs && !cdpState.closed) {
@@ -267,6 +309,7 @@ try {
   }
   throw err;
 } finally {
+  if (workflowServer) await workflowServer.close();
   if (cdpWs) try { cdpWs.close(); } catch { /* ignore */ }
   if (chrome) {
     try { chrome.kill('SIGTERM'); } catch { /* ignore */ }

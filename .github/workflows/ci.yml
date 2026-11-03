@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  pull_request:
+    branches: [dev, main]
   push:
     branches: [dev, main, "feat/**"]
   workflow_dispatch:
@@ -170,3 +172,55 @@ jobs:
           name: dashboard-${{ matrix.contract }}
           path: artifacts/dashboard
           if-no-files-found: error
+
+  workflow:
+    name: scenario recording and replay in Chrome
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SMOKE_WORKFLOW: "1"
+      DASHBOARD_URL: http://127.0.0.1:8765
+      SMOKE_ARTIFACT_DIR: artifacts/workflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked environments and build dashboard
+        run: |
+          uv sync --frozen
+          npm ci --prefix web
+          npm run build --prefix web
+      - name: Run scenario, save, restart, replay and compare
+        run: node web/tests/dashboard-smoke.mjs
+      - name: Retain workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-workflow
+          path: artifacts/workflow
+          if-no-files-found: error
+
+  container:
+    name: read-only demo container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --build-arg REVISION=${{ github.sha }} -t telemetry-demo .
+      - name: Start read-only demo and check readiness
+        run: |
+          docker run --detach --rm --name telemetry-demo --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 127.0.0.1:8765:8765 telemetry-demo
+          trap 'docker logs telemetry-demo; docker stop telemetry-demo' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8765/healthz > /tmp/health.json; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8765/healthz
+          curl --fail --silent http://127.0.0.1:8765/ > /dev/null

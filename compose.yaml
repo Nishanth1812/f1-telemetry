@@ -1,0 +1,16 @@
+services:
+  demo:
+    build:
+      context: .
+      args:
+        REVISION: ${F1_TELEMETRY_REVISION:-}
+    ports:
+      - "127.0.0.1:8765:8765"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
