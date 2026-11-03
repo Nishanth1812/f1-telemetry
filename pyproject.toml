@@ -3,6 +3,7 @@ name = "f1-telemetry"
 version = "0.1.0"
 description = "F1 Virtual Telemetry Emulator - contracts, codegen and validation harness"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy>=2.2,<2.6",
@@ -18,6 +19,8 @@ dependencies = [
 f1-codegen = "f1telemetry.codegen.__main__:main"
 f1-check-contract = "f1telemetry.codegen.__main__:main_check"
 f1-serve = "f1telemetry.server:main"
+f1-demo = "f1telemetry.demo:main"
+f1-benchmark = "f1telemetry.benchmark:main"
 f1-sweep = "f1telemetry.testing.sweep:main"
 
 [dependency-groups]

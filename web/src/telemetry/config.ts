@@ -2,7 +2,9 @@ export const DEFAULT_WS_URL = 'ws://localhost:8765/ws';
 
 function readEnvUrl(): string {
   const configured = import.meta.env.VITE_TELEMETRY_WS_URL?.trim();
-  return configured === undefined || configured === '' ? DEFAULT_WS_URL : configured;
+  if (configured !== undefined && configured !== '') return configured;
+  if (import.meta.env.DEV) return DEFAULT_WS_URL;
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 }
 
 export const TELEMETRY_WS_URL = readEnvUrl();

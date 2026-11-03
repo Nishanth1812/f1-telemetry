@@ -62,6 +62,7 @@ def _fake_lab(value: object) -> LabRun:
         "request_id": request["request_id"],
         "scenario_id": request["scenario_id"],
         "points": [],
+        "duration_s": 1.0,
     }
     frames = (Frame(0, {"speed": 1.0}), Frame(1_000_000, {"speed": 2.0}))
     return LabRun(result=result, frames=frames, provenance=None)
@@ -106,7 +107,12 @@ async def send_json(ws: ClientConnection, payload: dict[str, object]) -> None:
 
 
 async def receive_json(ws: ClientConnection) -> dict[str, object]:
-    return cast("dict[str, object]", json.loads(await asyncio.wait_for(ws.recv(), _TIMEOUT_S)))
+    while True:
+        message = cast(
+            "dict[str, object]", json.loads(await asyncio.wait_for(ws.recv(), _TIMEOUT_S))
+        )
+        if message.get("type") != "server_info":
+            return message
 
 
 async def receive_reply(ws: ClientConnection) -> dict[str, object]:
@@ -201,7 +207,8 @@ def test_oversized_command_closes_the_socket() -> None:
             ws = await open_viewer(running.server)
             await ws.send("x" * 3_000)
             with pytest.raises(ConnectionClosed) as closed:
-                _ = await asyncio.wait_for(ws.recv(), _TIMEOUT_S)
+                while True:
+                    _ = await asyncio.wait_for(ws.recv(), _TIMEOUT_S)
         return closed.value.rcvd.code if closed.value.rcvd else None
 
     assert asyncio.run(scenario()) == 1009
@@ -433,3 +440,29 @@ def test_metrics_are_json_ready_and_count_what_was_delivered() -> None:
     assert metrics["slow_disconnects"] == 0
     assert metrics["scenario_failures"] == 0
     assert metrics["clients"] == {"active": 1, "detailed": 0}
+
+
+def test_reconnecting_viewer_recovers_the_active_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server_module, "run_lab", _fake_lab)
+
+    async def scenario() -> None:
+        async with serving(DrivenCarSource({"speed": 0.0})) as running:
+            first = await open_viewer(running.server)
+            await send_json(
+                first,
+                {
+                    "type": "scenario_run",
+                    "request_id": "recover",
+                    "scenario_id": "launch",
+                    "setting": 80,
+                },
+            )
+            result = await receive_reply(first)
+            await first.close()
+            async with await open_viewer(running.server) as reconnected:
+                info = json.loads(await asyncio.wait_for(reconnected.recv(), _TIMEOUT_S))
+                assert info["type"] == "server_info"
+                assert info["result"]["request_id"] == result["request_id"]
+                assert 0 <= info["result"]["playback_elapsed_s"] <= 1.0
+
+    asyncio.run(scenario())

@@ -63,6 +63,7 @@ from f1telemetry.testing.scenario_lab import (
     resting_car_values,
     run_lab,
 )
+from f1telemetry.web_site import WebSite
 
 __all__ = [
     "DEFAULT_HOST",
@@ -71,6 +72,7 @@ __all__ = [
     "TelemetryServer",
     "TransportError",
     "main",
+    "serve_forever",
 ]
 
 DEFAULT_HOST = "localhost"
@@ -138,16 +140,22 @@ class TelemetryServer:
         path: str = DEFAULT_PATH,
         max_hz: float = BROADCAST_HZ,
         run_store: RunStore | None = None,
+        web_root: Path | None = None,
+        read_only: bool = False,
+        allowed_origins: Sequence[str] = (),
     ) -> None:
-        if host.lower() not in _LOOPBACK_HOSTS:
+        origins = frozenset(_checked_origin(origin) for origin in allowed_origins)
+        if host.lower() not in _LOOPBACK_HOSTS and not (read_only and origins):
             allowed = ", ".join(sorted(_LOOPBACK_HOSTS))
             raise TransportError(
-                f"refusing to bind {host!r}: this server is loopback-only ({allowed})"
+                f"refusing to bind {host!r}: default is loopback-only ({allowed}); "
+                "public binding requires read-only mode and explicit allowed origins"
             )
         if not 0 <= port <= 65535:
             raise TransportError(f"port must be in 0..65535, got {port}")
         self._source: FrameSource = source
-        self._host: str = host.lower()
+        # One address keeps an ephemeral listener and its reported port on the same socket.
+        self._host: str = "127.0.0.1" if host.lower() == "localhost" else host.lower()
         self._port: int = port
         self._path: str = path
         self._max_hz: float = max_hz
@@ -163,11 +171,17 @@ class TelemetryServer:
         self._send_failures: int = 0
         self._slow_disconnects: int = 0
         self._scenario_failures: int = 0
+        self._read_only: bool = read_only
+        self._allowed_origins: frozenset[str] = origins
+        self._last_result: dict[str, object] | None = None
+        self._playback_started: float = 0.0
+        self._site: WebSite = WebSite(web_root, lambda: self.metrics, read_only=read_only)
 
     @property
     def url(self) -> str:
         """The endpoint to point ``VITE_TELEMETRY_WS_URL`` at."""
-        return f"ws://{self._host}:{self._port}{self._path}"
+        host = f"[{self._host}]" if ":" in self._host else self._host
+        return f"ws://{host}:{self._port}{self._path}"
 
     @property
     def client_count(self) -> int:
@@ -214,6 +228,7 @@ class TelemetryServer:
                 self._port,
                 compression=None,
                 max_size=_MAX_COMMAND_BYTES,
+                process_request=self._site.process_request,
             ) as server:
                 self._port = _bound_port(server, self._port)
                 self._ready = True
@@ -358,13 +373,25 @@ class TelemetryServer:
         if request is not None and request.path != self._path:
             await connection.close(code=1008, reason=f"this endpoint serves {self._path}")
             return
-        if request is not None and not _loopback_origin(request.headers.get("Origin")):
+        origin = request.headers.get("Origin") if request is not None else None
+        origin_allowed = (
+            (origin is None or origin in self._allowed_origins)
+            if self._allowed_origins
+            else _loopback_origin(origin)
+        )
+        if not origin_allowed:
             await connection.close(code=1008, reason="browser origin must be localhost")
             return
         viewer = self._attach(connection)
+        self._reply(
+            viewer,
+            {"type": "server_info", "read_only": self._read_only, "result": self._current_result()},
+        )
         try:
             async for message in connection:
                 await self._handle_command(viewer, message)
+        except ConnectionClosed:
+            pass
         finally:
             self._drop(viewer)
             if viewer.sender is not None:
@@ -384,6 +411,21 @@ class TelemetryServer:
             self._reply_error(viewer, None, "Request must be a JSON object.")
             return
         kind = request.get("type")
+        if self._read_only and kind != "telemetry_detail":
+            if (
+                kind == "runs_list"
+                and set(request) == {"type", "request_id"}
+                and _echo_id(request.get("request_id")) is not None
+            ):
+                self._reply(
+                    viewer,
+                    {"type": "runs_list_result", "request_id": request["request_id"], "runs": []},
+                )
+            else:
+                self._reply_error(
+                    viewer, request.get("request_id"), "This is a read-only recorded demo."
+                )
+            return
         if kind == "telemetry_detail":
             if set(request) != {"type", "enabled"} or not isinstance(request.get("enabled"), bool):
                 self._reply_error(viewer, None, "Invalid telemetry detail setting.")
@@ -409,7 +451,7 @@ class TelemetryServer:
                 result = lab_run.result
                 if self._run_store is not None:
                     result = await asyncio.to_thread(self._run_store.save, lab_run)
-                car.start_run(lab_run.frames)
+                self._start_playback(car, lab_run.frames, result)
         except ScenarioLabError as error:
             self._fail_scenario(viewer, request_id, str(error))
         except RunStoreError:
@@ -422,8 +464,6 @@ class TelemetryServer:
             self._fail_scenario(
                 viewer, request_id, "The run failed. Check that the server is still running."
             )
-        else:
-            self._reply(viewer, result)
 
     async def _run_replay(self, viewer: _Viewer, request: dict[object, object]) -> None:
         """Load a saved run and play its original frames on the car."""
@@ -439,14 +479,31 @@ class TelemetryServer:
             car = self._free_car()
             async with self._scenario_lock:
                 lab_run = await asyncio.to_thread(store.load, run_id)
-                car.start_run(lab_run.frames)
+                self._start_playback(
+                    car, lab_run.frames, {**lab_run.result, "request_id": checked_id}
+                )
         except (ScenarioLabError, RunStoreError) as error:
             self._fail_scenario(viewer, request_id, str(error))
         except Exception:
             _LOGGER.exception("Saved run could not be replayed")
             self._fail_scenario(viewer, request_id, "The saved run could not be replayed.")
-        else:
-            self._reply(viewer, {**lab_run.result, "request_id": checked_id})
+
+    def _start_playback(
+        self, car: DrivenCarSource, frames: tuple[Frame, ...], result: dict[str, object]
+    ) -> None:
+        car.start_run(frames)
+        self._last_result = result
+        self._playback_started = asyncio.get_running_loop().time()
+        for viewer in tuple(self._viewers.values()):
+            self._reply(viewer, result)
+
+    def _current_result(self) -> dict[str, object] | None:
+        if self._last_result is None:
+            return None
+        value = self._last_result.get("duration_s", 0.0)
+        duration = float(value) if isinstance(value, (int, float)) else 0.0
+        elapsed = asyncio.get_running_loop().time() - self._playback_started
+        return {**self._last_result, "playback_elapsed_s": min(elapsed, float(duration))}
 
     async def _runs_list(self, viewer: _Viewer, request: dict[object, object]) -> None:
         """Summaries of every saved run, read off the event loop."""
@@ -530,6 +587,8 @@ async def _close_quietly(connection: ServerConnection, code: int, reason: str) -
 def _source_state(source: FrameSource) -> dict[str, object]:
     if isinstance(source, DrivenCarSource):
         return {"kind": "simulated_car", "running": source.running}
+    if isinstance(getattr(source, "source", None), ReplaySource):
+        return {"kind": "looping_replay"}
     return {"kind": "replay" if isinstance(source, ReplaySource) else "synthetic"}
 
 
@@ -555,6 +614,25 @@ def _bound_port(server: Server, fallback: int) -> int:
     if not sockets:
         return fallback
     return int(sockets[0].getsockname()[1])
+
+
+def _checked_origin(origin: str) -> str:
+    parsed = urlsplit(origin)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise TransportError(f"Invalid allowed origin: {origin}") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise TransportError(f"Allowed origin must be an exact http(s) origin: {origin}")
+    return f"{parsed.scheme}://{parsed.netloc.lower()}"
 
 
 def _loopback_origin(origin: str | None) -> bool:
@@ -614,6 +692,13 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="directory where scenario runs are saved (simulated car only)",
     )
     _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
+    _ = parser.add_argument("--web-root", type=Path, help="built dashboard directory")
+    _ = parser.add_argument(
+        "--read-only", action="store_true", help="disable simulation and saved-run control"
+    )
+    _ = parser.add_argument(
+        "--allowed-origin", action="append", default=[], help="exact permitted browser origin"
+    )
     _ = parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help="TCP port, 0 to auto-pick"
     )
@@ -623,7 +708,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def _serve_forever(server: TelemetryServer) -> None:
+async def serve_forever(server: TelemetryServer) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for name in ("SIGINT", "SIGTERM"):
@@ -668,6 +753,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         path=args.path,
         max_hz=args.hz,
         run_store=run_store,
+        web_root=args.web_root,
+        read_only=args.read_only,
+        allowed_origins=args.allowed_origin,
     )
     if isinstance(source, SyntheticSource):
         print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
@@ -683,7 +771,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"({len(source.annotations)} saved fault annotations)"
         )
     try:
-        asyncio.run(_serve_forever(server))
+        asyncio.run(serve_forever(server))
     except KeyboardInterrupt:
         # Not reachable where add_signal_handler works; needed on Windows consoles.
         server.stop()

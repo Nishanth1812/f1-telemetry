@@ -39,4 +39,17 @@ serve *ARGS:
 dev:
     npm --prefix web run dev
 
-check: lint type test codegen-check web-build
+web-test:
+    node --test web/tests/telemetry.test.mjs
+
+check: lint type test codegen-check web-test web-build
+
+# One origin serves the built dashboard and its WebSocket.
+lab: web-build
+    uv run --frozen f1-serve --web-root web/dist
+
+demo: web-build
+    uv run --frozen f1-demo
+
+benchmark *ARGS:
+    uv run --frozen f1-benchmark {{ARGS}}
