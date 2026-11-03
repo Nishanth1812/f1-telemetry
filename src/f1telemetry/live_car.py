@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import Final
 
 from f1telemetry.synthetic import BROADCAST_HZ, Frame
@@ -56,7 +57,8 @@ class DrivenCarSource:
                 samples = self._advance_to(target)
                 self._emitted_us = target
                 self._now_us = target
-                yield Frame(target, dict(self._latest), samples=samples)
+                events = tuple(event for sample in samples for event in sample.events)
+                yield Frame(target, dict(self._latest), events=events, samples=samples)
             target += tick_us
 
     def _advance_to(self, limit_us: int) -> tuple[Frame, ...]:
@@ -72,7 +74,15 @@ class DrivenCarSource:
             frame = run[cursor]
             channels = frame.channels
             latest.update(channels)
-            due.append(Frame(origin + frame.time_us, dict(channels)))
+            due.append(
+                Frame(
+                    origin + frame.time_us,
+                    dict(channels),
+                    events=tuple(
+                        replace(event, time_us=origin + event.time_us) for event in frame.events
+                    ),
+                )
+            )
             cursor += 1
         self._cursor = cursor
         if due:

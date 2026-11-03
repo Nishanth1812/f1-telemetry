@@ -67,11 +67,11 @@ def test_runs_only_the_selected_bounded_adjustment(
         "braking": _plan("braking"),
         "steady_state_circle": _plan("steady_state_circle"),
     }
-    monkeypatch.setattr(
-        scenario_lab,
-        "load_car_spec",
-        lambda: SimpleNamespace(kernel_config=lambda: object()),
-    )
+
+    def fake_spec(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(kernel_config=lambda: object())
+
+    monkeypatch.setattr(scenario_lab, "load_car_spec", fake_spec)
     monkeypatch.setattr(scenario_lab, "build_scenarios", lambda _config: plans)  # pyright: ignore[reportUnknownLambdaType]
     captured: dict[str, scenarios.Scenario] = {}
 
@@ -110,3 +110,16 @@ def test_runs_only_the_selected_bounded_adjustment(
     assert captured["plan"].name == scenario_name
     actual = captured["plan"].segments[segment_index]
     assert getattr(actual, field) == pytest.approx(expected)
+
+
+def test_nonfinite_simulation_output_is_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_run(*_args: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            record=SimpleNamespace(frames=(SensorFrame(0.0, {"speed": float("nan")}),))
+        )
+
+    monkeypatch.setattr(scenario_lab, "run_headless", broken_run)
+    with pytest.raises(scenario_lab.ScenarioLabError, match="non-finite"):
+        scenario_lab.run_lab_request(
+            {"type": "scenario_run", "request_id": "finite", "scenario_id": "launch", "setting": 80}
+        )

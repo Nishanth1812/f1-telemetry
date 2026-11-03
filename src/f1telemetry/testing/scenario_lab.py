@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import re
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Final
 
-from f1telemetry.contracts.car_spec import load_car_spec
+from f1telemetry.contracts.car_spec import car_spec_path, load_car_spec
+from f1telemetry.contracts.channels import channels_yaml_path, repo_root
 from f1telemetry.synthetic import Frame
 from f1telemetry.testing.headless import run_headless
 from f1telemetry.testing.scenarios import Scenario, ScenarioRun, build_scenarios
@@ -17,6 +21,10 @@ __all__ = ["LabRun", "ScenarioLabError", "resting_car_values", "run_lab", "run_l
 
 _REQUEST_ID: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _POINT_LIMIT: Final[int] = 120
+#: Bump when the scenario catalogue or its tuning changes, so saved runs say which catalogue ran.
+SCENARIO_LAB_VERSION: Final[str] = "1"
+#: Build-supplied revision for artifacts without a git checkout; never guessed here.
+REVISION_ENV: Final[str] = "F1_TELEMETRY_REVISION"
 _SCENARIOS: Final[dict[str, tuple[str, str, str, float, float]]] = {
     "launch": (
         "accelerate_to_speed",
@@ -46,6 +54,8 @@ class LabRun:
 
     result: dict[str, object]
     frames: tuple[Frame, ...]
+    #: Configuration and code state resolved by :func:`run_lab`; ``None`` for hand-built runs.
+    provenance: dict[str, object] | None = None
 
 
 def _read_request(value: object) -> tuple[str, str, float]:
@@ -125,13 +135,62 @@ def run_lab_request(value: object) -> dict[str, object]:
     return run_lab(value).result
 
 
+def _snapshot(data: bytes) -> dict[str, object]:
+    return {"sha256": hashlib.sha256(data).hexdigest(), "text": data.decode("utf-8")}
+
+
+def _git(*args: str) -> str | None:
+    try:
+        done = subprocess.run(
+            ["git", *args], cwd=repo_root(), capture_output=True, text=True, check=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip()
+
+
+def _code_provenance() -> dict[str, object]:
+    """The code state a run came from. Unknown stays ``None``; a revision is never invented."""
+    supplied = os.environ.get(REVISION_ENV, "").strip()
+    if supplied:
+        return {"revision": supplied, "source": "build_env", "dirty": None}
+    revision = _git("rev-parse", "HEAD")
+    if revision is None:
+        return {"revision": None, "source": "unknown", "dirty": None}
+    # A clean tree still is not proof of a published source; this only says what the checkout held.
+    status = _git("status", "--porcelain")
+    return {
+        "revision": revision,
+        "source": "git",
+        "dirty": None if status is None else status != "",
+    }
+
+
 def run_lab(value: object) -> LabRun:
     """Like :func:`run_lab_request`, but keep the run's frames so the car can be shown driving."""
     request_id, scenario_id, setting = _read_request(value)
-    config = load_car_spec().kernel_config()
+    spec_bytes = car_spec_path().read_bytes()
+    channel_bytes = channels_yaml_path().read_bytes()
+    provenance: dict[str, object] = {
+        "scenario": {
+            "id": scenario_id,
+            "version": SCENARIO_LAB_VERSION,
+            # The lab's physics reads no random source, so there is no seed to record.
+            "seed": None,
+        },
+        "request": {"scenario_id": scenario_id, "setting": setting},
+        "car_spec": _snapshot(spec_bytes),
+        "channels": _snapshot(channel_bytes),
+        "code": _code_provenance(),
+    }
+    config = load_car_spec(content=spec_bytes).kernel_config()
     _, label, setting_name, _, _ = _SCENARIOS[scenario_id]
     plan = _tuned_plan(build_scenarios(config), scenario_id, setting)
     run = run_headless(config, plan)
+    if any(
+        not math.isfinite(value) for frame in run.record.frames for value in frame.values.values()
+    ):
+        raise ScenarioLabError("The scenario produced a non-finite sensor value.")
     points = _result_points(run)
     if not points:
         raise ScenarioLabError("The scenario produced no samples.")
@@ -159,11 +218,11 @@ def run_lab(value: object) -> LabRun:
     playback = tuple(
         Frame(
             round(frame.t_s * 1_000_000),
-            {name: float(number) for name, number in frame.values.items() if math.isfinite(number)},
+            {name: float(number) for name, number in frame.values.items()},
         )
         for frame in frames
     )
-    return LabRun(result, playback)
+    return LabRun(result, playback, provenance)
 
 
 def resting_car_values() -> dict[str, float]:

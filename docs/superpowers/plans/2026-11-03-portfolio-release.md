@@ -115,3 +115,14 @@ Ruling: execute the approved six-milestone scope without another plan approval r
 the user's explicit request to complete it supplies implementation authorization.
 Work in place because no isolated-worktree preference was supplied, preserving all
 unrelated edits. Haiku workers execute one implementation task at a time.
+
+### Milestones
+
+- `23193eb`: scope and plan recorded.
+- `4af7d39`: Apache 2.0 selected by the user; code license and retained track notices.
+- `3e6acc8`: architecture and calibration limits; provenance audit empty, 169 car-spec tests passed.
+- Benchmark implementation has five passing focused tests, clean lint/types; representative results wait for final transport.
+- Task 1 worker delivered 26 storage tests. Coordinator added failure-first regression cases for invalid timestamps and snapshot consistency, and fixed both at their owning boundaries. Combined focused run: 86 passed.
+- Ruling: keep the strict legacy RunManifest unchanged. Scenario provenance records seed/revision as null when absent; inventing a seed or revision to fit the older manifest would make the evidence false. This is a task-plan deviation that preserves the design's honesty requirement.
+- Independent Haiku storage review completed. Fixed invalid output filtering, directory creation error wrapping, non-finite JSON/frame loading, snapshot consistency and event retention. Retained explicit named corruption errors rather than silently skipping files; this keeps listing failures visible and the existing list API stable. Deployment will include contracts in the source/container layout.
+- Storage/config regression: 251 passed; storage/live-event targeted suite: 48 passed; affected types clean. Original frame events now survive persistence and the rebased live timeline.

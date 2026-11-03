@@ -1237,11 +1237,12 @@ def _deployment_curve(entries: Any, where: str) -> DeploymentCurve:
     return DeploymentCurve(speed_km_h=tuple(speeds), limit_kw=tuple(limits))
 
 
-def load_car_spec(path: Path | None = None) -> CarSpec:
+def load_car_spec(path: Path | None = None, *, content: bytes | None = None) -> CarSpec:
+    """Validate a file, or the exact captured bytes used to record a run's provenance."""
     source = car_spec_path() if path is None else Path(path)
-    if not source.is_file():
+    if content is None and not source.is_file():
         raise ContractError(f"car spec not found: {source}")
-    root = yaml.safe_load(source.read_text(encoding="utf-8"))
+    root = yaml.safe_load(source.read_bytes() if content is None else content)
     if not isinstance(root, Mapping):
         raise ContractError(f"{source}: expected a top-level mapping")
 
