@@ -51,9 +51,9 @@ export function TestControls() {
   const run = useLabStore((state) => state.run);
 
   const scenario = SCENARIO_BY_ID[scenarioId];
-  const result = useLabStore((state) => state.result);
+  const playbackDurationS = useLabStore((state) => state.playbackDurationS);
   // The drive is as long as the run that was just played, whatever test is selected now.
-  const durationS = result?.duration_s ?? APPROX_DURATION_S[scenarioId];
+  const durationS = playbackDurationS ?? APPROX_DURATION_S[scenarioId];
   const nowMs = useDriveClock(startedAtMs, durationS);
 
   const elapsedS =
@@ -71,7 +71,7 @@ export function TestControls() {
   } else if (readOnly) {
     chip = 'Recorded demo · read-only';
     chipTone = 'ready';
-  } else if (running && startedAtMs === null) {
+  } else if (running) {
     chip = 'Simulating the run…';
     chipTone = 'busy';
   } else if (driving) {
@@ -89,7 +89,7 @@ export function TestControls() {
     <section className="testlab" aria-labelledby="testlab-title">
       <div className="testlab__head">
         <div className="testlab__heading">
-          <h2 id="testlab-title">Virtual test</h2>
+          <h2 id="testlab-title">{readOnly ? 'Recorded demo' : 'Virtual test'}</h2>
           <p className="testlab__detail">{scenario.detail}</p>
         </div>
         <span className={`testlab__chip testlab__chip--${chipTone}`} role="status" aria-live="polite">
@@ -99,7 +99,7 @@ export function TestControls() {
 
       {readOnly ? <p className="testlab__hint">This demo loops a saved launch. Run the project locally to record and compare your own tests.</p> : null}
 
-      <div className="testlab__bar">
+      {!readOnly ? <div className="testlab__bar">
         <div className="testlab__scenarios" role="group" aria-label="Choose a test">
           {SCENARIOS.map((item) => (
             <button
@@ -138,9 +138,9 @@ export function TestControls() {
         >
           {running ? 'Running…' : 'Run test'}
         </button>
-      </div>
+      </div> : null}
 
-      {driving ? (
+      {driving && !readOnly ? (
         <div className="testlab__progress" aria-hidden="true">
           <span className="testlab__progress-fill" style={{ width: `${progressPct}%` }} />
         </div>

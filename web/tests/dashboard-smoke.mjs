@@ -22,6 +22,7 @@ const WINDOW_MS = 20_000;
 const TOLERANCE = 0.05;
 const workflowModule = process.env.SMOKE_WORKFLOW === '1' ? await import('./dashboard-workflow.mjs') : null;
 const workflowServer = workflowModule ? await workflowModule.startWorkflowServer() : null;
+const readOnlyDemo = process.env.SMOKE_READONLY === '1';
 const recordVideo = process.env.SMOKE_VIDEO === '1';
 const videoFrames = [];
 const videoDirectory = resolvePath(ARTIFACT_DIR, 'video-frames');
@@ -192,7 +193,12 @@ try {
   let rates = {};
   let elapsed = 0;
   let workflow = null;
-  if (workflowModule) {
+  if (readOnlyDemo) {
+    const mode = await evalJson(`JSON.stringify({ disabled: document.querySelector('.testlab__run') === null || document.querySelector('.testlab__run').disabled, label: document.querySelector('.testlab__chip')?.textContent })`);
+    assert.equal(mode.disabled, true, 'read-only controls must be disabled');
+    assert.ok(mode.label.includes('read-only'), 'read-only mode must be explained');
+    await sleep(3000);
+  } else if (workflowModule) {
     if (recordVideo) await cdpCall('Page.startScreencast', { format: 'jpeg', quality: 75, maxWidth: 1440, maxHeight: 1080, everyNthFrame: 3 });
     workflow = await workflowModule.runWorkflow({ cdpCall, evalJson, server: workflowServer });
     if (recordVideo) {
@@ -279,6 +285,9 @@ try {
   mkdirSync(ARTIFACT_DIR, { recursive: true });
   const shot = await cdpCall('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, 15_000);
   writeFileSync(resolvePath(ARTIFACT_DIR, 'dashboard-smoke.png'), Buffer.from(shot.data, 'base64'));
+  await cdpCall('Runtime.evaluate', { expression: 'window.scrollTo(0, 0)' });
+  const overview = await cdpCall('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, 15_000);
+  writeFileSync(resolvePath(ARTIFACT_DIR, 'dashboard-overview.png'), Buffer.from(overview.data, 'base64'));
 
   let revision = process.env.GITHUB_SHA ?? null;
   if (!revision) {
@@ -287,10 +296,10 @@ try {
   writeFileSync(resolvePath(ARTIFACT_DIR, 'dashboard-smoke.json'), `${JSON.stringify({
     revision, url: DASHBOARD_URL, measuredAt: new Date().toISOString(),
     elapsedSeconds: +elapsed.toFixed(3), toleranceRelative: TOLERANCE,
-    expectedRateChange: edited, channels: rates, workflow,
+    expectedRateChange: edited, channels: rates, workflow, readOnlyDemo,
     malformedUiCount: end.m ? 1 : 0, runtimeExceptions: cdpState.exceptions, pass: true,
   }, null, 2)}\n`);
-  console.log(workflow
+  console.log(readOnlyDemo ? `read-only browser demo: PASS (${revision})` : workflow
     ? `dashboard workflow: PASS (scenario, saved restart/replay, comparison, ${revision})`
     : `dashboard smoke: PASS (${Object.keys(rates).length} channels, ${elapsed.toFixed(1)} s, ${revision})`);
 } catch (err) {

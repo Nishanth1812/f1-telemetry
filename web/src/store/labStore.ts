@@ -19,6 +19,7 @@ export interface LabState {
   error: string | null;
   /** performance.now() when the run reply arrived; the live car starts driving then. */
   startedAtMs: number | null;
+  playbackDurationS: number | null;
   chooseScenario: (next: LabScenarioId) => void;
   setSetting: (value: number) => void;
   run: () => Promise<void>;
@@ -33,7 +34,7 @@ export interface LabState {
 
 async function playRun(request: () => Promise<ScenarioResult>): Promise<void> {
   if (useLabStore.getState().running) return;
-  useLabStore.setState({ running: true, error: null, startedAtMs: null });
+  useLabStore.setState({ running: true, error: null });
   try {
     const result = await request();
     useLabStore.getState().receiveResult(result);
@@ -53,6 +54,7 @@ export const useLabStore = create<LabState>((set, get) => ({
   lastRuns: {},
   error: null,
   startedAtMs: null,
+  playbackDurationS: null,
   savedRuns: [],
   loadingSaved: false,
   readOnly: false,
@@ -65,6 +67,7 @@ export const useLabStore = create<LabState>((set, get) => ({
       lastRuns: { ...state.lastRuns, [result.scenario_id]: result },
       result, scenarioId: result.scenario_id, setting: result.setting, error: null,
       startedAtMs: performance.now() - (result.playback_elapsed_s ?? 0) * 1000,
+      playbackDurationS: result.duration_s,
       savedRuns: result.run_id === undefined || state.savedRuns.some((run) => run.run_id === result.run_id)
         ? state.savedRuns : [result, ...state.savedRuns],
     }));

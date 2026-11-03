@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 import tempfile
 from collections.abc import Iterator, Sequence
@@ -64,7 +65,10 @@ class LoopingReplaySource:
             )
             self._now_us = rebased.time_us
             yield rebased
-        self._now_us = self._offset_us + self.source.now_us
+        if self.source.exhausted:
+            self._now_us += math.ceil(1_000_000 / max_hz)
+        else:
+            self._now_us = self._offset_us + self.source.now_us
 
 
 def main(argv: Sequence[str] | None = None) -> int:

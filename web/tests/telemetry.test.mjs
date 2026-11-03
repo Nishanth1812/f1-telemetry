@@ -88,6 +88,13 @@ test('recovered playback restores the result and preserves saved order', () => {
   assert.ok(performance.now() - useLabStore.getState().startedAtMs >= 3000);
 });
 
+test('a rejected replay keeps the existing playback clock', async () => {
+  useLabStore.setState({ startedAtMs: 100, running: false });
+  await useLabStore.getState().replaySaved('a'.repeat(32));
+  assert.equal(useLabStore.getState().startedAtMs, 100);
+  assert.match(useLabStore.getState().error, /Connect/);
+});
+
 test('saved-run requests correlate replies and reject pending work on disconnect', async () => {
   const original = globalThis.WebSocket;
   class FakeSocket {

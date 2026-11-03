@@ -1,3 +1,4 @@
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ def test_demo_loops_without_rewinding_the_wire_clock(tmp_path: Path) -> None:
     assert len(deliveries) >= 8
     times = [frame.time_us for frame in deliveries]
     assert times == sorted(set(times))
+    assert max(b - a for a, b in pairwise(times)) < 200_000
     assert sum(frame.channels["speed"] == 2.0 for frame in deliveries) >= 4
 
 
