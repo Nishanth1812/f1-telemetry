@@ -15,6 +15,10 @@ Design constraints this file honours:
   a frame, and each sleep targets an absolute deadline computed from the frame's own
   simulated timestamp, so a slow tick does not accumulate drift - it just sends the
   next frames back to back until it catches up.
+* **Bounded, isolated delivery.** The pump never awaits a socket. Each viewer has its
+  own bounded queue and sender task. A viewer whose queue overflows, or whose send
+  stalls, is disconnected rather than silently skipped, so no sample or event is lost
+  for a viewer that stays connected, and a slow viewer cannot hold up the others.
 * **Clean shutdown.** :meth:`TelemetryServer.run` returns when its stop event is set;
   the ``serve`` context manager closes the listening socket and every open connection
   on the way out, and clients mid-frame are closed rather than left hanging. SIGINT
@@ -39,6 +43,7 @@ import json
 import logging
 import signal
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, override
 from urllib.parse import urlsplit
@@ -48,10 +53,16 @@ from websockets.exceptions import ConnectionClosed
 
 from f1telemetry.contracts.channels import load_channel_contract
 from f1telemetry.live_car import DrivenCarSource
+from f1telemetry.runs import RunStore, RunStoreError
 from f1telemetry.synthetic import BROADCAST_HZ, Frame, SyntheticSource
 from f1telemetry.telemetry.pipeline import read_annotations
 from f1telemetry.testing.replay import ReplaySource
-from f1telemetry.testing.scenario_lab import ScenarioLabError, resting_car_values, run_lab
+from f1telemetry.testing.scenario_lab import (
+    _REQUEST_ID,  # pyright: ignore[reportPrivateUsage]
+    ScenarioLabError,
+    resting_car_values,
+    run_lab,
+)
 
 __all__ = [
     "DEFAULT_HOST",
@@ -70,6 +81,14 @@ _CHUNK_US = 1_000_000
 """Simulated microseconds pulled from the source per pass. Bounds generator lag only."""
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"})
 _MAX_COMMAND_BYTES = 2_048
+_QUEUE_LIMIT = 64
+"""Messages a viewer may have waiting. Overflow disconnects that viewer; nothing is skipped."""
+_SEND_TIMEOUT_S = 2.0
+"""A send still pending after this long marks its viewer as stalled and disconnects it."""
+_CLOSE_TIMEOUT_S = 2.0
+_DRAIN_TIMEOUT_S = 5.0
+"""How long a finished source waits for viewers to take their final queued messages."""
+_SLOW_CLOSE = (1013, "viewer fell behind the live stream; reconnect to resume")
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -86,8 +105,18 @@ class FrameSource(Protocol):
     def iter_frames(self, duration_us: int, *, max_hz: float) -> Iterator[Frame]: ...
 
 
+@dataclass(eq=False)
+class _Viewer:
+    """One connected dashboard: its socket, its bounded output queue and the task sending it."""
+
+    connection: ServerConnection
+    queue: asyncio.Queue[str]
+    detailed: bool = False
+    sender: asyncio.Task[None] | None = None
+
+
 class TelemetryServer:
-    """Fan-out of synthetic frames to every connected dashboard.
+    """Fan-out of source frames to every connected dashboard, one bounded queue per viewer.
 
     Args:
         source: the frame iterator's owner. One source per server; it holds the
@@ -96,6 +125,8 @@ class TelemetryServer:
         port: TCP port, 0 to let the OS pick (useful in tests).
         path: the single accepted URL path; anything else is closed with 1008.
         max_hz: upper bound on delivery rate, applied by the source's aggregation.
+        run_store: where successful scenario runs are saved before they play; ``None``
+            serves without saved runs.
     """
 
     def __init__(
@@ -106,6 +137,7 @@ class TelemetryServer:
         port: int = DEFAULT_PORT,
         path: str = DEFAULT_PATH,
         max_hz: float = BROADCAST_HZ,
+        run_store: RunStore | None = None,
     ) -> None:
         if host.lower() not in _LOOPBACK_HOSTS:
             allowed = ", ".join(sorted(_LOOPBACK_HOSTS))
@@ -119,10 +151,18 @@ class TelemetryServer:
         self._port: int = port
         self._path: str = path
         self._max_hz: float = max_hz
-        self._clients: set[ServerConnection] = set()
-        self._detailed_clients: set[ServerConnection] = set()
+        self._run_store: RunStore | None = run_store
+        self._viewers: dict[ServerConnection, _Viewer] = {}
+        self._closing: set[asyncio.Task[None]] = set()
         self._stop: asyncio.Event | None = None
+        self._ready: bool = False
         self._scenario_lock: asyncio.Lock = asyncio.Lock()
+        self._frames_produced: int = 0
+        self._messages_sent: int = 0
+        self._bytes_sent: int = 0
+        self._send_failures: int = 0
+        self._slow_disconnects: int = 0
+        self._scenario_failures: int = 0
 
     @property
     def url(self) -> str:
@@ -131,7 +171,28 @@ class TelemetryServer:
 
     @property
     def client_count(self) -> int:
-        return len(self._clients)
+        return len(self._viewers)
+
+    @property
+    def ready(self) -> bool:
+        """True from the moment the listening socket accepts connections until shutdown."""
+        return self._ready
+
+    @property
+    def metrics(self) -> dict[str, object]:
+        """JSON-ready counters for operators: fixed keys, plain integers and booleans."""
+        detailed = sum(1 for viewer in self._viewers.values() if viewer.detailed)
+        return {
+            "ready": self._ready,
+            "clients": {"active": len(self._viewers), "detailed": detailed},
+            "frames_produced": self._frames_produced,
+            "messages_sent": self._messages_sent,
+            "bytes_sent": self._bytes_sent,
+            "send_failures": self._send_failures,
+            "slow_disconnects": self._slow_disconnects,
+            "scenario_failures": self._scenario_failures,
+            "source": _source_state(self._source),
+        }
 
     def stop(self) -> None:
         """Ask :meth:`run` to finish: no new frames, socket released."""
@@ -155,8 +216,12 @@ class TelemetryServer:
                 max_size=_MAX_COMMAND_BYTES,
             ) as server:
                 self._port = _bound_port(server, self._port)
+                self._ready = True
                 await self._pump(loop)
+                # Close viewers before serve() exits, so its handler wait cannot outlast them.
+                await self._close_clients()
         finally:
+            self._ready = False
             self._stop = None
             await self._close_clients()
 
@@ -173,15 +238,21 @@ class TelemetryServer:
             for frame in self._source.iter_frames(_CHUNK_US, max_hz=self._max_hz):
                 if self._stop_set():
                     return
-                emitted = True
-                await self._broadcast(frame)
+                # Wait for the frame's own deadline first, so it is sent when due, not before.
                 delay = (start + frame.time_us / 1_000_000) - loop.time()
-                if delay <= 0:
-                    continue
-                assert self._stop is not None
-                with contextlib.suppress(TimeoutError):
-                    _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                if delay > 0:
+                    assert self._stop is not None
+                    with contextlib.suppress(TimeoutError):
+                        _ = await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                    if self._stop_set():
+                        return
+                else:
+                    # Behind schedule: yield so viewer senders run during a catch-up burst.
+                    await asyncio.sleep(0)
+                emitted = True
+                self._broadcast(frame)
             if not emitted and getattr(self._source, "exhausted", False):
+                await self._drain_viewers()
                 return
             if not emitted:
                 delay = (start + self._source.now_us / 1_000_000) - loop.time()
@@ -192,50 +263,94 @@ class TelemetryServer:
     def _stop_set(self) -> bool:
         return self._stop is not None and self._stop.is_set()
 
-    async def _broadcast(self, frame: Frame) -> None:
-        """Send one frame to every client, dropping any whose socket has failed.
+    def _broadcast(self, frame: Frame) -> None:
+        """Queue one frame for every viewer. Never awaits a socket; senders do the sending.
 
-        The fan-out is driven by which payloads somebody will actually receive: the
-        detailed snapshot is encoded only when a detailed client is connected, and the
-        snapshot-only payload only when a summary client is - so the 30 Hz pump pays for
-        at most one encode per distinct shape per frame instead of always serialising the
-        snapshot. The client set is read once into a frozen pass, so a connection that
-        arrives or drops while the sends are in flight cannot change who this frame went
-        to; a send that fails removes that one connection for the next frame.
+        The detailed snapshot is encoded only when a detailed viewer is connected, and the
+        snapshot-only payload only when a summary viewer is - so the pump pays for at most
+        one encode per distinct shape per frame. The viewer set is read once into a
+        snapshot, so a viewer that arrives or drops mid-frame cannot change who this frame
+        was queued for.
         """
-        targets = tuple(self._clients)
-        if not targets:
-            return
-        detailed = self._detailed_clients
-        deliveries: list[tuple[ServerConnection, str]] = []
+        self._frames_produced += 1
+        viewers = tuple(self._viewers.values())
+        detailed = [viewer for viewer in viewers if viewer.detailed]
+        summary = [viewer for viewer in viewers if not viewer.detailed]
         # allow_nan=False is a third guard: json would happily emit the invalid token
         # NaN, which the browser's JSON.parse rejects and the store counts as
         # malformed. Fail here instead of shipping a frame nobody can decode.
-        detailed_targets = tuple(connection for connection in targets if connection in detailed)
-        if detailed_targets:
+        if detailed:
             detailed_payload = _encode(frame.to_wire())
-            deliveries.extend((connection, detailed_payload) for connection in detailed_targets)
-        summary_targets = tuple(connection for connection in targets if connection not in detailed)
-        if summary_targets:
+            for viewer in detailed:
+                self._enqueue(viewer, detailed_payload)
+        if summary:
             snapshot_payload = _encode(frame.to_wire(include_samples=False))
-            deliveries.extend((connection, snapshot_payload) for connection in summary_targets)
-        if len(deliveries) == 1:
-            # The common single-dashboard case: no gather task, no result tuple.
-            connection, payload = deliveries[0]
-            try:
-                await connection.send(payload)
-            except Exception:
-                # A failed socket is dropped for the next frame, exactly as the
-                # multi-client gather below does with a returned exception.
-                self._clients.discard(connection)
+            for viewer in summary:
+                self._enqueue(viewer, snapshot_payload)
+
+    def _attach(self, connection: ServerConnection) -> _Viewer:
+        """Register an accepted viewer and start the task that sends its queue in order."""
+        viewer = _Viewer(connection, asyncio.Queue[str](_QUEUE_LIMIT))
+        self._viewers[connection] = viewer
+        viewer.sender = asyncio.get_running_loop().create_task(self._send_loop(viewer))
+        return viewer
+
+    def _enqueue(self, viewer: _Viewer, payload: str) -> None:
+        """Queue one payload for one viewer; a full queue disconnects that viewer."""
+        if self._viewers.get(viewer.connection) is not viewer:
             return
-        results = await asyncio.gather(
-            *(connection.send(payload) for connection, payload in deliveries),
-            return_exceptions=True,
-        )
-        for (connection, _payload), result in zip(deliveries, results, strict=True):
-            if isinstance(result, BaseException):
-                self._clients.discard(connection)
+        try:
+            viewer.queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            self._slow_disconnects += 1
+            self._drop(viewer, _SLOW_CLOSE)
+
+    async def _send_loop(self, viewer: _Viewer) -> None:
+        """Send one viewer's queue in order. A stalled or failed send removes only that viewer."""
+        while True:
+            payload = await viewer.queue.get()
+            try:
+                await asyncio.wait_for(viewer.connection.send(payload), _SEND_TIMEOUT_S)
+            except TimeoutError:
+                self._slow_disconnects += 1
+                self._drop(viewer, _SLOW_CLOSE)
+                return
+            except Exception:
+                self._send_failures += 1
+                self._drop(viewer)
+                return
+            else:
+                self._messages_sent += 1
+                self._bytes_sent += len(payload)
+            finally:
+                viewer.queue.task_done()
+
+    def _drop(self, viewer: _Viewer, close: tuple[int, str] | None = None) -> None:
+        """Stop delivering to one viewer, discard what it has not taken, and optionally close it."""
+        if self._viewers.get(viewer.connection) is viewer:
+            del self._viewers[viewer.connection]
+        _discard_pending(viewer.queue)
+        sender = viewer.sender
+        if sender is not None and sender is not asyncio.current_task():
+            _ = sender.cancel()
+        if close is not None:
+            task = asyncio.get_running_loop().create_task(_close_quietly(viewer.connection, *close))
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
+
+    async def _drain_viewers(self) -> None:
+        """Let each viewer take what is already queued before a finished source is torn down."""
+        waiters = {
+            viewer: asyncio.ensure_future(viewer.queue.join()) for viewer in self._viewers.values()
+        }
+        if not waiters:
+            return
+        _, pending = await asyncio.wait(waiters.values(), timeout=_DRAIN_TIMEOUT_S)
+        for viewer, waiter in waiters.items():
+            if waiter in pending:
+                _ = waiter.cancel()
+                self._slow_disconnects += 1
+                self._drop(viewer, _SLOW_CLOSE)
 
     async def _handle(self, connection: ServerConnection) -> None:
         """Publish live frames and accept bounded requests from local browser pages."""
@@ -246,82 +361,148 @@ class TelemetryServer:
         if request is not None and not _loopback_origin(request.headers.get("Origin")):
             await connection.close(code=1008, reason="browser origin must be localhost")
             return
-        self._clients.add(connection)
+        viewer = self._attach(connection)
         try:
             async for message in connection:
-                await self._handle_command(connection, message)
+                await self._handle_command(viewer, message)
         finally:
-            self._clients.discard(connection)
-            self._detailed_clients.discard(connection)
+            self._drop(viewer)
+            if viewer.sender is not None:
+                _ = await asyncio.gather(viewer.sender, return_exceptions=True)
 
-    async def _handle_command(self, connection: ServerConnection, message: str | bytes) -> None:
-        """Run one small scenario request off the event loop and return its result."""
+    async def _handle_command(self, viewer: _Viewer, message: str | bytes) -> None:
+        """Answer one small request. Storage and simulation run off the event loop."""
         if not isinstance(message, str) or len(message.encode("utf-8")) > _MAX_COMMAND_BYTES:
-            await self._send_scenario_error(connection, None, "Request is too large.")
+            self._reply_error(viewer, None, "Request is too large.")
             return
         try:
             request = json.loads(message)
         except json.JSONDecodeError:
-            await self._send_scenario_error(connection, None, "Request must be valid JSON.")
+            self._reply_error(viewer, None, "Request must be valid JSON.")
             return
         if not isinstance(request, dict):
-            await self._send_scenario_error(connection, None, "Request must be a JSON object.")
+            self._reply_error(viewer, None, "Request must be a JSON object.")
             return
-        if request.get("type") == "telemetry_detail":
+        kind = request.get("type")
+        if kind == "telemetry_detail":
             if set(request) != {"type", "enabled"} or not isinstance(request.get("enabled"), bool):
-                await self._send_scenario_error(
-                    connection, None, "Invalid telemetry detail setting."
-                )
+                self._reply_error(viewer, None, "Invalid telemetry detail setting.")
                 return
-            if request["enabled"]:
-                self._detailed_clients.add(connection)
-            else:
-                self._detailed_clients.discard(connection)
-            return
-        if request.get("type") != "scenario_run":
-            await self._send_scenario_error(connection, None, "Unknown dashboard request.")
-            return
+            viewer.detailed = request["enabled"] is True
+        elif kind == "scenario_run":
+            await self._scenario_run(viewer, request)
+        elif kind == "run_replay":
+            await self._run_replay(viewer, request)
+        elif kind == "runs_list":
+            await self._runs_list(viewer, request)
+        else:
+            self._reply_error(viewer, None, "Unknown dashboard request.")
+
+    async def _scenario_run(self, viewer: _Viewer, request: dict[object, object]) -> None:
+        """Compute a scenario, save it if a store is configured, then play it on the car."""
         request_id = request.get("request_id")
         try:
-            if self._scenario_lock.locked():
-                raise ScenarioLabError(
-                    "A scenario is already running. Wait for it to finish first."
-                )
+            car = self._free_car()
+            # No await between the check above and taking the lock: the car is claimed here.
             async with self._scenario_lock:
                 lab_run = await asyncio.to_thread(run_lab, request)
+                result = lab_run.result
+                if self._run_store is not None:
+                    result = await asyncio.to_thread(self._run_store.save, lab_run)
+                car.start_run(lab_run.frames)
         except ScenarioLabError as error:
-            await self._send_scenario_error(connection, request_id, str(error))
+            self._fail_scenario(viewer, request_id, str(error))
+        except RunStoreError:
+            _LOGGER.exception("Scenario run could not be saved")
+            self._fail_scenario(
+                viewer, request_id, "The run could not be saved, so it was not played."
+            )
         except Exception:
             _LOGGER.exception("Scenario Lab run failed")
-            await self._send_scenario_error(
-                connection, request_id, "The run failed. Check that the server is still running."
+            self._fail_scenario(
+                viewer, request_id, "The run failed. Check that the server is still running."
             )
         else:
-            if isinstance(self._source, DrivenCarSource):
-                self._source.start_run(lab_run.frames)
-            await connection.send(_encode(lab_run.result))
+            self._reply(viewer, result)
 
-    @staticmethod
-    async def _send_scenario_error(
-        connection: ServerConnection, request_id: object, detail: str
-    ) -> None:
-        safe_id = request_id if isinstance(request_id, str) else None
-        await connection.send(
-            _encode({"type": "scenario_error", "request_id": safe_id, "error": detail})
+    async def _run_replay(self, viewer: _Viewer, request: dict[object, object]) -> None:
+        """Load a saved run and play its original frames on the car."""
+        request_id = request.get("request_id")
+        try:
+            store = self._require_store()
+            if set(request) != {"type", "request_id", "run_id"}:
+                raise ScenarioLabError("Request must include type, request_id, and run_id only.")
+            checked_id = _checked_request_id(request_id)
+            run_id = request.get("run_id")
+            if not isinstance(run_id, str):
+                raise ScenarioLabError("Run ID must be a saved run's ID.")
+            car = self._free_car()
+            async with self._scenario_lock:
+                lab_run = await asyncio.to_thread(store.load, run_id)
+                car.start_run(lab_run.frames)
+        except (ScenarioLabError, RunStoreError) as error:
+            self._fail_scenario(viewer, request_id, str(error))
+        except Exception:
+            _LOGGER.exception("Saved run could not be replayed")
+            self._fail_scenario(viewer, request_id, "The saved run could not be replayed.")
+        else:
+            self._reply(viewer, {**lab_run.result, "request_id": checked_id})
+
+    async def _runs_list(self, viewer: _Viewer, request: dict[object, object]) -> None:
+        """Summaries of every saved run, read off the event loop."""
+        request_id = request.get("request_id")
+        try:
+            store = self._require_store()
+            if set(request) != {"type", "request_id"}:
+                raise ScenarioLabError("Request must include type and request_id only.")
+            checked_id = _checked_request_id(request_id)
+            runs = await asyncio.to_thread(store.list_runs)
+        except (ScenarioLabError, RunStoreError) as error:
+            self._reply_error(viewer, request_id, str(error))
+        except Exception:
+            _LOGGER.exception("Saved runs could not be listed")
+            self._reply_error(viewer, request_id, "The saved runs could not be listed.")
+        else:
+            self._reply(
+                viewer, {"type": "runs_list_result", "request_id": checked_id, "runs": runs}
+            )
+
+    def _free_car(self) -> DrivenCarSource:
+        """The simulated car, if no scenario is computing or playing on it."""
+        if not isinstance(self._source, DrivenCarSource):
+            raise ScenarioLabError(
+                "Scenarios need the simulated car. "
+                "This server is streaming recorded or synthetic data."
+            )
+        if self._scenario_lock.locked() or self._source.running:
+            raise ScenarioLabError("A scenario is already running. Wait for it to finish first.")
+        return self._source
+
+    def _require_store(self) -> RunStore:
+        if self._run_store is None:
+            raise ScenarioLabError("Saved runs are not enabled on this server.")
+        return self._run_store
+
+    def _reply(self, viewer: _Viewer, payload: dict[str, object]) -> None:
+        self._enqueue(viewer, _encode(payload))
+
+    def _reply_error(self, viewer: _Viewer, request_id: object, detail: str) -> None:
+        self._reply(
+            viewer,
+            {"type": "scenario_error", "request_id": _echo_id(request_id), "error": detail},
         )
+
+    def _fail_scenario(self, viewer: _Viewer, request_id: object, detail: str) -> None:
+        self._scenario_failures += 1
+        self._reply_error(viewer, request_id, detail)
 
     async def _close_clients(self) -> None:
-        connections = tuple(self._clients)
-        self._clients.clear()
-        if not connections:
-            return
-        _ = await asyncio.gather(
-            *(
-                connection.close(code=1001, reason="server shutting down")
-                for connection in connections
-            ),
-            return_exceptions=True,
-        )
+        viewers = tuple(self._viewers.values())
+        for viewer in viewers:
+            self._drop(viewer, (1001, "server shutting down"))
+        pending = (*(v.sender for v in viewers if v.sender is not None), *self._closing)
+        if pending:
+            _ = await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _encode(payload: dict[str, object]) -> str:
@@ -332,6 +513,40 @@ def _encode(payload: dict[str, object]) -> str:
     encoder the transport uses never allows it.
     """
     return json.dumps(payload, separators=(",", ":"), allow_nan=False)
+
+
+def _discard_pending(queue: asyncio.Queue[str]) -> None:
+    while not queue.empty():
+        _ = queue.get_nowait()
+        queue.task_done()
+
+
+async def _close_quietly(connection: ServerConnection, code: int, reason: str) -> None:
+    """Close with a deadline, so a stalled peer cannot hold up shutdown or other viewers."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(connection.close(code=code, reason=reason), _CLOSE_TIMEOUT_S)
+
+
+def _source_state(source: FrameSource) -> dict[str, object]:
+    if isinstance(source, DrivenCarSource):
+        return {"kind": "simulated_car", "running": source.running}
+    return {"kind": "replay" if isinstance(source, ReplaySource) else "synthetic"}
+
+
+def _echo_id(value: object) -> str | None:
+    """A request ID we will repeat back: only one that matches the lab's own rule."""
+    if isinstance(value, str) and _REQUEST_ID.fullmatch(value) is not None:
+        return value
+    return None
+
+
+def _checked_request_id(value: object) -> str:
+    checked = _echo_id(value)
+    if checked is None:
+        raise ScenarioLabError(
+            "Request ID must be 1–64 letters, numbers, dots, dashes, or underscores."
+        )
+    return checked
 
 
 def _bound_port(server: Server, fallback: int) -> int:
@@ -392,6 +607,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="stream uniform random contract data instead of the simulated car",
     )
+    _ = parser.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=Path("runs"),
+        help="directory where scenario runs are saved (simulated car only)",
+    )
     _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
     _ = parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help="TCP port, 0 to auto-pick"
@@ -439,12 +660,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print("starting the simulated car...")
         source = DrivenCarSource(resting_car_values())
+    run_store = RunStore(args.runs_dir) if isinstance(source, DrivenCarSource) else None
     server = TelemetryServer(
         source,
         host=args.host,
         port=args.port,
         path=args.path,
         max_hz=args.hz,
+        run_store=run_store,
     )
     if isinstance(source, SyntheticSource):
         print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")
@@ -453,6 +676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif isinstance(source, DrivenCarSource):
         print(f"simulated car at rest, serving {server.url}")
         print("start a test from the dashboard to watch it drive")
+        print(f"saving scenario runs to {args.runs_dir}")
     elif isinstance(source, ReplaySource):
         print(
             f"replaying {args.replay_parquet} at {server.url} "
