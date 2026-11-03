@@ -1,7 +1,7 @@
 FROM node:24-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS dashboard
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ ./
 RUN npm run build
 
@@ -9,11 +9,12 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f2998
 WORKDIR /app
 ENV UV_LINK_MODE=copy NUMBA_CACHE_DIR=/tmp/numba-cache PYTHONUNBUFFERED=1
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
 COPY channels.yaml car_spec.yaml ./
 COPY tracks/ ./tracks/
 COPY examples/ ./examples/
-RUN uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 COPY --from=dashboard /web/dist ./web/dist/
 ARG REVISION
 ENV F1_TELEMETRY_REVISION=${REVISION}
