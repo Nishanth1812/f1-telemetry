@@ -73,7 +73,7 @@ and its simulation step frequency is not its WebSocket delivery rate.
 
 ## 6. Performance references and open gates
 
-[`PHASES.md`](../PHASES.md) preserves historical reports, including the
+[`PHASES.md`](roadmap/PHASES.md) preserves historical reports, including the
 longitudinal acceleration miss and open source-matched lateral/thermal targets.
 Those reported measurements have not been re-established as calibration by
 this release. Earlier phase-demo documents are absent from this checkout;

@@ -46,7 +46,7 @@ drive a real dashboard, every later phase is built on sand.
 
 **Exit gate** — historically reported as passed in CI run 37623217508 at `d4f4c92`.
 The original phase-0 decisions file is absent from this checkout; current software
-verification is recorded in [the release checklist](docs/release-checklist.md).
+verification is recorded in [the release checklist](../release-checklist.md).
 - [x] Dashboard shows live synthetic telemetry; each channel updates at its declared rate (verify with a stopwatch, not by eye)
 - [x] `just codegen` is idempotent; CI proves committed generated code is current
 - [x] All 8 invariant tests run and pass
@@ -157,14 +157,14 @@ P1's 0–100 km/h miss and uncalibrated power curve also remain open; see
 **Tag:** `v0.3-lateral` · **Demo:** constant-radius sweep with load transfer visible on all four
 corners, and a steering-sensitivity curve.
 The original phase-2 demo file is absent. The measurements above remain historical
-reports; [calibration notes](docs/calibration.md) state the current evidence limits.
+reports; [calibration notes](../calibration.md) state the current evidence limits.
 
 ---
 
 ## P3 — Thermal (lumped) {#p3}
 
 The original phases-3–5 VM demo record is absent from this checkout. See the
-[current architecture](docs/architecture.md) and [release checks](docs/release-checklist.md)
+[current architecture](../architecture.md) and [release checks](../release-checklist.md)
 for current software evidence, rather than reconstructed historical measurements.
 The checkboxes below reflect evidenced criteria; phase tags remain open until every exit criterion passes.
 

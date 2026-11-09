@@ -102,8 +102,8 @@ validated brake-capacity model. Short synthetic detection records do not establi
 a real-world false-alarm rate. The dashboard streams precomputed scenarios and
 is not an interactive driving simulator.
 
-PLAN.md and PHASES.md preserve the longer research roadmap and historical reports.
-They do not mean that every research phase is complete. This release has its own
+[The research roadmap](docs/roadmap/PLAN.md) and [phase reports](docs/roadmap/PHASES.md)
+preserve historical plans; not every research phase is complete. This release has its own
 [scope](docs/superpowers/specs/2026-11-03-portfolio-release-design.md).
 
 Original project code is [Apache-2.0](LICENSE). Track data retains its original
