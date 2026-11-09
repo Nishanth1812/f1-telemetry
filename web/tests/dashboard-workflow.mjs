@@ -72,6 +72,7 @@ export async function runWorkflow({ cdpCall, evalJson, server }) {
   await server.restart();
   console.log('workflow: backend restarted');
   await until(`document.querySelector('.connection')?.className.includes('connection--open')`);
+  await until(`Array.from(document.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Refresh saved tests' && !b.disabled)`);
   await click('Refresh saved tests');
   await until(`document.querySelector('#saved-test')?.value === '${runId}'`);
   await click('Replay saved test');
