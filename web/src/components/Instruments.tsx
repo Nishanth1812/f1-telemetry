@@ -226,8 +226,7 @@ export function Instruments() {
           Live car data
         </h2>
         <p className="instruments__caption">
-          Updates about 30 times a second from the simulated car. Start a virtual test to watch it
-          drive.
+          Live measurements from the simulated car, updated as telemetry arrives.
         </p>
       </header>
       <ul className="instruments__strip" aria-live="off">

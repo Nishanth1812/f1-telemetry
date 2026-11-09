@@ -39,30 +39,35 @@ export function App() {
       </a>
       <header className="app__header">
         <div className="app__brand">
-          <p className="app__eyebrow">Simulated Formula car · live telemetry</p>
+          <p className="app__eyebrow">Telemetry operations <span aria-hidden="true">/</span> Simulation</p>
           <h1 className="app__title">F1 Telemetry Lab</h1>
           <p className="app__subtitle">
-            A simulated Formula car and its sensors. Run a virtual test and watch the car's
-            telemetry live. Not calibrated to a real car.
+            Engineering workstation · synthetic vehicle, not calibrated to a real car
           </p>
         </div>
         <ConnectionIndicator />
       </header>
       <main className="app__main" id="dashboard">
-        <TestControls />
-        <SavedRuns />
-        <Instruments />
-        <section className="app__section" aria-labelledby="trace-heading">
-          <div className="app__section-head">
-            <h2 className="app__section-title" id="trace-heading">
-              Live trace
-            </h2>
-            <p className="app__section-hint">
-              One channel at a time, drawn from the full-rate stream.
-            </p>
+        <div className="workstation">
+          <aside className="workstation__controls" aria-label="Test operations">
+            <TestControls />
+            <SavedRuns />
+          </aside>
+          <div className="workstation__monitor">
+            <Instruments />
+            <section className="app__section workstation__trace" aria-labelledby="trace-heading">
+              <div className="app__section-head">
+                <h2 className="app__section-title" id="trace-heading">
+                  Live trace
+                </h2>
+                <p className="app__section-hint">
+                  Select a channel to inspect its recent samples.
+                </p>
+              </div>
+              <TracePanel />
+            </section>
           </div>
-          <TracePanel />
-        </section>
+        </div>
         <section className="app__section" aria-labelledby="corners-heading">
           <div className="app__section-head">
             <h2 className="app__section-title" id="corners-heading">
