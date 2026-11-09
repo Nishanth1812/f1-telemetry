@@ -19,14 +19,14 @@ establish production operating history. See the [release scope](superpowers/spec
   Simulation traces are advisory and have a separate threshold-based report;
   fixed hand-authored fixtures retain exact checks.
 - On 2026-11-09, the corrected baseline and advisory report checks passed on
-  Windows, as did five focused golden-harness checks. A passing full suite on
-  the release commit is still required.
+  Windows, as did five focused golden-harness checks. The full Python suite
+  then passed on Windows: 1,443 tests in 1:21:09. The subsequent history merge
+  introduced no source or test changes; this evidence update is documentation only.
 
 ## Before publishing
 
-- Run the full Python suite on the release commit, review golden reports and
-  resolve any failures. Run the remaining commands in the README and the browser
-  workflow in [demo.md](demo.md).
+- Review golden reports and rerun checks after any source or test changes. The
+  latest four golden reports flagged no channels.
 - Confirm CI passes on the release commit and that the public default branch
   contains the intended README, screenshot, demo and evidence.
 - Choose a release tag only after the checks pass. Public hosting is optional;
