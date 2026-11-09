@@ -18,6 +18,9 @@ establish production operating history. See the [release scope](superpowers/spec
   on `main` failed an exact floating-point comparison in a simulated golden trace.
   Simulation traces are advisory and have a separate threshold-based report;
   fixed hand-authored fixtures retain exact checks.
+- On 2026-11-09, the corrected baseline and advisory report checks passed on
+  Windows, as did five focused golden-harness checks. A passing full suite on
+  the release commit is still required.
 
 ## Before publishing
 
