@@ -8,8 +8,8 @@ gets it: a loopback-bound JSON server that pumps :mod:`f1telemetry.synthetic` fr
 
 Design constraints this file honours:
 
-* **Localhost only.** The bind address is validated against a loopback allowlist, so
-  the demo cannot be started listening on a routable interface by a stray flag.
+* **Localhost by default.** Non-loopback binding requires an explicit read-only
+  deployment or the opt-in container mode with loopback browser origins.
 * **Simulated time, real pacing.** ``time_us`` comes from the source and is never
   derived from a clock. The monotonic loop clock is used only to decide *when to send*
   a frame, and each sleep targets an absolute deadline computed from the frame's own
@@ -123,7 +123,7 @@ class TelemetryServer:
     Args:
         source: the frame iterator's owner. One source per server; it holds the
             simulated clock, so two servers cannot share it.
-        host: loopback name or address only.
+        host: loopback by default; non-loopback requires an explicit deployment mode.
         port: TCP port, 0 to let the OS pick (useful in tests).
         path: the single accepted URL path; anything else is closed with 1008.
         max_hz: upper bound on delivery rate, applied by the source's aggregation.
@@ -143,13 +143,21 @@ class TelemetryServer:
         web_root: Path | None = None,
         read_only: bool = False,
         allowed_origins: Sequence[str] = (),
+        container_access: bool = False,
     ) -> None:
         origins = frozenset(_checked_origin(origin) for origin in allowed_origins)
-        if host.lower() not in _LOOPBACK_HOSTS and not (read_only and origins):
+        if container_access and (
+            host != "0.0.0.0" or not origins or not all(_loopback_origin(o) for o in origins)
+        ):
+            raise TransportError("container access requires 0.0.0.0 and explicit loopback origins")
+        if host.lower() not in _LOOPBACK_HOSTS and not (
+            (read_only and origins) or container_access
+        ):
             allowed = ", ".join(sorted(_LOOPBACK_HOSTS))
             raise TransportError(
                 f"refusing to bind {host!r}: default is loopback-only ({allowed}); "
-                "public binding requires read-only mode and explicit allowed origins"
+                "non-loopback binding requires read-only mode and explicit origins, "
+                "or explicit container access"
             )
         if not 0 <= port <= 65535:
             raise TransportError(f"port must be in 0..65535, got {port}")
@@ -691,13 +699,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=Path("runs"),
         help="directory where scenario runs are saved (simulated car only)",
     )
-    _ = parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host only")
+    _ = parser.add_argument("--host", default=DEFAULT_HOST, help="bind host (loopback by default)")
     _ = parser.add_argument("--web-root", type=Path, help="built dashboard directory")
     _ = parser.add_argument(
         "--read-only", action="store_true", help="disable simulation and saved-run control"
     )
     _ = parser.add_argument(
         "--allowed-origin", action="append", default=[], help="exact permitted browser origin"
+    )
+    _ = parser.add_argument(
+        "--container-access", action="store_true", help="allow local container port publishing"
     )
     _ = parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help="TCP port, 0 to auto-pick"
@@ -756,6 +767,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         web_root=args.web_root,
         read_only=args.read_only,
         allowed_origins=args.allowed_origin,
+        container_access=args.container_access,
     )
     if isinstance(source, SyntheticSource):
         print(f"serving {len(source.contract)} channels at {server.url} (seed {args.seed})")

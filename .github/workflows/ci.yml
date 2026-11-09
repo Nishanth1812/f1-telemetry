@@ -207,7 +207,7 @@ jobs:
           if-no-files-found: error
 
   container:
-    name: read-only demo container
+    name: demo and interactive containers
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -224,3 +224,10 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8765/healthz
           curl --fail --silent http://127.0.0.1:8765/ > /dev/null
+      - uses: astral-sh/setup-uv@v5
+      - name: Check interactive recording and replay across restart
+        run: |
+          uv sync --frozen
+          docker compose --profile lab up --build --detach lab
+          trap 'docker compose --profile lab logs lab; docker compose --profile lab down --volumes' EXIT
+          uv run --frozen python tests/docker_lab_smoke.py

@@ -34,7 +34,9 @@ the same scenario and compare their results.
 
 For the included read-only looping recording, run `uv run f1-demo` instead.
 With just installed, `just lab` or `just demo` builds and starts the corresponding
-mode. `docker compose up --build` launches the read-only container on localhost.
+mode. Docker offers both the read-only demo (`docker compose up --build`) and the
+interactive lab (`docker compose --profile lab up --build lab`); see the demo guide
+for ports, persistent recordings and security boundaries.
 See [the demo guide](docs/demo.md) for deployment, recording and browser checks.
 
 ## Engineering

@@ -49,7 +49,12 @@ Generation refuses an existing destination. The sample's configuration snapshots
 are in Parquet metadata; its source revision/dirty flag describes generation time,
 not necessarily the commit from which the sample is being viewed.
 
-## Container
+## Containers
+
+The read-only demo and interactive lab use the same image and can run side by side.
+Both require Docker and Docker Compose.
+
+### Read-only demo
 
 ```powershell
 docker compose up --build
@@ -58,7 +63,26 @@ docker compose up --build
 Open <http://localhost:8765>. Compose binds the published port to localhost,
 runs as a non-root user with a read-only filesystem and temporary `/tmp`, drops
 Linux capabilities and prevents privilege escalation. No recording directory is
-mounted into the public demo. Stop it with `docker compose down`.
+mounted into the demo. Stop it with `docker compose stop demo`.
+
+### Interactive lab
+
+```powershell
+docker compose --profile lab up --build lab
+```
+
+Open <http://localhost:8766>. Runs are stored in the `lab-runs` Docker volume and
+remain available after container recreation or restart. Stop the lab with
+`docker compose --profile lab stop lab`; `docker compose down` also preserves
+the volume. Back up the volume before removing it: `docker compose down --volumes`
+permanently deletes its recordings.
+
+The lab publishes only to host loopback and uses a dedicated Docker network.
+Its explicit container-access mode accepts the two configured localhost browser
+origins. It has no authentication: other containers attached to that network can
+control the lab, including non-browser clients without an Origin header. Do not
+publish its port on a public interface or attach untrusted containers to its network.
+The read-only demo remains the mode for any later public deployment.
 
 The multi-stage image builds locked web assets and installs locked Python
 dependencies. It runs the Python server, not a development Vite server. To cite a

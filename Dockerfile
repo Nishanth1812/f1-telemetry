@@ -16,6 +16,7 @@ COPY tracks/ ./tracks/
 COPY examples/ ./examples/
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 COPY --from=dashboard /web/dist ./web/dist/
+RUN mkdir -p /data/runs && chown 65534:65534 /data/runs
 ARG REVISION
 ENV F1_TELEMETRY_REVISION=${REVISION}
 USER 65534:65534

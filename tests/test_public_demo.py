@@ -22,6 +22,53 @@ def test_public_binding_needs_readonly_and_explicit_origins() -> None:
     assert server.url.startswith("ws://0.0.0.0:")
 
 
+def test_interactive_container_binding_requires_explicit_local_origins() -> None:
+    source = DrivenCarSource({"speed": 0.0})
+    with pytest.raises(TransportError):
+        TelemetryServer(source, host="0.0.0.0", allowed_origins=["http://localhost:8766"])
+    with pytest.raises(TransportError):
+        TelemetryServer(source, host="0.0.0.0", container_access=True)
+    with pytest.raises(TransportError):
+        TelemetryServer(
+            source, host="0.0.0.0", container_access=True, allowed_origins=["https://example.com"]
+        )
+    server = TelemetryServer(
+        source,
+        host="0.0.0.0",
+        container_access=True,
+        allowed_origins=["http://localhost:8766", "http://127.0.0.1:8766"],
+    )
+    assert server.url.startswith("ws://0.0.0.0:")
+
+
+def test_interactive_container_rejects_foreign_browser_origins() -> None:
+    async def run() -> None:
+        server = TelemetryServer(
+            DrivenCarSource({"speed": 0.0}),
+            host="0.0.0.0",
+            port=0,
+            container_access=True,
+            allowed_origins=["http://localhost:8766"],
+        )
+        task = asyncio.create_task(server.run())
+        try:
+            async with asyncio.timeout(5):
+                while not server.ready:
+                    await asyncio.sleep(0.001)
+                url = server.url.replace("0.0.0.0", "127.0.0.1")
+                async with connect(url, origin=Origin("https://other.example")) as denied:
+                    with pytest.raises(ConnectionClosed) as closed:
+                        await denied.recv()
+                    assert closed.value.rcvd is not None and closed.value.rcvd.code == 1008
+                async with connect(url, origin=Origin("http://localhost:8766")) as allowed:
+                    assert json.loads(await allowed.recv())["read_only"] is False
+        finally:
+            server.stop()
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(run())
+
+
 def test_readonly_demo_serves_assets_health_and_rejects_mutation(tmp_path: Path) -> None:
     (tmp_path / "index.html").write_text("<h1>Recorded demo</h1>", encoding="utf-8")
 

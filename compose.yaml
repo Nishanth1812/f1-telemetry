@@ -14,3 +14,33 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
+
+  lab:
+    profiles: [lab]
+    build:
+      context: .
+      args:
+        REVISION: ${F1_TELEMETRY_REVISION:-}
+    entrypoint: ["/app/.venv/bin/python", "-m", "f1telemetry.server"]
+    command: ["--host", "0.0.0.0", "--port", "8766", "--container-access", "--allowed-origin", "http://localhost:8766", "--allowed-origin", "http://127.0.0.1:8766", "--web-root", "/app/web/dist", "--runs-dir", "/data/runs"]
+    ports:
+      - "127.0.0.1:8766:8766"
+    networks: [lab-network]
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/healthz', timeout=2)"]
+    volumes:
+      - lab-runs:/data/runs
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  lab-runs:
+
+networks:
+  lab-network:
