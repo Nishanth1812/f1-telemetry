@@ -122,7 +122,7 @@ is not an interactive driving simulator.
 
 [The research roadmap](docs/roadmap/PLAN.md) and [phase reports](docs/roadmap/PHASES.md)
 preserve historical plans; not every research phase is complete. This release has its own
-[scope](docs/superpowers/specs/2026-11-03-portfolio-release-design.md).
+[scope](docs/roadmap/release/specs/2026-11-03-portfolio-release-design.md).
 
 Original project code is [Apache-2.0](LICENSE). Track data retains its original
 license and attribution; see [third-party notices](THIRD_PARTY_NOTICES.md).

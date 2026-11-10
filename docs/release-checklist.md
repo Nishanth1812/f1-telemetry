@@ -2,7 +2,7 @@
 
 The portfolio release demonstrates local synthetic telemetry experiments, saved
 recordings, replay and comparison. It does not validate a real Formula car or
-establish production operating history. See the [release scope](superpowers/specs/2026-11-03-portfolio-release-design.md),
+establish production operating history. See the [release scope](roadmap/release/specs/2026-11-03-portfolio-release-design.md),
 [calibration notes](calibration.md) and [detection results](detection.md).
 
 ## Evidence
