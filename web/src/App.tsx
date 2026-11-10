@@ -39,10 +39,9 @@ export function App() {
       </a>
       <header className="app__header">
         <div className="app__brand">
-          <p className="app__eyebrow">Telemetry operations <span aria-hidden="true">/</span> Simulation</p>
           <h1 className="app__title">F1 Telemetry Lab</h1>
           <p className="app__subtitle">
-            Engineering workstation · synthetic vehicle, not calibrated to a real car
+            Synthetic vehicle · not calibrated to a real car
           </p>
         </div>
         <ConnectionIndicator />
@@ -58,11 +57,8 @@ export function App() {
             <section className="app__section workstation__trace" aria-labelledby="trace-heading">
               <div className="app__section-head">
                 <h2 className="app__section-title" id="trace-heading">
-                  Live trace
+                  Channel trace
                 </h2>
-                <p className="app__section-hint">
-                  Select a channel to inspect its recent samples.
-                </p>
               </div>
               <TracePanel />
             </section>

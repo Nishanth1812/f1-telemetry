@@ -1,223 +1,182 @@
-/* Operations layout: the data and controls remain the existing live components. */
+/* Dense, restrained presentation for live telemetry and test controls. */
 :root {
-  --surface: #0a0e12;
-  --surface-raised: #151c22;
-  --surface-card: #10161b;
-  --border: #303d47;
-  --border-subtle: #26323a;
-  --border-strong: #536572;
-  --text: #edf3f4;
-  --text-muted: #a4b3bd;
-  --text-faint: #91a2ad;
-  --accent: #62c8e2;
-  --accent-strong: #9de5f4;
-  --accent-subtle: rgb(98 200 226 / 12%);
-  --accent-focus: rgb(98 200 226 / 35%);
-  --trace-line: #62c8e2;
-  --trace-surface: #0a1014;
-  --trace-grid: rgb(150 174 184 / 13%);
-  --trace-text: #a4b3bd;
+  --surface: #111417;
+  --surface-raised: #1b2024;
+  --surface-card: #171b1e;
+  --border: #394248;
+  --border-subtle: #2b3237;
+  --border-strong: #5a676e;
+  --text: #e8ecec;
+  --text-muted: #a8b4b8;
+  --text-faint: #96a4aa;
+  --accent: #8ec5cc;
+  --accent-strong: #b4e0e5;
+  --accent-subtle: rgb(142 197 204 / 12%);
+  --accent-focus: rgb(142 197 204 / 35%);
+  --trace-line: #8ec5cc;
+  --trace-surface: #101416;
+  --trace-grid: rgb(164 179 184 / 16%);
+  --trace-text: #a8b4b8;
 }
 
 .app {
   max-width: 1920px;
-  --gap-section: clamp(20px, 2vw, 30px);
+  --gap-section: 24px;
 }
 
 .app__header {
-  border-top: 3px solid #df493f;
-  background: #10171c;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  background: var(--surface-card);
 }
 
 @supports (backdrop-filter: blur(10px)) {
-  .app__header {
-    background: rgb(16 23 28 / 94%);
-  }
+  .app__header { background: rgb(23 27 30 / 96%); }
 }
 
-.app__eyebrow {
-  color: #9caeb8;
-  font-family: var(--font-mono);
-  letter-spacing: 0.13em;
-}
-
-.app__eyebrow span {
-  color: #ef7169;
-  padding: 0 0.25rem;
+.app__brand {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
 
 .app__title {
-  font-size: clamp(1.3rem, 1.8vw, 1.65rem);
-  letter-spacing: -0.03em;
+  font-size: var(--text-md);
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
 .app__subtitle {
-  color: var(--text-muted);
+  margin: 0;
   font-size: var(--text-xs);
 }
 
-.workstation {
-  display: grid;
-  grid-template-columns: minmax(17rem, 21rem) minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-4);
-  min-width: 0;
-}
+.app__main { padding-top: var(--space-4); }
 
-.workstation__controls,
+.workstation,
 .workstation__monitor {
   display: grid;
   min-width: 0;
-  gap: var(--space-4);
+  gap: var(--space-3);
+}
+
+.workstation__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(18rem, 2fr);
+  align-items: start;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .workstation__controls .testlab,
 .instruments,
 .workstation__trace {
+  min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 2px;
   background: var(--surface-card);
   box-shadow: none;
 }
 
-.workstation__controls .testlab {
-  padding: var(--space-4);
-  border-top: 2px solid #df493f;
+.workstation__controls .testlab,
+.instruments,
+.workstation__trace {
+  padding: var(--space-3);
 }
 
 .workstation__controls .testlab__head h2,
-.instruments__title {
+.instruments__title,
+.workstation__trace .app__section-title {
+  margin: 0;
   font-size: var(--text-sm);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
 }
 
-.workstation__controls .testlab__bar,
-.workstation__controls .testlab__scenarios,
+.workstation__controls .testlab__choice,
+.workstation__controls .testlab__run,
+.workstation__controls .saved-runs select,
+.workstation__controls .saved-runs button {
+  min-height: 2.25rem;
+  border-radius: 2px;
+}
+
 .workstation__controls .saved-runs__controls {
-  align-items: stretch;
-  flex-direction: column;
-}
-
-.workstation__controls .testlab__choice {
-  text-align: left;
-}
-
-.workstation__controls .testlab__setting {
-  min-width: 0;
-  flex: none;
-  flex-wrap: wrap;
-}
-
-.workstation__controls .testlab__setting input[type='range'] {
+  align-items: end;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-.workstation__controls .saved-runs label,
-.workstation__controls .saved-runs select {
-  width: 100%;
+.workstation__controls .testlab__head > div { min-width: 0; }
+
+.workstation__controls .saved-runs label {
+  min-width: min(100%, 13rem);
+  flex: 1 1 13rem;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
 }
+
+.workstation__controls .saved-runs select { width: 100%; }
 
 .workstation__controls .saved-runs button {
-  min-height: 2.5rem;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: 4px;
   background: var(--surface-raised);
   color: var(--text);
   font: inherit;
   font-size: var(--text-sm);
-  text-align: left;
   cursor: pointer;
 }
 
-.workstation__controls .saved-runs button:hover:not(:disabled) {
-  border-color: var(--accent);
-}
+.workstation__controls .saved-runs button:hover:not(:disabled) { border-color: var(--accent); }
+.workstation__controls .saved-runs button:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.workstation__controls .saved-runs button:disabled {
-  color: var(--text-muted);
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.instruments {
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border-top: 2px solid var(--accent);
-}
-
-.instruments__caption {
-  max-width: none;
-  font-size: var(--text-xs);
-}
-
+.instruments { gap: var(--space-3); }
 .instruments__strip {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--border-subtle);
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .instrument {
-  min-height: 6.5rem;
+  min-height: 5.5rem;
+  padding: var(--space-2) var(--space-3);
   border: 0;
+  border-right: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: #111a20;
+  background: transparent;
 }
 
-.instrument__label,
-.instrument__caption {
-  letter-spacing: 0.06em;
-}
+.instrument:last-child { border-right: 0; }
+.instrument__label { letter-spacing: 0.02em; }
+.instrument__value { font-size: var(--text-lg); letter-spacing: 0; }
+.instrument--gear .instrument__value { font-size: var(--text-xl); }
 
-.instrument__value {
-  font-weight: 600;
-  letter-spacing: -0.05em;
-}
+.workstation__trace { gap: var(--space-2); }
+.workstation__trace .app__section-title::before,
+.workstation__trace .app__section-title::after { display: none; }
+.workstation__trace .trace__header { margin: 0; }
+.workstation__trace .trace__canvas { min-height: 14rem; }
 
-.instrument--gear .instrument__value {
-  font-size: 2.3rem;
-}
-
-.workstation__trace {
-  padding: var(--space-4);
-}
-
-.workstation__trace .app__section-head {
-  margin-bottom: var(--space-2);
-}
-
-.workstation__trace .app__section-hint {
-  font-size: var(--text-xs);
-}
-
-.workstation__trace .trace__canvas {
-  min-height: 16rem;
-}
-
-@media (max-width: 1100px) {
-  .workstation {
-    grid-template-columns: 1fr;
-  }
-
-  .workstation__controls {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
-  }
+@media (max-width: 1200px) {
+  .workstation__controls { grid-template-columns: 1fr; }
+  .instruments__strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .instrument:nth-child(4) { border-right: 0; }
+  .instrument:nth-child(n + 5) { border-top: 1px solid var(--border-subtle); }
 }
 
 @media (max-width: 700px) {
-  .workstation__controls {
-    grid-template-columns: 1fr;
+  .workstation__controls .saved-runs__controls {
+    align-items: stretch;
+    flex-direction: column;
   }
-
-  .instruments__strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .instrument {
-    min-height: 5.5rem;
-  }
+  .workstation__controls .saved-runs label { min-width: 0; flex: none; }
+  .instruments__strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .instrument:nth-child(even) { border-right: 0; }
+  .instrument:nth-child(n + 3) { border-top: 1px solid var(--border-subtle); }
+  .workstation__trace .trace__canvas { min-height: 12rem; }
 }

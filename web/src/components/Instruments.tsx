@@ -225,9 +225,6 @@ export function Instruments() {
         <h2 id={headingId} className="instruments__title">
           Live car data
         </h2>
-        <p className="instruments__caption">
-          Live measurements from the simulated car, updated as telemetry arrives.
-        </p>
       </header>
       <ul className="instruments__strip" aria-live="off">
         <SpeedCell />
