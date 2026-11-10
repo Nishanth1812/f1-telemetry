@@ -39,7 +39,7 @@ No change needed.
 
 ## Codegen drift check
 
-`uv run f1-check-contract` (`just codegen-check`) is **green**: all three generated
+`uv run f1-check-contract` is **green**: all three generated
 artifacts (`src/f1telemetry/generated/channels.py`, `parquet_schema.py`,
 `web/src/generated/channels.ts`) are byte-identical to what `channels.yaml` emits.
 No regeneration needed; no contract change this round.
@@ -115,5 +115,5 @@ Guards preserved (unchanged):
   the lock; `telemetry_detail` still mutates `_detailed_clients` outside the lock.
 - `allow_nan=False` NaN guard - invalid JSON tokens never reach the wire.
 
-Server can be restarted with `just serve` (or `uv run f1-serve`) at
+Server can be restarted with `uv run f1-serve` at
 `ws://localhost:8765/ws`; default endpoint matches `web/src/telemetry/config.ts`.

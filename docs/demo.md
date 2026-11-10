@@ -12,7 +12,7 @@ uv run f1-serve --web-root web/dist
 ```
 
 Open <http://localhost:8765>. One process serves both the built dashboard and its
-WebSocket. With just installed, `just lab` builds and starts that application.
+WebSocket.
 For frontend development, run `uv run f1-serve` and `npm --prefix web run dev` in
 two terminals instead. The development page uses the local socket by default.
 

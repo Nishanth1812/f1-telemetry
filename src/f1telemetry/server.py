@@ -24,7 +24,7 @@ Design constraints this file honours:
   on the way out, and clients mid-frame are closed rather than left hanging. SIGINT
   and SIGTERM are wired to the same event where the platform allows it.
 
-Run it with ``just serve`` (or ``uv run f1-serve``); the default endpoint is
+Run it with ``uv run f1-serve``; the default endpoint is
 ``ws://localhost:8765/ws``, matching ``web/src/telemetry/config.ts``.
 
 With ``--replay-parquet`` the source is a saved run instead of synthetic data

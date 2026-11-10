@@ -1,4 +1,5 @@
 .git
+AGENTS.md
 .venv
 .pytest_cache
 .ruff_cache

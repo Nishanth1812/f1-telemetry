@@ -33,8 +33,7 @@ a page refresh or server restart. Replay a selected test, or choose two runs of
 the same scenario and compare their results.
 
 For the included read-only looping recording, run `uv run f1-demo` instead.
-With just installed, `just lab` or `just demo` builds and starts the corresponding
-mode. Docker offers both the read-only demo (`docker compose up --build`) and the
+Docker offers both the read-only demo (`docker compose up --build`) and the
 interactive lab (`docker compose --profile lab up --build lab`). See [the demo guide](docs/demo.md)
 for ports, persistent recordings, security boundaries and browser checks.
 
@@ -90,7 +89,6 @@ node --test web/tests/telemetry.test.mjs
 npm run build --prefix web
 ```
 
-`just check` runs the Python checks and web build.
 [Release evidence](docs/release-checklist.md) records checks actually performed.
 [The demo guide](docs/demo.md) contains the browser workflow command.
 
@@ -107,9 +105,7 @@ npm run build --prefix web
 | [`channels.yaml`](channels.yaml), [`car_spec.yaml`](car_spec.yaml) | Sensor contract and synthetic vehicle configuration |
 
 The root also contains Python and Docker configuration, dependency lockfiles,
-and license notices. `justfile` provides optional shortcuts; the commands above
-can be run without installing `just`. `AGENTS.md` contains contributor tooling
-instructions and is not needed to run the application.
+and license notices.
 
 ## Limits
 

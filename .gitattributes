@@ -12,7 +12,5 @@
 *.json text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
-justfile text eol=lf
-
 *.png binary
 *.parquet binary
